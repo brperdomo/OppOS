@@ -82,7 +82,7 @@ def _extract_json(text: str) -> str:
     return text
 
 
-def _build_opportunity_text(opp: dict[str, Any]) -> str:
+def _build_opportunity_text(opp: dict[str, Any], attachment_text: str = "") -> str:
     parts = [
         f"Title: {opp.get('title', 'N/A')}",
         f"Agency: {opp.get('agency', 'N/A')}",
@@ -97,13 +97,15 @@ def _build_opportunity_text(opp: dict[str, Any]) -> str:
     desc = opp.get("description", "")
     if desc:
         parts.append(f"\nDescription:\n{desc[:8000]}")
+    if attachment_text:
+        parts.append(f"\n--- RFP ATTACHMENT CONTENT (extracted via OCR) ---\n{attachment_text}")
     return "\n".join(parts)
 
 
-def stage1_filter(opportunity: dict[str, Any]) -> dict[str, Any]:
+def stage1_filter(opportunity: dict[str, Any], attachment_text: str = "") -> dict[str, Any]:
     """Fast relevance check. Returns {"relevant": bool, "confidence": float, "reason": str}."""
     client = _get_client()
-    opp_text = _build_opportunity_text(opportunity)
+    opp_text = _build_opportunity_text(opportunity, attachment_text)
 
     try:
         resp = client.messages.create(
@@ -125,10 +127,10 @@ def stage1_filter(opportunity: dict[str, Any]) -> dict[str, Any]:
         return {"relevant": True, "confidence": 0.5, "reason": f"API error — defaulting to relevant: {e}"}
 
 
-def stage2_score(opportunity: dict[str, Any]) -> dict[str, Any]:
+def stage2_score(opportunity: dict[str, Any], attachment_text: str = "") -> dict[str, Any]:
     """Deep qualification scoring. Returns full structured assessment."""
     client = _get_client()
-    opp_text = _build_opportunity_text(opportunity)
+    opp_text = _build_opportunity_text(opportunity, attachment_text)
 
     try:
         resp = client.messages.create(
@@ -165,9 +167,9 @@ def stage2_score(opportunity: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-def qualify(opportunity: dict[str, Any]) -> dict[str, Any]:
+def qualify(opportunity: dict[str, Any], attachment_text: str = "") -> dict[str, Any]:
     """Run the full two-stage pipeline. Returns the opportunity enriched with scoring."""
-    s1 = stage1_filter(opportunity)
+    s1 = stage1_filter(opportunity, attachment_text)
     opportunity["stage1"] = s1
 
     if not s1["relevant"] and s1["confidence"] > STAGE1_FIT_THRESHOLD:
@@ -177,7 +179,7 @@ def qualify(opportunity: dict[str, Any]) -> dict[str, Any]:
         logger.info("Filtered out: '%s' — %s", opportunity.get("title", "?"), s1["reason"])
         return opportunity
 
-    s2 = stage2_score(opportunity)
+    s2 = stage2_score(opportunity, attachment_text)
     opportunity["stage2"] = s2
     opportunity["fit_score"] = s2.get("fit_score", 0)
     opportunity["recommended_action"] = s2.get("recommended_action", "investigate")

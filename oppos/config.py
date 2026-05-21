@@ -17,6 +17,8 @@ NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
 
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 
+NUTRIENT_API_KEY = os.environ.get("NUTRIENT_API_KEY", "")
+
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "oppos.db"
 
 TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "")

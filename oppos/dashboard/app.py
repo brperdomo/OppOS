@@ -26,7 +26,7 @@ try:
 except Exception as e:
     _secrets_errors.append(f"listing secrets: {e}")
 
-for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHROPIC_API_KEY", "SLACK_WEBHOOK_URL"):
+for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHROPIC_API_KEY", "SLACK_WEBHOOK_URL", "NUTRIENT_API_KEY"):
     try:
         if hasattr(st, "secrets") and key in st.secrets:
             val = str(st.secrets[key]).strip().strip('"').strip("'")
@@ -611,6 +611,8 @@ def _run_scan() -> dict:
     import logging
     from oppos.config import STAGE2_MIN_SCORE
     from oppos.scoring.qualifier import qualify
+    from oppos.sources.attachments import download_attachments
+    from oppos.sources.extract_text import extract_text_from_attachments
     from oppos.sources.registry import get_enabled_sources
     from oppos.storage.db import is_seen, upsert_opportunity
 
@@ -627,7 +629,14 @@ def _run_scan() -> dict:
                 if is_seen(opp["source_id"]):
                     continue
                 stats["new"] += 1
-                scored = qualify(opp)
+                attachment_text = ""
+                try:
+                    att_files = download_attachments(opp)
+                    if att_files:
+                        attachment_text = extract_text_from_attachments(att_files)
+                except Exception:
+                    pass
+                scored = qualify(opp, attachment_text=attachment_text)
                 if scored.get("fit_score", 0) >= STAGE2_MIN_SCORE:
                     stats["scored"] += 1
                 upsert_opportunity(scored)

@@ -27,6 +27,7 @@ from oppos.outputs.notion_sync import push_opportunity
 from oppos.outputs.slack_alerts import send_alert
 from oppos.scoring.qualifier import qualify
 from oppos.sources.attachments import download_attachments
+from oppos.sources.extract_text import extract_text_from_attachments
 from oppos.sources.registry import get_enabled_sources, list_available
 from oppos.storage.db import (
     get_unnotified,
@@ -102,7 +103,18 @@ def run(
             continue
         stats["new"] += 1
 
-        scored = qualify(opp)
+        attachment_text = ""
+        try:
+            att_files = download_attachments(opp)
+            if att_files:
+                attachment_text = extract_text_from_attachments(att_files)
+                if attachment_text:
+                    logger.info("Extracted %d chars from %d attachments for '%s'",
+                                len(attachment_text), len(att_files), opp.get("title", "?")[:60])
+        except Exception as e:
+            logger.warning("Attachment extraction failed for '%s': %s", opp.get("title", "?")[:60], e)
+
+        scored = qualify(opp, attachment_text=attachment_text)
 
         if scored.get("stage1", {}).get("relevant", False) or scored.get("fit_score", 0) > 0:
             stats["relevant_stage1"] += 1
@@ -123,8 +135,7 @@ def run(
             continue
 
         if scored.get("fit_score", 0) >= STAGE2_MIN_SCORE:
-            attachments = download_attachments(scored)
-            page_id = push_opportunity(scored, attachment_paths=attachments)
+            page_id = push_opportunity(scored, attachment_paths=att_files if att_files else [])
             if page_id:
                 set_notion_page_id(sid, page_id)
                 stats["notion_synced"] += 1
