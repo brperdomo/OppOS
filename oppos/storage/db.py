@@ -225,7 +225,7 @@ def set_slack_notified(source_id: str) -> None:
     )
 
 
-PIPELINE_STATUSES = ["new", "in_progress", "submitted", "won", "lost", "skipped"]
+PIPELINE_STATUSES = ["new", "qualified", "in_progress", "submitted", "won", "lost", "skipped"]
 
 
 def set_pipeline_status(

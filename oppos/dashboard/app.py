@@ -475,6 +475,11 @@ hr {
     color: var(--accent-pink);
     border: 1px solid rgba(222, 157, 204, 0.3);
 }
+.pipeline-qualified {
+    background: rgba(100, 160, 240, 0.15);
+    color: #64a0f0;
+    border: 1px solid rgba(100, 160, 240, 0.3);
+}
 .pipeline-in_progress {
     background: rgba(240, 201, 102, 0.15);
     color: var(--accent-gold);
@@ -595,6 +600,7 @@ SOURCE_LABELS = dict(list_available())
 
 PIPELINE_LABELS = {
     "new": "New",
+    "qualified": "Qualified",
     "in_progress": "In Progress",
     "submitted": "Submitted",
     "won": "Won",
@@ -698,8 +704,9 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-tab_pipeline, tab_in_progress, tab_submitted, tab_archive = st.tabs([
+tab_pipeline, tab_qualified, tab_in_progress, tab_submitted, tab_archive = st.tabs([
     f"Pipeline ({status_counts.get('new', 0)})",
+    f"Qualified ({status_counts.get('qualified', 0)})",
     f"In Progress ({status_counts.get('in_progress', 0)})",
     f"Submitted ({status_counts.get('submitted', 0)})",
     f"Archive ({status_counts.get('won', 0) + status_counts.get('lost', 0) + status_counts.get('skipped', 0)})",
@@ -719,7 +726,7 @@ def _esc(text: str) -> str:
 
 
 def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
-    """OCR selected PDFs and re-score the opportunity."""
+    """OCR selected PDFs, re-score, and move to Qualified."""
     from oppos.scoring.qualifier import qualify
     from oppos.sources.extract_text import extract_text_from_pdf, MAX_TOTAL_TEXT
     from oppos.storage.db import upsert_opportunity
@@ -768,6 +775,10 @@ def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
             scored = qualify(opp, attachment_text=attachment_text)
             scored["attachment_text"] = attachment_text
             upsert_opportunity(scored)
+            set_pipeline_status(
+                opp["source_id"], "qualified",
+                notes=f"Deep scan: {total_chars:,} chars from {len(selected_paths)} PDF(s)",
+            )
         except Exception as e:
             status.update(label="Scan failed: Scoring error", state="error")
             st.error(f"Scoring failed: {type(e).__name__}: {e}")
@@ -793,6 +804,8 @@ def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
             st.write("**Risks:** " + " · ".join(s2["risks"]))
         if s2.get("recommended_action"):
             st.write(f"**Recommendation:** {s2['recommended_action']}")
+
+        st.write("📂 **Moved to Qualified tab for review.**")
 
         status.update(
             label=f"Scan complete — Score: {old_score} → {new_score} ({delta_str})",
@@ -1165,6 +1178,48 @@ with tab_pipeline:
         render_empty("No new opportunities matching filters")
     for opp in rows:
         render_card(opp, "pipe")
+
+# --- Qualified tab ---
+with tab_qualified:
+    qual_rows = get_by_pipeline_status("qualified")
+    st.markdown(
+        f'<div style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 16px;">'
+        f'<strong>{len(qual_rows)}</strong> scanned &amp; scored — ready for your decision</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not qual_rows:
+        render_empty("No qualified RFPs yet. Deep Scan an opportunity from the Pipeline tab to move it here.")
+    for opp in qual_rows:
+        render_card(opp, "qual", show_status_controls=False)
+        qsid = opp.get("source_id", "")
+        qc1, qc2 = st.columns(2)
+        with qc1:
+            pursue = st.button("Pursue →", key=f"pursue_{qsid}", use_container_width=True)
+        with qc2:
+            skip = st.button("Skip →", key=f"skip_{qsid}", use_container_width=True)
+
+        if pursue:
+            reason = st.text_input(
+                "Why are we pursuing this?",
+                key=f"pursue_reason_{qsid}",
+                placeholder="e.g., Strong fit for Workflow case management, aligns with NJ public sector push",
+            )
+            if st.button("Confirm Pursue", key=f"confirm_pursue_{qsid}"):
+                set_pipeline_status(qsid, "in_progress", notes=reason or "Qualified — pursuing")
+                st.success("Moved to In Progress.")
+                st.rerun()
+        if skip:
+            reason = st.text_input(
+                "Reason for skipping?",
+                key=f"skip_reason_{qsid}",
+                placeholder="e.g., Not a workflow fit — pure staffing RFP, no automation component",
+            )
+            if st.button("Confirm Skip", key=f"confirm_skip_{qsid}"):
+                set_pipeline_status(qsid, "skipped", notes=reason or "Skipped after qualification review")
+                st.success("Moved to Archive.")
+                st.rerun()
+        st.markdown("---")
 
 # --- In Progress tab ---
 with tab_in_progress:
