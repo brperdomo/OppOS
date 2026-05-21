@@ -728,6 +728,25 @@ def _run_deep_scan(opp: dict, tab_key: str) -> None:
     sid = opp.get("source_id", "")
     title = opp.get("title", "Untitled")
 
+    existing_text = opp.get("attachment_text") or ""
+    if existing_text:
+        st.info("Using previously extracted text (no credits used).")
+        with st.spinner("Re-scoring with cached attachment content..."):
+            scored = qualify(opp, attachment_text=existing_text)
+            scored["attachment_text"] = existing_text
+            upsert_opportunity(scored)
+
+        new_score = scored.get("fit_score", 0)
+        old_score = int(opp.get("fit_score") or 0)
+        delta = new_score - old_score
+        delta_str = f"+{delta}" if delta > 0 else str(delta)
+        st.success(
+            f"Re-scored with cached OCR ({len(existing_text):,} chars). "
+            f"Score: {old_score} → **{new_score}** ({delta_str})"
+        )
+        st.rerun()
+        return
+
     with st.spinner(f"Downloading attachments for {title[:50]}..."):
         att_files = download_attachments(opp)
 
@@ -749,6 +768,7 @@ def _run_deep_scan(opp: dict, tab_key: str) -> None:
 
     with st.spinner("Re-scoring with full attachment content..."):
         scored = qualify(opp, attachment_text=attachment_text)
+        scored["attachment_text"] = attachment_text
         upsert_opportunity(scored)
 
     new_score = scored.get("fit_score", 0)
@@ -955,18 +975,22 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
             """, unsafe_allow_html=True)
 
     # --- Deep Scan button ---
+    has_cached_ocr = bool(opp.get("attachment_text"))
     ds_col1, ds_col2 = st.columns([1, 3])
     with ds_col1:
         deep_scan = st.button(
-            "Deep Scan with OCR",
+            "Re-score (cached)" if has_cached_ocr else "Deep Scan with OCR",
             key=f"deepscan_{tab_key}_{sid}",
             use_container_width=True,
-            help="Download attachments, extract text via Nutrient OCR, and re-score this RFP",
+            help="Re-score using previously extracted text (no credits used)" if has_cached_ocr
+            else "Download attachments, extract text via Nutrient OCR, and re-score this RFP",
         )
     with ds_col2:
+        hint = "OCR text cached — re-score without using Nutrient credits" if has_cached_ocr \
+            else "Reads PDF attachments and re-scores with full requirements context"
         st.markdown(
-            '<div style="font-size: 12px; color: var(--text-tertiary); padding-top: 8px;">'
-            'Reads PDF attachments and re-scores with full requirements context</div>',
+            f'<div style="font-size: 12px; color: var(--text-tertiary); padding-top: 8px;">'
+            f'{hint}</div>',
             unsafe_allow_html=True,
         )
 

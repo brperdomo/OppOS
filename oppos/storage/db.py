@@ -131,6 +131,7 @@ _CREATE_TABLE_SQL = """
         stage1_json TEXT,
         stage2_json TEXT,
         raw_json TEXT,
+        attachment_text TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         notion_page_id TEXT,
@@ -142,9 +143,18 @@ _CREATE_TABLE_SQL = """
     )
 """
 
+_MIGRATIONS = [
+    "ALTER TABLE opportunities ADD COLUMN attachment_text TEXT",
+]
+
 
 def init_db() -> None:
     _execute(_CREATE_TABLE_SQL)
+    for migration in _MIGRATIONS:
+        try:
+            _execute(migration)
+        except Exception:
+            pass
 
 
 def is_seen(source_id: str) -> bool:
@@ -162,13 +172,14 @@ def upsert_opportunity(opp: dict[str, Any]) -> None:
             description, contact_name, contact_email, contact_phone,
             place_of_performance, office, naics_code, set_aside,
             fit_score, recommended_action, stage1_json, stage2_json, raw_json,
-            updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            attachment_text, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_id) DO UPDATE SET
             fit_score = excluded.fit_score,
             recommended_action = excluded.recommended_action,
             stage1_json = excluded.stage1_json,
             stage2_json = excluded.stage2_json,
+            attachment_text = COALESCE(excluded.attachment_text, attachment_text),
             updated_at = excluded.updated_at
         """,
         (
@@ -194,6 +205,7 @@ def upsert_opportunity(opp: dict[str, Any]) -> None:
             json.dumps(opp.get("stage1")) if opp.get("stage1") else None,
             json.dumps(opp.get("stage2")) if opp.get("stage2") else None,
             json.dumps(opp.get("raw")) if opp.get("raw") else None,
+            opp.get("attachment_text"),
             datetime.utcnow().isoformat(),
         ),
     )
