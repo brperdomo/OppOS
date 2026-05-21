@@ -748,7 +748,14 @@ def _run_deep_scan(opp: dict, tab_key: str) -> None:
             f"Re-scored with cached OCR ({len(existing_text):,} chars). "
             f"Score: {old_score} → **{new_score}** ({delta_str})"
         )
-        st.rerun()
+        s2 = scored.get("stage2") or {}
+        if s2.get("summary"):
+            st.markdown("**Post-Scan Analysis**")
+            st.write(s2["summary"])
+        if s2.get("strengths"):
+            st.write("**Strengths:** " + " · ".join(s2["strengths"]))
+        if s2.get("risks"):
+            st.write("**Risks:** " + " · ".join(s2["risks"]))
         return
 
     with st.status(f"Deep Scan: {title[:60]}", expanded=True) as status:
@@ -827,11 +834,23 @@ def _run_deep_scan(opp: dict, tab_key: str) -> None:
         delta_str = f"+{delta}" if delta > 0 else str(delta)
 
         st.write(f"**Score: {old_score} → {new_score} ({delta_str})**")
+
+        s2 = scored.get("stage2") or {}
+        if s2.get("summary"):
+            st.divider()
+            st.write("📋 **Post-Scan Analysis**")
+            st.write(s2["summary"])
+        if s2.get("strengths"):
+            st.write("**Strengths:** " + " · ".join(s2["strengths"]))
+        if s2.get("risks"):
+            st.write("**Risks:** " + " · ".join(s2["risks"]))
+        if s2.get("recommended_action"):
+            st.write(f"**Recommendation:** {s2['recommended_action']}")
+
         status.update(
             label=f"Deep Scan complete — Score: {old_score} → {new_score} ({delta_str})",
             state="complete",
         )
-    st.rerun()
 
 
 def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> None:
