@@ -1,4 +1,4 @@
-"""Extract text from RFP attachments using Nutrient DWS API."""
+"""Extract text from RFP attachments (PDF via Nutrient DWS, DOCX locally)."""
 
 from __future__ import annotations
 
@@ -14,10 +14,38 @@ logger = logging.getLogger(__name__)
 NUTRIENT_API_URL = "https://api.nutrient.io/build"
 MAX_TEXT_PER_FILE = 15_000
 MAX_TOTAL_TEXT = 30_000
+SCANNABLE_EXTENSIONS = {".pdf", ".docx"}
 
 
 def _get_api_key() -> str:
     return os.environ.get("NUTRIENT_API_KEY", "")
+
+
+def extract_text_from_docx(file_path: Path) -> dict:
+    """Extract text from a DOCX file locally (no API credits used)."""
+    try:
+        from docx import Document
+        doc = Document(str(file_path))
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                if cells:
+                    paragraphs.append(" | ".join(cells))
+
+        full_text = "\n".join(paragraphs)
+        logger.info("Extracted %d chars from %s (local DOCX parse)", len(full_text), file_path.name)
+        return {
+            "text": full_text[:MAX_TEXT_PER_FILE],
+            "pages": 0,
+            "chars": min(len(full_text), MAX_TEXT_PER_FILE),
+            "credits_remaining": "n/a (local)",
+            "error": None,
+        }
+    except Exception as e:
+        logger.warning("DOCX extraction failed for %s: %s", file_path.name, e)
+        return {"text": "", "pages": 0, "chars": 0, "credits_remaining": "n/a", "error": str(e)}
 
 
 def extract_text_from_pdf(file_path: Path) -> dict:
@@ -80,6 +108,16 @@ def extract_text_from_pdf(file_path: Path) -> dict:
     except Exception as e:
         logger.warning("Text extraction failed for %s: %s", file_path.name, e)
         return {"text": "", "pages": 0, "chars": 0, "credits_remaining": "?", "error": str(e)}
+
+
+def extract_file(file_path: Path) -> dict:
+    """Route to the right extractor based on file extension."""
+    ext = file_path.suffix.lower()
+    if ext == ".pdf":
+        return extract_text_from_pdf(file_path)
+    if ext == ".docx":
+        return extract_text_from_docx(file_path)
+    return {"text": "", "pages": 0, "chars": 0, "credits_remaining": "n/a", "error": f"Unsupported: {ext}"}
 
 
 def extract_text_from_attachments(file_paths: list[Path], on_progress=None) -> str:

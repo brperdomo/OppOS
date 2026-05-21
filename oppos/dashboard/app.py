@@ -726,36 +726,47 @@ def _esc(text: str) -> str:
 
 
 def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
-    """OCR selected PDFs, re-score, and move to Qualified."""
+    """Extract text from selected files, re-score, and move to Qualified."""
     from oppos.scoring.qualifier import qualify
-    from oppos.sources.extract_text import extract_text_from_pdf, MAX_TOTAL_TEXT
+    from oppos.sources.extract_text import extract_file, MAX_TOTAL_TEXT
     from oppos.storage.db import upsert_opportunity
 
     old_score = int(opp.get("fit_score") or 0)
     title = opp.get("title", "Untitled")
 
     with st.status(f"Scanning: {title[:60]}", expanded=True) as status:
-        st.write(f"🔍 **Extracting text from {len(selected_paths)} PDF(s) via Nutrient OCR...**")
+        pdf_count = sum(1 for f in selected_paths if f.suffix.lower() == ".pdf")
+        docx_count = sum(1 for f in selected_paths if f.suffix.lower() == ".docx")
+        parts = []
+        if pdf_count:
+            parts.append(f"{pdf_count} PDF(s) via Nutrient OCR")
+        if docx_count:
+            parts.append(f"{docx_count} DOCX (local, no credits)")
+        st.write(f"🔍 **Extracting text from {' + '.join(parts)}...**")
 
         all_text = []
         total_chars = 0
 
-        for i, pdf_path in enumerate(selected_paths):
+        for i, file_path in enumerate(selected_paths):
             if total_chars >= MAX_TOTAL_TEXT:
-                st.write(f"  ⏭️ {pdf_path.name} — skipped (text limit reached)")
+                st.write(f"  ⏭️ {file_path.name} — skipped (text limit reached)")
                 continue
 
-            st.write(f"  ⏳ ({i+1}/{len(selected_paths)}) Processing **{pdf_path.name}**...")
-            result = extract_text_from_pdf(pdf_path)
+            is_docx = file_path.suffix.lower() == ".docx"
+            method = "local parse" if is_docx else "Nutrient OCR"
+            st.write(f"  ⏳ ({i+1}/{len(selected_paths)}) Processing **{file_path.name}** ({method})...")
+            result = extract_file(file_path)
 
             if result.get("error"):
-                st.write(f"  ❌ {pdf_path.name} — {result['error']}")
+                st.write(f"  ❌ {file_path.name} — {result['error']}")
                 continue
 
-            credits = result.get("credits_remaining", "?")
+            credits = result.get("credits_remaining", "n/a")
+            credit_info = "" if is_docx else f" (credits left: {credits})"
+            pages_info = f"{result['pages']} pages," if result['pages'] else ""
             st.write(
-                f"  ✅ {pdf_path.name} — {result['chars']:,} chars, "
-                f"{result['pages']} pages (credits left: {credits})"
+                f"  ✅ {file_path.name} — {result['chars']:,} chars "
+                f"{pages_info}{credit_info}"
             )
 
             if result["text"]:
@@ -877,7 +888,7 @@ def _render_deep_scan(opp: dict, tab_key: str) -> None:
     with lc2:
         st.markdown(
             '<div style="font-size: 12px; color: var(--text-tertiary); padding-top: 8px;">'
-            'Download and list all attachments — choose which PDFs to scan</div>',
+            'Download and list all attachments — choose which files to scan</div>',
             unsafe_allow_html=True,
         )
 
@@ -892,23 +903,42 @@ def _render_deep_scan(opp: dict, tab_key: str) -> None:
 
     # Step 2: Show file list with checkboxes
     if state_key in st.session_state:
-        att_files = [Path(p) for p in st.session_state[state_key]]
-        pdf_files = [f for f in att_files if f.suffix.lower() == ".pdf"]
-        non_pdf = [f for f in att_files if f.suffix.lower() != ".pdf"]
+        from oppos.sources.extract_text import SCANNABLE_EXTENSIONS
 
+        att_files = [Path(p) for p in st.session_state[state_key]]
+        scannable = [f for f in att_files if f.suffix.lower() in SCANNABLE_EXTENSIONS]
+        other = [f for f in att_files if f.suffix.lower() not in SCANNABLE_EXTENSIONS]
+
+        pdf_count = sum(1 for f in scannable if f.suffix.lower() == ".pdf")
+        docx_count = sum(1 for f in scannable if f.suffix.lower() == ".docx")
+        parts = []
+        if pdf_count:
+            parts.append(f"{pdf_count} PDFs")
+        if docx_count:
+            parts.append(f"{docx_count} DOCX")
         st.markdown(
             f'<div style="font-size: 13px; margin: 8px 0 4px 0;">'
-            f'<strong>{len(att_files)} files</strong> ({len(pdf_files)} PDFs, {len(non_pdf)} other)</div>',
+            f'<strong>{len(att_files)} files</strong> ({", ".join(parts)}, {len(other)} other)</div>',
             unsafe_allow_html=True,
         )
 
         selected = []
         for f in att_files:
-            is_pdf = f.suffix.lower() == ".pdf"
+            ext = f.suffix.lower()
+            is_scannable = ext in SCANNABLE_EXTENSIONS
             size_kb = f.stat().st_size / 1024 if f.exists() else 0
-            label = f"{'📄' if is_pdf else '📎'} {f.name} ({size_kb:,.0f} KB)"
-            if is_pdf:
-                checked = st.checkbox(label, value=True, key=f"cb_{tab_key}_{sid}_{f.name}")
+
+            if ext == ".pdf":
+                icon, method = "📄", "Nutrient OCR"
+            elif ext == ".docx":
+                icon, method = "📝", "local parse, no credits"
+            else:
+                icon, method = "📎", ""
+
+            label = f"{icon} {f.name} ({size_kb:,.0f} KB)"
+            if is_scannable:
+                hint = f" — {method}" if method else ""
+                checked = st.checkbox(f"{label}{hint}", value=True, key=f"cb_{tab_key}_{sid}_{f.name}")
                 if checked:
                     selected.append(f)
             else:
@@ -918,7 +948,7 @@ def _render_deep_scan(opp: dict, tab_key: str) -> None:
                     unsafe_allow_html=True,
                 )
 
-        if pdf_files:
+        if scannable:
             scan_btn = st.button(
                 f"Scan {len(selected)} Selected & Score",
                 key=f"scansel_{tab_key}_{sid}",
