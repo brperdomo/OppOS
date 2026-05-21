@@ -611,8 +611,6 @@ def _run_scan() -> dict:
     import logging
     from oppos.config import STAGE2_MIN_SCORE
     from oppos.scoring.qualifier import qualify
-    from oppos.sources.attachments import download_attachments
-    from oppos.sources.extract_text import extract_text_from_attachments
     from oppos.sources.registry import get_enabled_sources
     from oppos.storage.db import is_seen, upsert_opportunity
 
@@ -629,14 +627,7 @@ def _run_scan() -> dict:
                 if is_seen(opp["source_id"]):
                     continue
                 stats["new"] += 1
-                attachment_text = ""
-                try:
-                    att_files = download_attachments(opp)
-                    if att_files:
-                        attachment_text = extract_text_from_attachments(att_files)
-                except Exception:
-                    pass
-                scored = qualify(opp, attachment_text=attachment_text)
+                scored = qualify(opp)
                 if scored.get("fit_score", 0) >= STAGE2_MIN_SCORE:
                     stats["scored"] += 1
                 upsert_opportunity(scored)
@@ -725,6 +716,51 @@ def _score_class(score: int) -> str:
 
 def _esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def _run_deep_scan(opp: dict, tab_key: str) -> None:
+    """Download attachments, OCR via Nutrient, re-score with full text."""
+    from oppos.scoring.qualifier import qualify
+    from oppos.sources.attachments import download_attachments
+    from oppos.sources.extract_text import extract_text_from_attachments
+    from oppos.storage.db import upsert_opportunity
+
+    sid = opp.get("source_id", "")
+    title = opp.get("title", "Untitled")
+
+    with st.spinner(f"Downloading attachments for {title[:50]}..."):
+        att_files = download_attachments(opp)
+
+    if not att_files:
+        st.warning("No attachments found for this RFP.")
+        return
+
+    pdf_count = sum(1 for f in att_files if f.suffix.lower() == ".pdf")
+    if pdf_count == 0:
+        st.warning("No PDF attachments to scan.")
+        return
+
+    with st.spinner(f"Extracting text from {pdf_count} PDF(s) via Nutrient OCR..."):
+        attachment_text = extract_text_from_attachments(att_files)
+
+    if not attachment_text:
+        st.warning("Could not extract text from attachments.")
+        return
+
+    with st.spinner("Re-scoring with full attachment content..."):
+        scored = qualify(opp, attachment_text=attachment_text)
+        upsert_opportunity(scored)
+
+    new_score = scored.get("fit_score", 0)
+    old_score = int(opp.get("fit_score") or 0)
+    delta = new_score - old_score
+    delta_str = f"+{delta}" if delta > 0 else str(delta)
+
+    st.success(
+        f"Deep scan complete — extracted {len(attachment_text):,} chars from {pdf_count} PDF(s). "
+        f"Score: {old_score} → **{new_score}** ({delta_str})"
+    )
+    st.rerun()
 
 
 def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> None:
@@ -917,6 +953,25 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
                 <div class="detail-value">{_esc(s2['competitive_notes'])}</div>
             </div>
             """, unsafe_allow_html=True)
+
+    # --- Deep Scan button ---
+    ds_col1, ds_col2 = st.columns([1, 3])
+    with ds_col1:
+        deep_scan = st.button(
+            "Deep Scan with OCR",
+            key=f"deepscan_{tab_key}_{sid}",
+            use_container_width=True,
+            help="Download attachments, extract text via Nutrient OCR, and re-score this RFP",
+        )
+    with ds_col2:
+        st.markdown(
+            '<div style="font-size: 12px; color: var(--text-tertiary); padding-top: 8px;">'
+            'Reads PDF attachments and re-scores with full requirements context</div>',
+            unsafe_allow_html=True,
+        )
+
+    if deep_scan:
+        _run_deep_scan(opp, tab_key)
 
     att_dir = ATTACHMENTS_DIR / opp.get("source_id", "")
     if att_dir.is_dir():
