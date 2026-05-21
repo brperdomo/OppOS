@@ -555,6 +555,43 @@ hr {
     50% { opacity: 0.6; }
 }
 
+/* Scan button */
+div[data-testid="stButton"] > button.scan-btn {
+    background: linear-gradient(135deg, var(--accent-gold), #e0b44e) !important;
+    color: var(--bg-primary) !important;
+    font-weight: 700 !important;
+    font-size: 14px !important;
+    border: none !important;
+    border-radius: var(--radius-sm) !important;
+    padding: 10px 24px !important;
+    letter-spacing: 0.3px;
+    transition: all 0.2s ease;
+}
+div[data-testid="stButton"] > button.scan-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(240, 201, 102, 0.3) !important;
+}
+.scan-result {
+    padding: 16px 24px;
+    background: rgba(110, 180, 121, 0.1);
+    border: 1px solid rgba(110, 180, 121, 0.3);
+    border-radius: var(--radius-md);
+    margin-bottom: 16px;
+    color: var(--accent-green);
+    font-size: 14px;
+    font-weight: 500;
+}
+.scan-result.no-new {
+    background: rgba(137, 126, 112, 0.1);
+    border-color: rgba(137, 126, 112, 0.3);
+    color: var(--text-secondary);
+}
+.last-scan {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-top: 4px;
+}
+
 /* Streamlit tabs override */
 div[data-testid="stTabs"] button[data-baseweb="tab"] {
     font-family: 'Inter', sans-serif !important;
@@ -601,6 +638,66 @@ PIPELINE_LABELS = {
 
 STATUS_OPTIONS = list(PIPELINE_LABELS.keys())
 STATUS_DISPLAY = list(PIPELINE_LABELS.values())
+
+
+def _run_scan() -> dict:
+    """Run the pipeline in-process and return stats."""
+    import logging
+    from oppos.config import STAGE2_MIN_SCORE
+    from oppos.scoring.qualifier import qualify
+    from oppos.sources.registry import get_enabled_sources
+    from oppos.storage.db import is_seen, upsert_opportunity
+
+    logging.basicConfig(level=logging.INFO)
+    sources = get_enabled_sources()
+    stats = {"fetched": 0, "new": 0, "scored": 0, "errors": []}
+    posted_from = datetime.now() - timedelta(days=14)
+
+    for key, name, fetch_fn in sources:
+        try:
+            opps = fetch_fn(posted_from=posted_from) if key == "sam_gov" else fetch_fn()
+            stats["fetched"] += len(opps)
+            for opp in opps:
+                if is_seen(opp["source_id"]):
+                    continue
+                stats["new"] += 1
+                scored = qualify(opp)
+                if scored.get("fit_score", 0) >= STAGE2_MIN_SCORE:
+                    stats["scored"] += 1
+                upsert_opportunity(scored)
+        except Exception as e:
+            stats["errors"].append(f"{name}: {e}")
+
+    return stats
+
+
+# --- Scan button row ---
+scan_col, spacer_col = st.columns([1, 3])
+with scan_col:
+    scan_clicked = st.button("Scan for New RFPs", use_container_width=True, type="primary")
+
+if scan_clicked:
+    with st.spinner("Scanning all sources for new opportunities..."):
+        scan_stats = _run_scan()
+    if scan_stats["new"] > 0:
+        st.markdown(f"""
+        <div class="scan-result">
+            Found <strong>{scan_stats["new"]} new</strong> opportunities
+            ({scan_stats["scored"]} scored above threshold)
+            from {scan_stats["fetched"]} total listings scanned.
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div class="scan-result no-new">
+            No new opportunities found. Scanned {scan_stats["fetched"]} listings across all sources.
+        </div>
+        """, unsafe_allow_html=True)
+    if scan_stats["errors"]:
+        with st.expander(f"{len(scan_stats['errors'])} source(s) had errors"):
+            for err in scan_stats["errors"]:
+                st.text(err)
+    st.rerun()
 
 all_rows = get_all_scored(min_score=0)
 
