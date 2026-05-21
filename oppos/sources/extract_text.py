@@ -46,7 +46,7 @@ def extract_text_from_pdf(file_path: Path) -> dict:
                 headers={"Authorization": f"Bearer {api_key}"},
                 data={"instructions": instructions},
                 files={"file": (file_path.name, f, "application/pdf")},
-                timeout=120.0,
+                timeout=300.0,
             )
         resp.raise_for_status()
         data = resp.json()
