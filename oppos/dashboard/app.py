@@ -26,17 +26,25 @@ except Exception as e:
     _secrets_errors.append(f"listing secrets: {e}")
 
 for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHROPIC_API_KEY", "SLACK_WEBHOOK_URL"):
-    if key not in os.environ:
-        try:
-            if hasattr(st, "secrets") and key in st.secrets:
-                os.environ[key] = str(st.secrets[key])
+    try:
+        if hasattr(st, "secrets") and key in st.secrets:
+            val = str(st.secrets[key])
+            if val:
+                os.environ[key] = val
                 _secrets_loaded.append(key)
-        except Exception as e:
-            _secrets_errors.append(f"{key}: {e}")
+    except Exception as e:
+        _secrets_errors.append(f"{key}: {e}")
 
-from oppos.config import DB_PATH, TURSO_DATABASE_URL, TURSO_AUTH_TOKEN
+import oppos.config as _cfg
+import oppos.storage.db as _db_mod
+
+_cfg.TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "")
+_cfg.TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
+_db_mod._USE_TURSO = bool(_cfg.TURSO_DATABASE_URL and _cfg.TURSO_AUTH_TOKEN)
+
+from oppos.config import DB_PATH
 from oppos.sources.registry import list_available
-from oppos.storage.db import _USE_TURSO, get_all_scored, get_by_pipeline_status, init_db, set_pipeline_status
+from oppos.storage.db import get_all_scored, get_by_pipeline_status, init_db, set_pipeline_status
 
 ATTACHMENTS_DIR = DB_PATH.parent / "attachments"
 
@@ -518,9 +526,9 @@ st.markdown("""
 
 with st.sidebar:
     st.markdown("**Debug**")
-    st.text(f"USE_TURSO: {_USE_TURSO}")
-    st.text(f"TURSO_URL set: {bool(TURSO_DATABASE_URL)}")
-    st.text(f"TURSO_TOKEN set: {bool(TURSO_AUTH_TOKEN)}")
+    st.text(f"USE_TURSO: {_db_mod._USE_TURSO}")
+    st.text(f"TURSO_URL set: {bool(_cfg.TURSO_DATABASE_URL)}")
+    st.text(f"TURSO_TOKEN set: {bool(_cfg.TURSO_AUTH_TOKEN)}")
     st.text(f"Secrets loaded: {_secrets_loaded}")
     st.text(f"Secrets keys found: {_secrets_keys}")
     if _secrets_errors:

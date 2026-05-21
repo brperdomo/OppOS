@@ -9,13 +9,13 @@ from typing import Any
 
 import httpx
 
-from oppos.config import DB_PATH, TURSO_AUTH_TOKEN, TURSO_DATABASE_URL
+import oppos.config as _cfg
 
-_USE_TURSO = bool(TURSO_DATABASE_URL and TURSO_AUTH_TOKEN)
+_USE_TURSO = bool(_cfg.TURSO_DATABASE_URL and _cfg.TURSO_AUTH_TOKEN)
 
 
 def _turso_url() -> str:
-    url = TURSO_DATABASE_URL
+    url = _cfg.TURSO_DATABASE_URL
     if url.startswith("libsql://"):
         url = url.replace("libsql://", "https://", 1)
     return url
@@ -41,7 +41,7 @@ def _turso_execute(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
             {"type": "close"},
         ]
     }
-    headers = {"Authorization": f"Bearer {TURSO_AUTH_TOKEN}"}
+    headers = {"Authorization": f"Bearer {_cfg.TURSO_AUTH_TOKEN}"}
 
     resp = httpx.post(url, json=body, headers=headers, timeout=30.0)
     resp.raise_for_status()
@@ -62,8 +62,8 @@ def _turso_execute(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
 # --- Local SQLite helpers ---
 
 def _get_local_conn() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
+    _cfg.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(_cfg.DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
