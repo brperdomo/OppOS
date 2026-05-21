@@ -671,7 +671,7 @@ status_counts = {}
 for s in PIPELINE_LABELS:
     status_counts[s] = sum(1 for r in all_rows if (r.get("pipeline_status") or "new") == s)
 
-high_fit = sum(1 for r in all_rows if (r.get("fit_score") or 0) >= 65)
+high_fit = sum(1 for r in all_rows if int(r.get("fit_score") or 0) >= 65)
 
 st.markdown(f"""
 <div class="stats-bar">
@@ -728,7 +728,7 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
             pass
 
     sid = opp.get("source_id", "")
-    score = opp.get("fit_score", 0) or 0
+    score = int(opp.get("fit_score") or 0)
     title = _esc(opp.get("title", "Untitled"))
     agency = _esc(opp.get("agency", "Unknown"))
     deadline = opp.get("response_deadline", "")
