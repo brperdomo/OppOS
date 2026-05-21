@@ -727,6 +727,7 @@ def _run_deep_scan(opp: dict, tab_key: str) -> None:
 
     sid = opp.get("source_id", "")
     title = opp.get("title", "Untitled")
+    old_score = int(opp.get("fit_score") or 0)
 
     existing_text = opp.get("attachment_text") or ""
     if existing_text:
@@ -741,7 +742,6 @@ def _run_deep_scan(opp: dict, tab_key: str) -> None:
             return
 
         new_score = scored.get("fit_score", 0)
-        old_score = int(opp.get("fit_score") or 0)
         delta = new_score - old_score
         delta_str = f"+{delta}" if delta > 0 else str(delta)
         st.success(
@@ -751,31 +751,61 @@ def _run_deep_scan(opp: dict, tab_key: str) -> None:
         st.rerun()
         return
 
-    with st.spinner(f"Downloading attachments for {title[:50]}..."):
-        att_files = download_attachments(opp)
+    status = st.status(f"Deep Scan: {title[:60]}", expanded=True)
+
+    status.write("Downloading attachments...")
+    att_files = download_attachments(opp)
 
     if not att_files:
-        st.warning("No attachments found for this RFP.")
+        status.update(label="Deep Scan: No attachments found", state="error")
         return
 
-    pdf_count = sum(1 for f in att_files if f.suffix.lower() == ".pdf")
-    if pdf_count == 0:
-        st.warning("No PDF attachments to scan.")
+    pdf_files = [f for f in att_files if f.suffix.lower() == ".pdf"]
+    non_pdf = [f for f in att_files if f.suffix.lower() != ".pdf"]
+
+    status.write(f"**{len(att_files)} files downloaded** ({len(pdf_files)} PDFs, {len(non_pdf)} other)")
+    for f in att_files:
+        size_kb = f.stat().st_size / 1024
+        icon = "📄" if f.suffix.lower() == ".pdf" else "📎"
+        status.write(f"  {icon} {f.name} ({size_kb:,.0f} KB)")
+
+    if not pdf_files:
+        status.update(label="Deep Scan: No PDFs to scan", state="error")
         return
 
-    with st.spinner(f"Extracting text from {pdf_count} PDF(s) via Nutrient OCR..."):
-        attachment_text = extract_text_from_attachments(att_files)
+    status.write("---")
+    status.write(f"**Extracting text from {len(pdf_files)} PDF(s) via Nutrient OCR...**")
+    credits_remaining = "?"
+
+    def _on_progress(filename, index, total, result):
+        nonlocal credits_remaining
+        if result.get("skipped"):
+            status.write(f"  ⏭️ {filename} — skipped (text limit reached)")
+            return
+        if result.get("error"):
+            status.write(f"  ❌ {filename} — {result['error']}")
+            return
+        credits_remaining = result.get("credits_remaining", "?")
+        status.write(
+            f"  ✅ {filename} — {result['chars']:,} chars, "
+            f"{result['pages']} pages (credits left: {credits_remaining})"
+        )
+
+    attachment_text = extract_text_from_attachments(att_files, on_progress=_on_progress)
 
     if not attachment_text:
-        st.warning("Could not extract text from attachments.")
+        status.update(label="Deep Scan: Could not extract text", state="error")
         return
 
+    status.write("---")
+    status.write(f"**Total extracted: {len(attachment_text):,} chars** — Scoring with Claude...")
+
     try:
-        with st.spinner("Re-scoring with full attachment content..."):
-            scored = qualify(opp, attachment_text=attachment_text)
-            scored["attachment_text"] = attachment_text
-            upsert_opportunity(scored)
+        scored = qualify(opp, attachment_text=attachment_text)
+        scored["attachment_text"] = attachment_text
+        upsert_opportunity(scored)
     except Exception as e:
+        status.update(label="Deep Scan: Scoring failed", state="error")
         st.error(f"Scoring failed: {type(e).__name__}: {e}")
         opp["attachment_text"] = attachment_text
         upsert_opportunity(opp)
@@ -783,13 +813,12 @@ def _run_deep_scan(opp: dict, tab_key: str) -> None:
         return
 
     new_score = scored.get("fit_score", 0)
-    old_score = int(opp.get("fit_score") or 0)
     delta = new_score - old_score
     delta_str = f"+{delta}" if delta > 0 else str(delta)
 
-    st.success(
-        f"Deep scan complete — extracted {len(attachment_text):,} chars from {pdf_count} PDF(s). "
-        f"Score: {old_score} → **{new_score}** ({delta_str})"
+    status.update(
+        label=f"Deep Scan complete — Score: {old_score} → {new_score} ({delta_str})",
+        state="complete",
     )
     st.rerun()
 

@@ -20,12 +20,15 @@ def _get_api_key() -> str:
     return os.environ.get("NUTRIENT_API_KEY", "")
 
 
-def extract_text_from_pdf(file_path: Path) -> str:
-    """Upload a PDF to Nutrient DWS and return extracted plain text."""
+def extract_text_from_pdf(file_path: Path) -> dict:
+    """Upload a PDF to Nutrient DWS and return extraction result.
+
+    Returns dict with keys: text, pages, chars, credits_remaining, error.
+    """
     api_key = _get_api_key()
     if not api_key:
         logger.warning("NUTRIENT_API_KEY not set — skipping text extraction")
-        return ""
+        return {"text": "", "pages": 0, "chars": 0, "credits_remaining": "?", "error": "No API key"}
 
     instructions = json.dumps({
         "parts": [{"file": "file"}],
@@ -56,24 +59,34 @@ def extract_text_from_pdf(file_path: Path) -> str:
                 text_parts.append(text)
 
         full_text = "\n\n".join(text_parts)
-
         remaining = resp.headers.get("x-pspdfkit-remaining-credits", "?")
+
         logger.info(
             "Extracted %d chars from %s (%d pages) — %s credits remaining",
             len(full_text), file_path.name, len(pages), remaining,
         )
-        return full_text[:MAX_TEXT_PER_FILE]
+        return {
+            "text": full_text[:MAX_TEXT_PER_FILE],
+            "pages": len(pages),
+            "chars": min(len(full_text), MAX_TEXT_PER_FILE),
+            "credits_remaining": remaining,
+            "error": None,
+        }
 
     except httpx.HTTPStatusError as e:
+        msg = f"HTTP {e.response.status_code}"
         logger.warning("Nutrient API error for %s: %s %s", file_path.name, e.response.status_code, e.response.text[:200])
-        return ""
+        return {"text": "", "pages": 0, "chars": 0, "credits_remaining": "?", "error": msg}
     except Exception as e:
         logger.warning("Text extraction failed for %s: %s", file_path.name, e)
-        return ""
+        return {"text": "", "pages": 0, "chars": 0, "credits_remaining": "?", "error": str(e)}
 
 
-def extract_text_from_attachments(file_paths: list[Path]) -> str:
-    """Extract and concatenate text from multiple attachment files."""
+def extract_text_from_attachments(file_paths: list[Path], on_progress=None) -> str:
+    """Extract and concatenate text from multiple attachment files.
+
+    on_progress(filename, index, total, result_dict) is called after each file.
+    """
     if not file_paths:
         return ""
 
@@ -85,15 +98,20 @@ def extract_text_from_attachments(file_paths: list[Path]) -> str:
         logger.info("No PDF attachments to extract text from")
         return ""
 
-    for path in pdf_paths:
+    for i, path in enumerate(pdf_paths):
         if total_len >= MAX_TOTAL_TEXT:
             logger.info("Reached text limit (%d chars) — skipping remaining files", MAX_TOTAL_TEXT)
+            if on_progress:
+                on_progress(path.name, i, len(pdf_paths), {"skipped": True})
             break
 
-        text = extract_text_from_pdf(path)
-        if text:
+        result = extract_text_from_pdf(path)
+        if on_progress:
+            on_progress(path.name, i, len(pdf_paths), result)
+
+        if result["text"]:
             header = f"--- {path.name} ---"
-            all_text.append(f"{header}\n{text}")
-            total_len += len(text)
+            all_text.append(f"{header}\n{result['text']}")
+            total_len += result["chars"]
 
     return "\n\n".join(all_text)[:MAX_TOTAL_TEXT]
