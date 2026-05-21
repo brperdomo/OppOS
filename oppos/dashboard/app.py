@@ -731,10 +731,14 @@ def _run_deep_scan(opp: dict, tab_key: str) -> None:
     existing_text = opp.get("attachment_text") or ""
     if existing_text:
         st.info("Using previously extracted text (no credits used).")
-        with st.spinner("Re-scoring with cached attachment content..."):
-            scored = qualify(opp, attachment_text=existing_text)
-            scored["attachment_text"] = existing_text
-            upsert_opportunity(scored)
+        try:
+            with st.spinner("Re-scoring with cached attachment content..."):
+                scored = qualify(opp, attachment_text=existing_text)
+                scored["attachment_text"] = existing_text
+                upsert_opportunity(scored)
+        except Exception as e:
+            st.error(f"Scoring failed: {type(e).__name__}: {e}")
+            return
 
         new_score = scored.get("fit_score", 0)
         old_score = int(opp.get("fit_score") or 0)
@@ -766,10 +770,17 @@ def _run_deep_scan(opp: dict, tab_key: str) -> None:
         st.warning("Could not extract text from attachments.")
         return
 
-    with st.spinner("Re-scoring with full attachment content..."):
-        scored = qualify(opp, attachment_text=attachment_text)
-        scored["attachment_text"] = attachment_text
-        upsert_opportunity(scored)
+    try:
+        with st.spinner("Re-scoring with full attachment content..."):
+            scored = qualify(opp, attachment_text=attachment_text)
+            scored["attachment_text"] = attachment_text
+            upsert_opportunity(scored)
+    except Exception as e:
+        st.error(f"Scoring failed: {type(e).__name__}: {e}")
+        opp["attachment_text"] = attachment_text
+        upsert_opportunity(opp)
+        st.info("OCR text saved — you can re-score later without using credits.")
+        return
 
     new_score = scored.get("fit_score", 0)
     old_score = int(opp.get("fit_score") or 0)
