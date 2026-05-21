@@ -28,7 +28,7 @@ except Exception as e:
 for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHROPIC_API_KEY", "SLACK_WEBHOOK_URL"):
     try:
         if hasattr(st, "secrets") and key in st.secrets:
-            val = str(st.secrets[key])
+            val = str(st.secrets[key]).strip().strip('"').strip("'")
             if val:
                 os.environ[key] = val
                 _secrets_loaded.append(key)
@@ -527,14 +527,18 @@ st.markdown("""
 with st.sidebar:
     st.markdown("**Debug**")
     st.text(f"USE_TURSO: {_db_mod._USE_TURSO}")
-    st.text(f"TURSO_URL set: {bool(_cfg.TURSO_DATABASE_URL)}")
+    st.text(f"TURSO_URL: {_cfg.TURSO_DATABASE_URL[:40] if _cfg.TURSO_DATABASE_URL else '(empty)'}")
     st.text(f"TURSO_TOKEN set: {bool(_cfg.TURSO_AUTH_TOKEN)}")
+    st.text(f"env URL: {os.environ.get('TURSO_DATABASE_URL', '(not in env)')[:40]}")
     st.text(f"Secrets loaded: {_secrets_loaded}")
     st.text(f"Secrets keys found: {_secrets_keys}")
     if _secrets_errors:
         st.text(f"Secrets errors: {_secrets_errors}")
 
-init_db()
+try:
+    init_db()
+except Exception as e:
+    st.error(f"DB init failed: {e}")
 SOURCE_LABELS = dict(list_available())
 
 PIPELINE_LABELS = {
