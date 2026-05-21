@@ -583,12 +583,7 @@ st.markdown(f"""
             <div class="subtitle">RFP Opportunity Pipeline</div>
         </div>
     </div>
-    <a href="https://www.nutrient.io" target="_blank" style="text-decoration: none;">
-        <div class="nutrient-brand">
-            <span>POWERED BY</span>
-            <span style="color: var(--text-secondary);">{NUTRIENT_WORDMARK_SVG}</span>
-        </div>
-    </a>
+    <div class="nutrient-brand" style="color: var(--text-secondary);">{NUTRIENT_WORDMARK_SVG}</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -951,6 +946,6 @@ with tab_archive:
 st.markdown(f"""
 <div class="oppos-footer">
     <span style="color: var(--text-secondary);">{NUTRIENT_DOTS_SVG}</span>
-    <span>OppOS by Nutrient &middot; Automated RFP Intelligence</span>
+    <span>OppOS &middot; Automated RFP Intelligence</span>
 </div>
 """, unsafe_allow_html=True)
