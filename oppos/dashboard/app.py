@@ -18,6 +18,13 @@ import os
 
 _secrets_loaded = []
 _secrets_errors = []
+_secrets_keys = []
+try:
+    if hasattr(st, "secrets"):
+        _secrets_keys = list(st.secrets)
+except Exception as e:
+    _secrets_errors.append(f"listing secrets: {e}")
+
 for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHROPIC_API_KEY", "SLACK_WEBHOOK_URL"):
     if key not in os.environ:
         try:
@@ -515,6 +522,7 @@ with st.sidebar:
     st.text(f"TURSO_URL set: {bool(TURSO_DATABASE_URL)}")
     st.text(f"TURSO_TOKEN set: {bool(TURSO_AUTH_TOKEN)}")
     st.text(f"Secrets loaded: {_secrets_loaded}")
+    st.text(f"Secrets keys found: {_secrets_keys}")
     if _secrets_errors:
         st.text(f"Secrets errors: {_secrets_errors}")
 
