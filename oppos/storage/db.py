@@ -9,16 +9,22 @@ from typing import Any
 
 import httpx
 
-import oppos.config as _cfg
-
-_USE_TURSO = bool(_cfg.TURSO_DATABASE_URL and _cfg.TURSO_AUTH_TOKEN)
+import os as _os
 
 
 def _turso_url() -> str:
-    url = _cfg.TURSO_DATABASE_URL
+    url = _os.environ.get("TURSO_DATABASE_URL", "")
     if url.startswith("libsql://"):
         url = url.replace("libsql://", "https://", 1)
     return url
+
+
+def _turso_auth() -> str:
+    return _os.environ.get("TURSO_AUTH_TOKEN", "")
+
+
+def _use_turso() -> bool:
+    return bool(_os.environ.get("TURSO_DATABASE_URL") and _os.environ.get("TURSO_AUTH_TOKEN"))
 
 
 def _turso_execute(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
@@ -41,7 +47,7 @@ def _turso_execute(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
             {"type": "close"},
         ]
     }
-    headers = {"Authorization": f"Bearer {_cfg.TURSO_AUTH_TOKEN}"}
+    headers = {"Authorization": f"Bearer {_turso_auth()}"}
 
     resp = httpx.post(url, json=body, headers=headers, timeout=30.0)
     resp.raise_for_status()
@@ -62,8 +68,9 @@ def _turso_execute(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
 # --- Local SQLite helpers ---
 
 def _get_local_conn() -> sqlite3.Connection:
-    _cfg.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_cfg.DB_PATH))
+    from oppos.config import DB_PATH
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
@@ -88,14 +95,14 @@ def _local_execute(sql: str, params: tuple = ()) -> None:
 # --- Unified interface ---
 
 def _execute(sql: str, params: tuple = ()) -> None:
-    if _USE_TURSO:
+    if _use_turso():
         _turso_execute(sql, params)
     else:
         _local_execute(sql, params)
 
 
 def _query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
-    if _USE_TURSO:
+    if _use_turso():
         return _turso_execute(sql, params)
     return _local_fetchall(sql, params)
 

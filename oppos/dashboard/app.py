@@ -35,13 +35,6 @@ for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHRO
     except Exception as e:
         _secrets_errors.append(f"{key}: {e}")
 
-import oppos.config as _cfg
-import oppos.storage.db as _db_mod
-
-_cfg.TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "")
-_cfg.TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
-_db_mod._USE_TURSO = bool(_cfg.TURSO_DATABASE_URL and _cfg.TURSO_AUTH_TOKEN)
-
 from oppos.config import DB_PATH
 from oppos.sources.registry import list_available
 from oppos.storage.db import get_all_scored, get_by_pipeline_status, init_db, set_pipeline_status
@@ -526,14 +519,12 @@ st.markdown("""
 
 with st.sidebar:
     st.markdown("**Debug**")
-    st.text(f"USE_TURSO: {_db_mod._USE_TURSO}")
-    st.text(f"TURSO_URL: {_cfg.TURSO_DATABASE_URL[:40] if _cfg.TURSO_DATABASE_URL else '(empty)'}")
-    st.text(f"TURSO_TOKEN set: {bool(_cfg.TURSO_AUTH_TOKEN)}")
-    st.text(f"env URL: {os.environ.get('TURSO_DATABASE_URL', '(not in env)')[:40]}")
+    _env_url = os.environ.get('TURSO_DATABASE_URL', '')
+    st.text(f"USE_TURSO: {bool(_env_url and os.environ.get('TURSO_AUTH_TOKEN'))}")
+    st.text(f"env URL: {_env_url[:45] or '(empty)'}")
     st.text(f"Secrets loaded: {_secrets_loaded}")
-    st.text(f"Secrets keys found: {_secrets_keys}")
     if _secrets_errors:
-        st.text(f"Secrets errors: {_secrets_errors}")
+        st.text(f"Errors: {_secrets_errors}")
 
 try:
     init_db()
