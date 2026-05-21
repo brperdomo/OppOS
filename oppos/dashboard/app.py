@@ -15,16 +15,21 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import os
-try:
-    for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHROPIC_API_KEY", "SLACK_WEBHOOK_URL"):
-        if key not in os.environ and key in st.secrets:
-            os.environ[key] = st.secrets[key]
-except Exception:
-    pass
 
-from oppos.config import DB_PATH
+_secrets_loaded = []
+_secrets_errors = []
+for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHROPIC_API_KEY", "SLACK_WEBHOOK_URL"):
+    if key not in os.environ:
+        try:
+            if hasattr(st, "secrets") and key in st.secrets:
+                os.environ[key] = str(st.secrets[key])
+                _secrets_loaded.append(key)
+        except Exception as e:
+            _secrets_errors.append(f"{key}: {e}")
+
+from oppos.config import DB_PATH, TURSO_DATABASE_URL, TURSO_AUTH_TOKEN
 from oppos.sources.registry import list_available
-from oppos.storage.db import get_all_scored, get_by_pipeline_status, init_db, set_pipeline_status
+from oppos.storage.db import _USE_TURSO, get_all_scored, get_by_pipeline_status, init_db, set_pipeline_status
 
 ATTACHMENTS_DIR = DB_PATH.parent / "attachments"
 
@@ -503,6 +508,15 @@ st.markdown("""
     </div>
 </div>
 """, unsafe_allow_html=True)
+
+with st.sidebar:
+    st.markdown("**Debug**")
+    st.text(f"USE_TURSO: {_USE_TURSO}")
+    st.text(f"TURSO_URL set: {bool(TURSO_DATABASE_URL)}")
+    st.text(f"TURSO_TOKEN set: {bool(TURSO_AUTH_TOKEN)}")
+    st.text(f"Secrets loaded: {_secrets_loaded}")
+    if _secrets_errors:
+        st.text(f"Secrets errors: {_secrets_errors}")
 
 init_db()
 SOURCE_LABELS = dict(list_available())
