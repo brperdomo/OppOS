@@ -310,43 +310,9 @@ a.opp-title:hover { color: var(--accent-gold); }
     letter-spacing: 0.5px;
     margin-top: 2px;
 }
-.score-pursue .score-number { color: var(--accent-green); }
-.score-investigate .score-number { color: var(--accent-gold); }
-.score-monitor .score-number { color: var(--accent-orange); }
-.score-skip .score-number { color: var(--text-tertiary); }
-
-/* Action badge */
-.action-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 12px;
-    border-radius: 100px;
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-.action-pursue {
-    background: rgba(110, 180, 121, 0.15);
-    color: var(--accent-green);
-    border: 1px solid rgba(110, 180, 121, 0.3);
-}
-.action-investigate {
-    background: rgba(240, 201, 102, 0.15);
-    color: var(--accent-gold);
-    border: 1px solid rgba(240, 201, 102, 0.3);
-}
-.action-monitor {
-    background: rgba(232, 148, 76, 0.15);
-    color: var(--accent-orange);
-    border: 1px solid rgba(232, 148, 76, 0.3);
-}
-.action-skip {
-    background: rgba(137, 126, 112, 0.15);
-    color: var(--text-tertiary);
-    border: 1px solid rgba(137, 126, 112, 0.3);
-}
+.score-high .score-number { color: var(--accent-green); }
+.score-mid .score-number { color: var(--accent-gold); }
+.score-low .score-number { color: var(--text-tertiary); }
 
 /* Detail grid */
 .detail-grid {
@@ -705,18 +671,17 @@ status_counts = {}
 for s in PIPELINE_LABELS:
     status_counts[s] = sum(1 for r in all_rows if (r.get("pipeline_status") or "new") == s)
 
-pursue_count = sum(1 for r in all_rows if r.get("recommended_action") == "pursue")
-investigate_count = sum(1 for r in all_rows if r.get("recommended_action") == "investigate")
+high_fit = sum(1 for r in all_rows if (r.get("fit_score") or 0) >= 65)
 
 st.markdown(f"""
 <div class="stats-bar">
     <div class="stat-item">
         <div class="stat-value">{len(all_rows)}</div>
-        <div class="stat-label">Total Scored</div>
+        <div class="stat-label">Total Reviewed</div>
     </div>
     <div class="stat-item">
-        <div class="stat-value green">{pursue_count}</div>
-        <div class="stat-label">Pursue</div>
+        <div class="stat-value green">{high_fit}</div>
+        <div class="stat-label">High Fit (65+)</div>
     </div>
     <div class="stat-item">
         <div class="stat-value gold">{status_counts.get('in_progress', 0)}</div>
@@ -741,8 +706,12 @@ tab_pipeline, tab_in_progress, tab_submitted, tab_archive = st.tabs([
 ])
 
 
-def _score_class(action: str) -> str:
-    return f"score-{action}"
+def _score_class(score: int) -> str:
+    if score >= 65:
+        return "score-high"
+    if score >= 40:
+        return "score-mid"
+    return "score-low"
 
 
 def _esc(text: str) -> str:
@@ -759,8 +728,7 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
             pass
 
     sid = opp.get("source_id", "")
-    score = opp.get("fit_score", 0)
-    action = opp.get("recommended_action", "pending")
+    score = opp.get("fit_score", 0) or 0
     title = _esc(opp.get("title", "Untitled"))
     agency = _esc(opp.get("agency", "Unknown"))
     deadline = opp.get("response_deadline", "")
@@ -799,13 +767,12 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
                 </div>
                 <div class="opp-meta">
                     <span class="pipeline-badge pipeline-{pipeline_status}">{status_label}</span>
-                    <span class="action-badge action-{action}">{action}</span>
                     <span class="opp-tag source">{source_label}</span>
                     {f'<span class="opp-tag">{sol_num}</span>' if sol_num else ''}
                     <span class="opp-tag deadline">{deadline_display}</span>
                 </div>
             </div>
-            <div class="score-badge {_score_class(action)}">
+            <div class="score-badge {_score_class(score)}">
                 <div class="score-number">{score}</div>
                 <div class="score-label">Score</div>
             </div>
@@ -967,19 +934,12 @@ def render_empty(message: str) -> None:
 
 # --- Pipeline tab (new opportunities) ---
 with tab_pipeline:
-    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+    col_f1, col_f2, col_f3 = st.columns(3)
     with col_f1:
         min_score = st.slider("Min Score", 0, 100, 40, step=5, key="pipe_score")
     with col_f2:
-        action_filter = st.multiselect(
-            "Action",
-            ["pursue", "investigate", "monitor", "skip"],
-            default=["pursue", "investigate"],
-            key="pipe_action",
-        )
-    with col_f3:
         sort_by = st.selectbox("Sort by", ["Fit Score", "Deadline", "Posted"], key="pipe_sort")
-    with col_f4:
+    with col_f3:
         source_filter = st.multiselect(
             "Source",
             list(SOURCE_LABELS.keys()),
@@ -990,8 +950,6 @@ with tab_pipeline:
     rows = get_all_scored(min_score=min_score)
     rows = [r for r in rows if (r.get("pipeline_status") or "new") == "new"]
 
-    if action_filter:
-        rows = [r for r in rows if r.get("recommended_action") in action_filter]
     if source_filter:
         rows = [r for r in rows if r.get("source") in source_filter]
 
