@@ -718,90 +718,37 @@ def _esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
-def _run_deep_scan(opp: dict, tab_key: str) -> None:
-    """Download attachments, OCR via Nutrient, re-score with full text."""
+def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
+    """OCR selected PDFs and re-score the opportunity."""
     from oppos.scoring.qualifier import qualify
-    from oppos.sources.attachments import download_attachments
     from oppos.sources.extract_text import extract_text_from_pdf, MAX_TOTAL_TEXT
     from oppos.storage.db import upsert_opportunity
 
-    sid = opp.get("source_id", "")
-    title = opp.get("title", "Untitled")
     old_score = int(opp.get("fit_score") or 0)
+    title = opp.get("title", "Untitled")
 
-    existing_text = opp.get("attachment_text") or ""
-    if existing_text:
-        st.info("Using previously extracted text (no credits used).")
-        try:
-            with st.spinner("Re-scoring with cached attachment content..."):
-                scored = qualify(opp, attachment_text=existing_text)
-                scored["attachment_text"] = existing_text
-                upsert_opportunity(scored)
-        except Exception as e:
-            st.error(f"Scoring failed: {type(e).__name__}: {e}")
-            return
-
-        new_score = scored.get("fit_score", 0)
-        delta = new_score - old_score
-        delta_str = f"+{delta}" if delta > 0 else str(delta)
-        st.success(
-            f"Re-scored with cached OCR ({len(existing_text):,} chars). "
-            f"Score: {old_score} → **{new_score}** ({delta_str})"
-        )
-        s2 = scored.get("stage2") or {}
-        if s2.get("summary"):
-            st.markdown("**Post-Scan Analysis**")
-            st.write(s2["summary"])
-        if s2.get("strengths"):
-            st.write("**Strengths:** " + " · ".join(s2["strengths"]))
-        if s2.get("risks"):
-            st.write("**Risks:** " + " · ".join(s2["risks"]))
-        return
-
-    with st.status(f"Deep Scan: {title[:60]}", expanded=True) as status:
-        st.write("📥 **Downloading attachments...**")
-        att_files = download_attachments(opp)
-
-        if not att_files:
-            status.update(label="Deep Scan: No attachments found", state="error")
-            return
-
-        pdf_files = [f for f in att_files if f.suffix.lower() == ".pdf"]
-        non_pdf = [f for f in att_files if f.suffix.lower() != ".pdf"]
-
-        st.write(f"**{len(att_files)} files downloaded** ({len(pdf_files)} PDFs, {len(non_pdf)} other)")
-        for f in att_files:
-            size_kb = f.stat().st_size / 1024
-            icon = "📄" if f.suffix.lower() == ".pdf" else "📎"
-            st.write(f"  {icon} {f.name} ({size_kb:,.0f} KB)")
-
-        if not pdf_files:
-            status.update(label="Deep Scan: No PDFs to scan", state="error")
-            return
-
-        st.divider()
-        st.write(f"🔍 **Extracting text from {len(pdf_files)} PDF(s) via Nutrient OCR...**")
+    with st.status(f"Scanning: {title[:60]}", expanded=True) as status:
+        st.write(f"🔍 **Extracting text from {len(selected_paths)} PDF(s) via Nutrient OCR...**")
 
         all_text = []
         total_chars = 0
-        credits_remaining = "?"
 
-        for i, pdf_path in enumerate(pdf_files):
+        for i, pdf_path in enumerate(selected_paths):
             if total_chars >= MAX_TOTAL_TEXT:
                 st.write(f"  ⏭️ {pdf_path.name} — skipped (text limit reached)")
                 continue
 
-            st.write(f"  ⏳ ({i+1}/{len(pdf_files)}) Processing **{pdf_path.name}**...")
+            st.write(f"  ⏳ ({i+1}/{len(selected_paths)}) Processing **{pdf_path.name}**...")
             result = extract_text_from_pdf(pdf_path)
 
             if result.get("error"):
                 st.write(f"  ❌ {pdf_path.name} — {result['error']}")
                 continue
 
-            credits_remaining = result.get("credits_remaining", "?")
+            credits = result.get("credits_remaining", "?")
             st.write(
                 f"  ✅ {pdf_path.name} — {result['chars']:,} chars, "
-                f"{result['pages']} pages (credits left: {credits_remaining})"
+                f"{result['pages']} pages (credits left: {credits})"
             )
 
             if result["text"]:
@@ -811,7 +758,7 @@ def _run_deep_scan(opp: dict, tab_key: str) -> None:
         attachment_text = "\n\n".join(all_text)[:MAX_TOTAL_TEXT]
 
         if not attachment_text:
-            status.update(label="Deep Scan: Could not extract text", state="error")
+            status.update(label="Scan failed: Could not extract text", state="error")
             return
 
         st.divider()
@@ -822,7 +769,7 @@ def _run_deep_scan(opp: dict, tab_key: str) -> None:
             scored["attachment_text"] = attachment_text
             upsert_opportunity(scored)
         except Exception as e:
-            status.update(label="Deep Scan: Scoring failed", state="error")
+            status.update(label="Scan failed: Scoring error", state="error")
             st.error(f"Scoring failed: {type(e).__name__}: {e}")
             opp["attachment_text"] = attachment_text
             upsert_opportunity(opp)
@@ -848,9 +795,125 @@ def _run_deep_scan(opp: dict, tab_key: str) -> None:
             st.write(f"**Recommendation:** {s2['recommended_action']}")
 
         status.update(
-            label=f"Deep Scan complete — Score: {old_score} → {new_score} ({delta_str})",
+            label=f"Scan complete — Score: {old_score} → {new_score} ({delta_str})",
             state="complete",
         )
+
+
+def _render_deep_scan(opp: dict, tab_key: str) -> None:
+    """Render the Deep Scan UI: load attachments, select PDFs, scan & score."""
+    from oppos.scoring.qualifier import qualify
+    from oppos.sources.attachments import download_attachments
+    from oppos.storage.db import upsert_opportunity
+    from pathlib import Path
+
+    sid = opp.get("source_id", "")
+    title = opp.get("title", "Untitled")
+    old_score = int(opp.get("fit_score") or 0)
+    state_key = f"att_files_{sid}"
+
+    has_cached_ocr = bool(opp.get("attachment_text"))
+
+    if has_cached_ocr:
+        rc1, rc2 = st.columns([1, 3])
+        with rc1:
+            rescore = st.button(
+                "Re-score (cached)",
+                key=f"rescore_{tab_key}_{sid}",
+                use_container_width=True,
+                help="Re-score using previously extracted text (no credits used)",
+            )
+        with rc2:
+            st.markdown(
+                '<div style="font-size: 12px; color: var(--text-tertiary); padding-top: 8px;">'
+                'OCR text cached — re-score without using Nutrient credits</div>',
+                unsafe_allow_html=True,
+            )
+        if rescore:
+            existing_text = opp["attachment_text"]
+            try:
+                with st.spinner("Re-scoring with cached attachment content..."):
+                    scored = qualify(opp, attachment_text=existing_text)
+                    scored["attachment_text"] = existing_text
+                    upsert_opportunity(scored)
+            except Exception as e:
+                st.error(f"Scoring failed: {type(e).__name__}: {e}")
+                return
+
+            new_score = scored.get("fit_score", 0)
+            delta = new_score - old_score
+            delta_str = f"+{delta}" if delta > 0 else str(delta)
+            st.success(f"Score: {old_score} → **{new_score}** ({delta_str})")
+            s2 = scored.get("stage2") or {}
+            if s2.get("summary"):
+                st.write(s2["summary"])
+            if s2.get("strengths"):
+                st.write("**Strengths:** " + " · ".join(s2["strengths"]))
+            if s2.get("risks"):
+                st.write("**Risks:** " + " · ".join(s2["risks"]))
+        return
+
+    # Step 1: Load Attachments
+    lc1, lc2 = st.columns([1, 3])
+    with lc1:
+        load_btn = st.button(
+            "Load Attachments",
+            key=f"loadatt_{tab_key}_{sid}",
+            use_container_width=True,
+        )
+    with lc2:
+        st.markdown(
+            '<div style="font-size: 12px; color: var(--text-tertiary); padding-top: 8px;">'
+            'Download and list all attachments — choose which PDFs to scan</div>',
+            unsafe_allow_html=True,
+        )
+
+    if load_btn:
+        with st.spinner("Downloading attachments..."):
+            att_files = download_attachments(opp)
+        if att_files:
+            st.session_state[state_key] = [str(f) for f in att_files]
+        else:
+            st.warning("No attachments found for this RFP.")
+            return
+
+    # Step 2: Show file list with checkboxes
+    if state_key in st.session_state:
+        att_files = [Path(p) for p in st.session_state[state_key]]
+        pdf_files = [f for f in att_files if f.suffix.lower() == ".pdf"]
+        non_pdf = [f for f in att_files if f.suffix.lower() != ".pdf"]
+
+        st.markdown(
+            f'<div style="font-size: 13px; margin: 8px 0 4px 0;">'
+            f'<strong>{len(att_files)} files</strong> ({len(pdf_files)} PDFs, {len(non_pdf)} other)</div>',
+            unsafe_allow_html=True,
+        )
+
+        selected = []
+        for f in att_files:
+            is_pdf = f.suffix.lower() == ".pdf"
+            size_kb = f.stat().st_size / 1024 if f.exists() else 0
+            label = f"{'📄' if is_pdf else '📎'} {f.name} ({size_kb:,.0f} KB)"
+            if is_pdf:
+                checked = st.checkbox(label, value=True, key=f"cb_{tab_key}_{sid}_{f.name}")
+                if checked:
+                    selected.append(f)
+            else:
+                st.markdown(
+                    f'<div style="font-size: 12px; color: var(--text-tertiary); padding: 2px 0 2px 24px;">'
+                    f'{label} (not scannable)</div>',
+                    unsafe_allow_html=True,
+                )
+
+        if pdf_files:
+            scan_btn = st.button(
+                f"Scan {len(selected)} Selected & Score",
+                key=f"scansel_{tab_key}_{sid}",
+                disabled=len(selected) == 0,
+                use_container_width=False,
+            )
+            if scan_btn and selected:
+                _run_ocr_and_score(opp, selected, tab_key)
 
 
 def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> None:
@@ -1044,28 +1107,8 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
             </div>
             """, unsafe_allow_html=True)
 
-    # --- Deep Scan button ---
-    has_cached_ocr = bool(opp.get("attachment_text"))
-    ds_col1, ds_col2 = st.columns([1, 3])
-    with ds_col1:
-        deep_scan = st.button(
-            "Re-score (cached)" if has_cached_ocr else "Deep Scan with OCR",
-            key=f"deepscan_{tab_key}_{sid}",
-            use_container_width=True,
-            help="Re-score using previously extracted text (no credits used)" if has_cached_ocr
-            else "Download attachments, extract text via Nutrient OCR, and re-score this RFP",
-        )
-    with ds_col2:
-        hint = "OCR text cached — re-score without using Nutrient credits" if has_cached_ocr \
-            else "Reads PDF attachments and re-scores with full requirements context"
-        st.markdown(
-            f'<div style="font-size: 12px; color: var(--text-tertiary); padding-top: 8px;">'
-            f'{hint}</div>',
-            unsafe_allow_html=True,
-        )
-
-    if deep_scan:
-        _run_deep_scan(opp, tab_key)
+    # --- Deep Scan ---
+    _render_deep_scan(opp, tab_key)
 
     att_dir = ATTACHMENTS_DIR / opp.get("source_id", "")
     if att_dir.is_dir():
