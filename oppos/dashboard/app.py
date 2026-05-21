@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import streamlit as st
@@ -492,6 +493,26 @@ hr {
     border: 1px solid rgba(137, 126, 112, 0.2);
 }
 
+/* NEW badge */
+.new-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 100px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    background: rgba(242, 95, 69, 0.2);
+    color: var(--accent-red);
+    border: 1px solid rgba(242, 95, 69, 0.4);
+    animation: pulse-new 2s ease-in-out infinite;
+}
+@keyframes pulse-new {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
 /* Streamlit tabs override */
 div[data-testid="stTabs"] button[data-baseweb="tab"] {
     font-family: 'Inter', sans-serif !important;
@@ -517,19 +538,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-with st.sidebar:
-    st.markdown("**Debug**")
-    _env_url = os.environ.get('TURSO_DATABASE_URL', '')
-    st.text(f"USE_TURSO: {bool(_env_url and os.environ.get('TURSO_AUTH_TOKEN'))}")
-    st.text(f"env URL: {_env_url[:45] or '(empty)'}")
-    st.text(f"Secrets loaded: {_secrets_loaded}")
-    if _secrets_errors:
-        st.text(f"Errors: {_secrets_errors}")
-
-try:
-    init_db()
-except Exception as e:
-    st.error(f"DB init failed: {e}")
+init_db()
 SOURCE_LABELS = dict(list_available())
 
 PIPELINE_LABELS = {
@@ -620,13 +629,23 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
     title_html = f'<a class="opp-title" href="{_esc(url)}" target="_blank">{title}</a>' if url else f'<span class="opp-title">{title}</span>'
     state_name = _esc(SOURCE_STATE_MAP.get(opp.get("source", ""), ""))
 
+    is_new = False
+    created = opp.get("created_at")
+    if created:
+        try:
+            created_dt = datetime.fromisoformat(created)
+            is_new = (datetime.now(timezone.utc) - created_dt.replace(tzinfo=timezone.utc)) < timedelta(hours=24)
+        except (ValueError, TypeError):
+            pass
+    new_badge_html = '<span class="new-badge">NEW</span>' if is_new else ''
+
     status_label = PIPELINE_LABELS.get(pipeline_status, pipeline_status)
 
     st.markdown(f"""
     <div class="opp-card">
         <div class="opp-card-header">
             <div style="flex: 1;">
-                {title_html}
+                {new_badge_html} {title_html}
                 <div style="font-size: 14px; color: var(--text-secondary); margin-top: 4px;">
                     <span style="color: var(--accent-gold); font-weight: 600;">{state_name}</span>
                     <span style="color: var(--text-tertiary); margin: 0 6px;">&middot;</span>
