@@ -1343,7 +1343,9 @@ with tab_qualified:
                     placeholder="Strong fit for case management, aligns with public sector push",
                 )
                 if st.button("Confirm Pursue", key=f"confirm_pursue_{qsid}", use_container_width=True):
+                    from oppos.outputs.slack_alerts import send_pursue_alert
                     set_pipeline_status(qsid, "in_progress", notes=pursue_reason or "Qualified — pursuing")
+                    send_pursue_alert(opp, reason=pursue_reason or "")
                     st.rerun()
         with qc2:
             with st.popover("Skip →", use_container_width=True):
@@ -1366,6 +1368,17 @@ with tab_in_progress:
         render_empty("No RFPs in progress yet. Move opportunities here from the Pipeline tab.")
     for opp in ip_rows:
         render_card(opp, "ip")
+        # SDR message for Salesforce opp creation
+        from oppos.outputs.slack_alerts import build_sdr_message
+        with st.expander("📋 Salesforce Opp Request"):
+            sdr_msg = build_sdr_message(opp)
+            st.code(sdr_msg, language=None)
+            st.markdown(
+                '<div style="font-size: 11px; color: var(--text-tertiary);">'
+                'Copy the message above and paste it to the SDRs for Salesforce opp creation. '
+                'Also sent to Slack when you clicked Pursue.</div>',
+                unsafe_allow_html=True,
+            )
 
 # --- Submitted tab ---
 with tab_submitted:
