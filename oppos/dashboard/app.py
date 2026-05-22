@@ -755,6 +755,48 @@ def _esc(text: str) -> str:
             )
 
 
+def _ensure_files_exist(opp: dict, selected_paths: list) -> list:
+    """Verify selected files exist on disk; re-download if missing."""
+    from oppos.sources.attachments import download_attachments
+
+    missing = [f for f in selected_paths if not f.exists()]
+    if not missing:
+        return selected_paths
+
+    # Re-download all attachments for this RFP, then map back to selected
+    raw_json = opp.get("raw_json") or "{}"
+    try:
+        raw = json.loads(raw_json) if isinstance(raw_json, str) else (raw_json or {})
+    except (json.JSONDecodeError, TypeError):
+        raw = {}
+
+    # Reconstruct opp dict with fields that download_attachments needs
+    download_opp = dict(opp)
+    if raw.get("resourceLinks"):
+        download_opp["resource_links"] = raw["resourceLinks"]
+
+    redownloaded = download_attachments(download_opp)
+    if not redownloaded:
+        return selected_paths  # return originals — caller will handle missing files
+
+    # Build a name → path map from freshly downloaded files
+    fresh_map = {f.name: f for f in redownloaded}
+
+    # Update session state with new paths
+    sid = opp.get("source_id", "")
+    state_key = f"att_files_{sid}"
+    st.session_state[state_key] = [str(f) for f in redownloaded]
+
+    # Map selected files to fresh paths
+    refreshed = []
+    for f in selected_paths:
+        if f.name in fresh_map:
+            refreshed.append(fresh_map[f.name])
+        elif f.exists():
+            refreshed.append(f)
+    return refreshed
+
+
 def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
     """Extract text from selected files, merge with existing, re-score, and move to Qualified."""
     from oppos.scoring.qualifier import qualify
@@ -766,6 +808,23 @@ def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
     existing_text = opp.get("attachment_text") or ""
 
     with st.status(f"Scanning: {title[:60]}", expanded=True) as status:
+        # Verify files exist on disk; re-download if Streamlit Cloud cleaned them up
+        missing = [f for f in selected_paths if not f.exists()]
+        if missing:
+            st.write(f"⚠️ {len(missing)} file(s) not found on disk — re-downloading...")
+            selected_paths = _ensure_files_exist(opp, selected_paths)
+
+        # Check again after re-download attempt
+        still_missing = [f for f in selected_paths if not f.exists()]
+        if still_missing:
+            for f in still_missing:
+                st.write(f"  ❌ {f.name} — file not found (could not re-download)")
+            selected_paths = [f for f in selected_paths if f.exists()]
+            if not selected_paths:
+                status.update(label="Scan failed: All files missing", state="error")
+                st.error("Files were cleaned up and could not be re-downloaded. Try clicking 'Load Attachments' again.")
+                return
+
         pdf_count = sum(1 for f in selected_paths if f.suffix.lower() == ".pdf")
         docx_count = sum(1 for f in selected_paths if f.suffix.lower() == ".docx")
         parts = []
@@ -830,7 +889,8 @@ def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
         except Exception as e:
             status.update(label="Scan failed: Scoring error", state="error")
             st.error(f"Scoring failed: {type(e).__name__}: {e}")
-            opp["attachment_text"] = attachment_text
+            # Save OCR text even if scoring fails so credits aren't wasted
+            opp["attachment_text"] = combined_text
             upsert_opportunity(opp)
             st.write("💾 OCR text saved — you can re-score later without using credits.")
             return
@@ -902,7 +962,18 @@ def _render_deep_scan(opp: dict, tab_key: str) -> None:
 
     if load_btn:
         with st.spinner("Downloading attachments..."):
-            att_files = download_attachments(opp)
+            # Reconstruct resource_links from raw_json if not present
+            # (DB rows don't store resource_links as a top-level field)
+            download_opp = dict(opp)
+            if not download_opp.get("resource_links"):
+                raw_json = opp.get("raw_json") or "{}"
+                try:
+                    raw = json.loads(raw_json) if isinstance(raw_json, str) else (raw_json or {})
+                except (json.JSONDecodeError, TypeError):
+                    raw = {}
+                if raw.get("resourceLinks"):
+                    download_opp["resource_links"] = raw["resourceLinks"]
+            att_files = download_attachments(download_opp)
         if att_files:
             st.session_state[state_key] = [str(f) for f in att_files]
         else:

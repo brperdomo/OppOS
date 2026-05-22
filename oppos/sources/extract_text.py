@@ -150,6 +150,7 @@ def extract_file(file_path: Path) -> dict:
 def extract_text_from_attachments(file_paths: list[Path], on_progress=None) -> str:
     """Extract and concatenate text from multiple attachment files.
 
+    Supports PDF (via Nutrient API) and DOCX (local parse, no credits).
     on_progress(filename, index, total, result_dict) is called after each file.
     """
     if not file_paths:
@@ -158,21 +159,21 @@ def extract_text_from_attachments(file_paths: list[Path], on_progress=None) -> s
     all_text = []
     total_len = 0
 
-    pdf_paths = [p for p in file_paths if p.suffix.lower() == ".pdf"]
-    if not pdf_paths:
-        logger.info("No PDF attachments to extract text from")
+    scannable = [p for p in file_paths if p.suffix.lower() in SCANNABLE_EXTENSIONS]
+    if not scannable:
+        logger.info("No scannable attachments (PDF/DOCX) to extract text from")
         return ""
 
-    for i, path in enumerate(pdf_paths):
+    for i, path in enumerate(scannable):
         if total_len >= MAX_TOTAL_TEXT:
             logger.info("Reached text limit (%d chars) — skipping remaining files", MAX_TOTAL_TEXT)
             if on_progress:
-                on_progress(path.name, i, len(pdf_paths), {"skipped": True})
+                on_progress(path.name, i, len(scannable), {"skipped": True})
             break
 
-        result = extract_text_from_pdf(path)
+        result = extract_file(path)
         if on_progress:
-            on_progress(path.name, i, len(pdf_paths), result)
+            on_progress(path.name, i, len(scannable), result)
 
         if result["text"]:
             header = f"--- {path.name} ---"
