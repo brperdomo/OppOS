@@ -829,6 +829,7 @@ def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
             label=f"Scan complete — Score: {old_score} → {new_score} ({delta_str})",
             state="complete",
         )
+    st.rerun()
 
 
 def _get_scanned_filenames(attachment_text: str) -> set[str]:
