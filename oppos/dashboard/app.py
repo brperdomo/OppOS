@@ -905,6 +905,18 @@ def _render_deep_scan(opp: dict, tab_key: str) -> None:
     if state_key in st.session_state:
         from oppos.sources.extract_text import SCANNABLE_EXTENSIONS
 
+        def _pdf_page_count(fpath: Path) -> int | None:
+            try:
+                from pypdf import PdfReader
+                return len(PdfReader(str(fpath)).pages)
+            except Exception:
+                return None
+
+        def _format_size(size_bytes: int) -> str:
+            if size_bytes >= 1_048_576:
+                return f"{size_bytes / 1_048_576:.1f} MB"
+            return f"{size_bytes / 1024:.0f} KB"
+
         att_files = [Path(p) for p in st.session_state[state_key]]
         scannable = [f for f in att_files if f.suffix.lower() in SCANNABLE_EXTENSIONS]
         other = [f for f in att_files if f.suffix.lower() not in SCANNABLE_EXTENSIONS]
@@ -926,16 +938,21 @@ def _render_deep_scan(opp: dict, tab_key: str) -> None:
         for f in att_files:
             ext = f.suffix.lower()
             is_scannable = ext in SCANNABLE_EXTENSIONS
-            size_kb = f.stat().st_size / 1024 if f.exists() else 0
+            size_bytes = f.stat().st_size if f.exists() else 0
+            size_str = _format_size(size_bytes)
 
             if ext == ".pdf":
                 icon, method = "📄", "Nutrient OCR"
+                pages = _pdf_page_count(f)
+                page_str = f", {pages} pg" if pages else ""
             elif ext == ".docx":
                 icon, method = "📝", "local parse, no credits"
+                page_str = ""
             else:
                 icon, method = "📎", ""
+                page_str = ""
 
-            label = f"{icon} {f.name} ({size_kb:,.0f} KB)"
+            label = f"{icon} {f.name} ({size_str}{page_str})"
             if is_scannable:
                 hint = f" — {method}" if method else ""
                 checked = st.checkbox(f"{label}{hint}", value=True, key=f"cb_{tab_key}_{sid}_{f.name}")
