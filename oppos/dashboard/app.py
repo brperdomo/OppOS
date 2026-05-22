@@ -230,57 +230,69 @@ NUTRIENT_CSS = """
 .opp-card {
     background: var(--bg-secondary);
     border: 1px solid var(--border-subtle);
+    border-left: 4px solid var(--text-tertiary);
     border-radius: var(--radius-md);
-    padding: 24px;
-    margin-bottom: 16px;
-    transition: border-color 0.2s ease;
+    padding: 20px 24px;
+    margin-bottom: 24px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
 .opp-card:hover {
     border-color: var(--border-medium);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 }
+.opp-card.score-high-card { border-left-color: var(--accent-green); }
+.opp-card.score-mid-card { border-left-color: var(--accent-gold); }
+.opp-card.score-low-card { border-left-color: var(--text-tertiary); }
 .opp-card-header {
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
     gap: 16px;
-    margin-bottom: 16px;
+    margin-bottom: 12px;
 }
 .opp-title {
-    font-size: 18px;
+    font-size: 17px;
     font-weight: 600;
     color: var(--text-primary);
     text-decoration: none;
-    line-height: 1.3;
+    line-height: 1.35;
 }
 .opp-title:hover {
     color: var(--accent-gold);
 }
 a.opp-title { color: var(--text-primary); text-decoration: none; }
 a.opp-title:hover { color: var(--accent-gold); }
+.opp-subtitle {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+    line-height: 1.4;
+}
 
 .opp-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 6px;
     margin-top: 8px;
 }
 .opp-tag {
     display: inline-flex;
     align-items: center;
-    padding: 3px 10px;
-    border-radius: 100px;
-    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
     font-weight: 500;
-    border: 1px solid var(--border-subtle);
+    border: none;
     color: var(--text-secondary);
-    background: transparent;
+    background: var(--bg-tertiary);
 }
 .opp-tag.source {
-    border-color: rgba(222, 157, 204, 0.3);
+    background: rgba(222, 157, 204, 0.1);
     color: var(--accent-pink);
 }
 .opp-tag.deadline {
-    border-color: rgba(240, 201, 102, 0.3);
+    background: rgba(240, 201, 102, 0.1);
     color: var(--accent-gold);
 }
 
@@ -290,21 +302,21 @@ a.opp-title:hover { color: var(--accent-gold); }
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    min-width: 72px;
-    height: 72px;
+    min-width: 64px;
+    height: 64px;
     border-radius: var(--radius-md);
     background: var(--bg-tertiary);
-    border: 1px solid var(--border-subtle);
+    border: none;
     flex-shrink: 0;
 }
 .score-number {
-    font-size: 28px;
+    font-size: 26px;
     font-weight: 700;
     line-height: 1;
 }
 .score-label {
-    font-size: 10px;
-    font-weight: 500;
+    font-size: 9px;
+    font-weight: 600;
     color: var(--text-tertiary);
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -314,13 +326,24 @@ a.opp-title:hover { color: var(--accent-gold); }
 .score-mid .score-number { color: var(--accent-gold); }
 .score-low .score-number { color: var(--text-tertiary); }
 
+/* AI summary line */
+.opp-summary {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin-top: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+    font-style: italic;
+}
+
 /* Detail grid */
 .detail-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 12px;
-    margin-top: 16px;
-    padding-top: 16px;
+    margin-top: 12px;
+    padding-top: 12px;
     border-top: 1px solid var(--border-subtle);
 }
 .detail-item {
@@ -1004,46 +1027,32 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
 
     status_label = PIPELINE_LABELS.get(pipeline_status, pipeline_status)
 
+    score_card_class = "score-high-card" if score >= 65 else ("score-mid-card" if score >= 40 else "score-low-card")
+    summary_text = _esc(s2.get("summary", ""))
+    summary_html = f'<div class="opp-summary">{summary_text}</div>' if summary_text else ""
+
     st.markdown(f"""
-    <div class="opp-card">
+    <div class="opp-card {score_card_class}">
         <div class="opp-card-header">
             <div style="flex: 1;">
                 {new_badge_html} {title_html}
-                <div style="font-size: 14px; color: var(--text-secondary); margin-top: 4px;">
-                    <span style="color: var(--accent-gold); font-weight: 600;">{state_name}</span>
-                    <span style="color: var(--text-tertiary); margin: 0 6px;">&middot;</span>
-                    {agency}
+                <div class="opp-subtitle">
+                    <strong>{state_name}</strong> &middot; {agency}
                 </div>
                 <div class="opp-meta">
                     <span class="pipeline-badge pipeline-{pipeline_status}">{status_label}</span>
                     <span class="opp-tag source">{source_label}</span>
                     {f'<span class="opp-tag">{sol_num}</span>' if sol_num else ''}
-                    <span class="opp-tag deadline">{deadline_display}</span>
+                    <span class="opp-tag deadline">Due {deadline_display}</span>
+                    {f'<span class="opp-tag">{_esc(s2.get("pattern_match", ""))}</span>' if s2.get("pattern_match") and s2.get("pattern_match") != "other" else ""}
                 </div>
             </div>
             <div class="score-badge {_score_class(score)}">
                 <div class="score-number">{score}</div>
-                <div class="score-label">Score</div>
+                <div class="score-label">Fit</div>
             </div>
         </div>
-        <div class="detail-grid">
-            <div class="detail-item">
-                <div class="detail-label">Pattern</div>
-                <div class="detail-value">{_esc(s2.get('pattern_match', '—'))}</div>
-            </div>
-            <div class="detail-item">
-                <div class="detail-label">Industry</div>
-                <div class="detail-value">{_esc(s2.get('industry', '—'))}</div>
-            </div>
-            <div class="detail-item">
-                <div class="detail-label">Notice Type</div>
-                <div class="detail-value">{_esc(opp.get('notice_type', '') or '—')}</div>
-            </div>
-            <div class="detail-item">
-                <div class="detail-label">Similar Win</div>
-                <div class="detail-value">{_esc(s2.get('similar_win', '') or '—')}</div>
-            </div>
-        </div>
+        {summary_html}
     </div>
     """, unsafe_allow_html=True)
 
@@ -1125,21 +1134,34 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
                 """, unsafe_allow_html=True)
 
     with st.expander("AI Assessment"):
-        summary = s2.get("summary", "")
-        if summary:
-            st.markdown(f'<div class="assessment-summary">{_esc(summary)}</div>', unsafe_allow_html=True)
+        detail_items = []
+        if s2.get("pattern_match") and s2["pattern_match"] != "other":
+            detail_items.append(("Pattern", s2["pattern_match"]))
+        if s2.get("industry"):
+            detail_items.append(("Industry", s2["industry"]))
+        if s2.get("similar_win"):
+            detail_items.append(("Similar Win", s2["similar_win"]))
+        if opp.get("notice_type"):
+            detail_items.append(("Notice Type", opp["notice_type"]))
+
+        if detail_items:
+            grid_html = "".join(
+                f'<div class="detail-item"><div class="detail-label">{_esc(lbl)}</div><div class="detail-value">{_esc(val)}</div></div>'
+                for lbl, val in detail_items
+            )
+            st.markdown(f'<div class="detail-grid">{grid_html}</div>', unsafe_allow_html=True)
 
         col_s, col_r = st.columns(2)
         with col_s:
             strengths = s2.get("strengths", [])
             if strengths:
-                st.markdown('<div class="detail-label" style="margin-bottom:8px;">Strengths</div>', unsafe_allow_html=True)
+                st.markdown('<div class="detail-label" style="margin-bottom:8px;margin-top:12px;">Strengths</div>', unsafe_allow_html=True)
                 for s in strengths:
                     st.markdown(f'<div class="strength-item">+ {_esc(s)}</div>', unsafe_allow_html=True)
         with col_r:
             risks = s2.get("risks", [])
             if risks:
-                st.markdown('<div class="detail-label" style="margin-bottom:8px;">Risks</div>', unsafe_allow_html=True)
+                st.markdown('<div class="detail-label" style="margin-bottom:8px;margin-top:12px;">Risks</div>', unsafe_allow_html=True)
                 for r in risks:
                     st.markdown(f'<div class="risk-item">- {_esc(r)}</div>', unsafe_allow_html=True)
 
