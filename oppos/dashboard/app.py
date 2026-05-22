@@ -745,7 +745,14 @@ def _score_class(score: int) -> str:
 
 
 def _esc(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    return (text
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("{", "&#123;")
+            .replace("}", "&#125;")
+            )
 
 
 def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
@@ -1028,33 +1035,36 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
     status_label = PIPELINE_LABELS.get(pipeline_status, pipeline_status)
 
     score_card_class = "score-high-card" if score >= 65 else ("score-mid-card" if score >= 40 else "score-low-card")
-    summary_text = _esc(s2.get("summary", ""))
-    summary_html = f'<div class="opp-summary">{summary_text}</div>' if summary_text else ""
+    pattern = _esc(s2.get("pattern_match", "") or "")
+    pattern_tag = f'<span class="opp-tag">{pattern}</span>' if pattern and pattern != "other" else ""
+    sol_tag = f'<span class="opp-tag">{sol_num}</span>' if sol_num else ""
 
-    st.markdown(f"""
-    <div class="opp-card {score_card_class}">
-        <div class="opp-card-header">
-            <div style="flex: 1;">
-                {new_badge_html} {title_html}
-                <div class="opp-subtitle">
-                    <strong>{state_name}</strong> &middot; {agency}
-                </div>
-                <div class="opp-meta">
-                    <span class="pipeline-badge pipeline-{pipeline_status}">{status_label}</span>
-                    <span class="opp-tag source">{source_label}</span>
-                    {f'<span class="opp-tag">{sol_num}</span>' if sol_num else ''}
-                    <span class="opp-tag deadline">Due {deadline_display}</span>
-                    {f'<span class="opp-tag">{_esc(s2.get("pattern_match", ""))}</span>' if s2.get("pattern_match") and s2.get("pattern_match") != "other" else ""}
-                </div>
-            </div>
-            <div class="score-badge {_score_class(score)}">
-                <div class="score-number">{score}</div>
-                <div class="score-label">Fit</div>
-            </div>
-        </div>
-        {summary_html}
-    </div>
-    """, unsafe_allow_html=True)
+    card_parts = [
+        f'<div class="opp-card {score_card_class}">',
+        '<div class="opp-card-header">',
+        '<div style="flex: 1;">',
+        f'{new_badge_html} {title_html}',
+        f'<div class="opp-subtitle"><strong>{state_name}</strong> &middot; {agency}</div>',
+        '<div class="opp-meta">',
+        f'<span class="pipeline-badge pipeline-{pipeline_status}">{status_label}</span>',
+        f'<span class="opp-tag source">{source_label}</span>',
+        sol_tag,
+        f'<span class="opp-tag deadline">Due {deadline_display}</span>',
+        pattern_tag,
+        '</div></div>',
+        f'<div class="score-badge {_score_class(score)}">',
+        f'<div class="score-number">{score}</div>',
+        '<div class="score-label">Fit</div>',
+        '</div></div>',
+    ]
+
+    summary_text = s2.get("summary", "")
+    if summary_text:
+        card_parts.append(f'<div class="opp-summary">{_esc(summary_text)}</div>')
+
+    card_parts.append('</div>')
+
+    st.markdown("\n".join(card_parts), unsafe_allow_html=True)
 
     if show_status_controls:
         with st.expander("Update Status"):
