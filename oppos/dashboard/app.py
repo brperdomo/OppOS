@@ -726,13 +726,14 @@ def _esc(text: str) -> str:
 
 
 def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
-    """Extract text from selected files, re-score, and move to Qualified."""
+    """Extract text from selected files, merge with existing, re-score, and move to Qualified."""
     from oppos.scoring.qualifier import qualify
     from oppos.sources.extract_text import extract_file, MAX_TOTAL_TEXT
     from oppos.storage.db import upsert_opportunity
 
     old_score = int(opp.get("fit_score") or 0)
     title = opp.get("title", "Untitled")
+    existing_text = opp.get("attachment_text") or ""
 
     with st.status(f"Scanning: {title[:60]}", expanded=True) as status:
         pdf_count = sum(1 for f in selected_paths if f.suffix.lower() == ".pdf")
@@ -773,22 +774,28 @@ def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
                 all_text.append(f"--- {file_path.name} ---\n{result['text']}")
                 total_chars += result["chars"]
 
-        attachment_text = "\n\n".join(all_text)[:MAX_TOTAL_TEXT]
+        new_text = "\n\n".join(all_text)
 
-        if not attachment_text:
+        if not new_text:
             status.update(label="Scan failed: Could not extract text", state="error")
             return
 
+        if existing_text:
+            combined_text = (existing_text + "\n\n" + new_text)[:MAX_TOTAL_TEXT]
+            st.write(f"📎 Merged with previously scanned text ({len(existing_text):,} chars existing)")
+        else:
+            combined_text = new_text[:MAX_TOTAL_TEXT]
+
         st.divider()
-        st.write(f"🧠 **Total extracted: {total_chars:,} chars** — Scoring with Claude...")
+        st.write(f"🧠 **Total context: {len(combined_text):,} chars** — Scoring with Claude...")
 
         try:
-            scored = qualify(opp, attachment_text=attachment_text)
-            scored["attachment_text"] = attachment_text
+            scored = qualify(opp, attachment_text=combined_text)
+            scored["attachment_text"] = combined_text
             upsert_opportunity(scored)
             set_pipeline_status(
                 opp["source_id"], "qualified",
-                notes=f"Deep scan: {total_chars:,} chars from {len(selected_paths)} PDF(s)",
+                notes=f"Deep scan: {len(combined_text):,} chars from {len(selected_paths)} file(s)",
             )
         except Exception as e:
             status.update(label="Scan failed: Scoring error", state="error")
@@ -824,58 +831,28 @@ def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
         )
 
 
+def _get_scanned_filenames(attachment_text: str) -> set[str]:
+    """Parse '--- filename ---' headers from cached attachment text."""
+    import re
+    return set(re.findall(r"^--- (.+?) ---$", attachment_text, re.MULTILINE))
+
+
 def _render_deep_scan(opp: dict, tab_key: str) -> None:
-    """Render the Deep Scan UI: load attachments, select PDFs, scan & score."""
-    from oppos.scoring.qualifier import qualify
+    """Render the Deep Scan UI: load attachments, select files, scan & score."""
     from oppos.sources.attachments import download_attachments
-    from oppos.storage.db import upsert_opportunity
     from pathlib import Path
 
     sid = opp.get("source_id", "")
-    title = opp.get("title", "Untitled")
-    old_score = int(opp.get("fit_score") or 0)
     state_key = f"att_files_{sid}"
+    existing_text = opp.get("attachment_text") or ""
+    scanned_files = _get_scanned_filenames(existing_text) if existing_text else set()
 
-    has_cached_ocr = bool(opp.get("attachment_text"))
-
-    if has_cached_ocr:
-        rc1, rc2 = st.columns([1, 3])
-        with rc1:
-            rescore = st.button(
-                "Re-score (cached)",
-                key=f"rescore_{tab_key}_{sid}",
-                use_container_width=True,
-                help="Re-score using previously extracted text (no credits used)",
-            )
-        with rc2:
-            st.markdown(
-                '<div style="font-size: 12px; color: var(--text-tertiary); padding-top: 8px;">'
-                'OCR text cached — re-score without using Nutrient credits</div>',
-                unsafe_allow_html=True,
-            )
-        if rescore:
-            existing_text = opp["attachment_text"]
-            try:
-                with st.spinner("Re-scoring with cached attachment content..."):
-                    scored = qualify(opp, attachment_text=existing_text)
-                    scored["attachment_text"] = existing_text
-                    upsert_opportunity(scored)
-            except Exception as e:
-                st.error(f"Scoring failed: {type(e).__name__}: {e}")
-                return
-
-            new_score = scored.get("fit_score", 0)
-            delta = new_score - old_score
-            delta_str = f"+{delta}" if delta > 0 else str(delta)
-            st.success(f"Score: {old_score} → **{new_score}** ({delta_str})")
-            s2 = scored.get("stage2") or {}
-            if s2.get("summary"):
-                st.write(s2["summary"])
-            if s2.get("strengths"):
-                st.write("**Strengths:** " + " · ".join(s2["strengths"]))
-            if s2.get("risks"):
-                st.write("**Risks:** " + " · ".join(s2["risks"]))
-        return
+    if scanned_files:
+        st.markdown(
+            f'<div style="font-size: 12px; color: var(--accent-green); margin-bottom: 4px;">'
+            f'✅ {len(scanned_files)} file(s) already scanned</div>',
+            unsafe_allow_html=True,
+        )
 
     # Step 1: Load Attachments
     lc1, lc2 = st.columns([1, 3])
@@ -923,14 +900,14 @@ def _render_deep_scan(opp: dict, tab_key: str) -> None:
 
         pdf_count = sum(1 for f in scannable if f.suffix.lower() == ".pdf")
         docx_count = sum(1 for f in scannable if f.suffix.lower() == ".docx")
-        parts = []
+        type_parts = []
         if pdf_count:
-            parts.append(f"{pdf_count} PDFs")
+            type_parts.append(f"{pdf_count} PDFs")
         if docx_count:
-            parts.append(f"{docx_count} DOCX")
+            type_parts.append(f"{docx_count} DOCX")
         st.markdown(
             f'<div style="font-size: 13px; margin: 8px 0 4px 0;">'
-            f'<strong>{len(att_files)} files</strong> ({", ".join(parts)}, {len(other)} other)</div>',
+            f'<strong>{len(att_files)} files</strong> ({", ".join(type_parts)}, {len(other)} other)</div>',
             unsafe_allow_html=True,
         )
 
@@ -938,6 +915,7 @@ def _render_deep_scan(opp: dict, tab_key: str) -> None:
         for f in att_files:
             ext = f.suffix.lower()
             is_scannable = ext in SCANNABLE_EXTENSIONS
+            already_scanned = f.name in scanned_files
             size_bytes = f.stat().st_size if f.exists() else 0
             size_str = _format_size(size_bytes)
 
@@ -953,7 +931,14 @@ def _render_deep_scan(opp: dict, tab_key: str) -> None:
                 page_str = ""
 
             label = f"{icon} {f.name} ({size_str}{page_str})"
-            if is_scannable:
+
+            if already_scanned:
+                st.markdown(
+                    f'<div style="font-size: 13px; color: var(--accent-green); padding: 4px 0 4px 24px;">'
+                    f'✅ {label} — already scanned</div>',
+                    unsafe_allow_html=True,
+                )
+            elif is_scannable:
                 hint = f" — {method}" if method else ""
                 checked = st.checkbox(f"{label}{hint}", value=True, key=f"cb_{tab_key}_{sid}_{f.name}")
                 if checked:
@@ -965,15 +950,20 @@ def _render_deep_scan(opp: dict, tab_key: str) -> None:
                     unsafe_allow_html=True,
                 )
 
-        if scannable:
+        if selected:
             scan_btn = st.button(
                 f"Scan {len(selected)} Selected & Score",
                 key=f"scansel_{tab_key}_{sid}",
-                disabled=len(selected) == 0,
                 use_container_width=False,
             )
-            if scan_btn and selected:
+            if scan_btn:
                 _run_ocr_and_score(opp, selected, tab_key)
+        elif scannable and not any(f.name not in scanned_files for f in scannable):
+            st.markdown(
+                '<div style="font-size: 12px; color: var(--text-tertiary); padding: 4px 0;">'
+                'All scannable files have been processed.</div>',
+                unsafe_allow_html=True,
+            )
 
 
 def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> None:
