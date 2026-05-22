@@ -770,7 +770,7 @@ def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
             )
 
             if result["text"]:
-                all_text.append(f"--- {pdf_path.name} ---\n{result['text']}")
+                all_text.append(f"--- {file_path.name} ---\n{result['text']}")
                 total_chars += result["chars"]
 
         attachment_text = "\n\n".join(all_text)[:MAX_TOTAL_TEXT]
