@@ -1233,30 +1233,25 @@ with tab_qualified:
         qsid = opp.get("source_id", "")
         qc1, qc2 = st.columns(2)
         with qc1:
-            pursue = st.button("Pursue →", key=f"pursue_{qsid}", use_container_width=True)
+            with st.popover("Pursue →", use_container_width=True):
+                pursue_reason = st.text_input(
+                    "Why are we pursuing this?",
+                    key=f"pursue_reason_{qsid}",
+                    placeholder="Strong fit for case management, aligns with public sector push",
+                )
+                if st.button("Confirm Pursue", key=f"confirm_pursue_{qsid}", use_container_width=True):
+                    set_pipeline_status(qsid, "in_progress", notes=pursue_reason or "Qualified — pursuing")
+                    st.rerun()
         with qc2:
-            skip = st.button("Skip →", key=f"skip_{qsid}", use_container_width=True)
-
-        if pursue:
-            reason = st.text_input(
-                "Why are we pursuing this?",
-                key=f"pursue_reason_{qsid}",
-                placeholder="e.g., Strong fit for Workflow case management, aligns with NJ public sector push",
-            )
-            if st.button("Confirm Pursue", key=f"confirm_pursue_{qsid}"):
-                set_pipeline_status(qsid, "in_progress", notes=reason or "Qualified — pursuing")
-                st.success("Moved to In Progress.")
-                st.rerun()
-        if skip:
-            reason = st.text_input(
-                "Reason for skipping?",
-                key=f"skip_reason_{qsid}",
-                placeholder="e.g., Not a workflow fit — pure staffing RFP, no automation component",
-            )
-            if st.button("Confirm Skip", key=f"confirm_skip_{qsid}"):
-                set_pipeline_status(qsid, "skipped", notes=reason or "Skipped after qualification review")
-                st.success("Moved to Archive.")
-                st.rerun()
+            with st.popover("Skip →", use_container_width=True):
+                skip_reason = st.text_input(
+                    "Reason for skipping?",
+                    key=f"skip_reason_{qsid}",
+                    placeholder="Not a workflow fit — pure staffing RFP",
+                )
+                if st.button("Confirm Skip", key=f"confirm_skip_{qsid}", use_container_width=True):
+                    set_pipeline_status(qsid, "skipped", notes=skip_reason or "Skipped after qualification review")
+                    st.rerun()
         st.markdown("---")
 
 # --- In Progress tab ---
