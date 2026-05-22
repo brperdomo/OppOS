@@ -8,9 +8,17 @@ from typing import Any
 
 import httpx
 
-from oppos.config import SLACK_WEBHOOK_URL
+from oppos.config import SLACK_WEBHOOK_URL, SOURCE_STATE_MAP
 
 logger = logging.getLogger(__name__)
+
+
+def _get_state(opp: dict[str, Any]) -> str:
+    """Derive state/region from source key, place_of_performance, or office."""
+    state = SOURCE_STATE_MAP.get(opp.get("source", ""), "")
+    if not state:
+        state = opp.get("place_of_performance") or opp.get("office") or ""
+    return state
 
 
 def _build_message(opp: dict[str, Any]) -> dict:
@@ -36,6 +44,8 @@ def _build_message(opp: dict[str, Any]) -> dict:
 
     score_emoji = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
 
+    state = _get_state(opp)
+
     blocks = [
         {
             "type": "header",
@@ -48,7 +58,8 @@ def _build_message(opp: dict[str, Any]) -> dict:
                 "text": (
                     f"*<{url}|{title}>*\n"
                     f"*Agency:* {agency}\n"
-                    f"*Deadline:* {deadline}\n"
+                    + (f"*State:* {state}\n" if state else "")
+                    + f"*Deadline:* {deadline}\n"
                     f"*Pattern:* {pattern}\n"
                     f"*Similar Win:* {similar or 'None'}\n"
                     f"*Deployment:* {deployment}"
@@ -98,12 +109,21 @@ def send_alert(opp: dict[str, Any]) -> bool:
 def build_sdr_message(opp: dict[str, Any]) -> str:
     """Build a copy-paste ready message for SDRs to create a Salesforce opportunity."""
     agency = opp.get("agency") or "Unknown Agency"
+    state = _get_state(opp)
     contact_name = opp.get("contact_name") or ""
     contact_email = opp.get("contact_email") or ""
     title = opp.get("title") or ""
     sol_number = opp.get("solicitation_number") or ""
     deadline = opp.get("response_deadline") or "TBD"
     url = opp.get("url") or ""
+
+    # Combine state + agency: "State of Nevada - Department of Health"
+    if state and state != "Federal":
+        agency_full = f"State of {state} - {agency}"
+    elif state == "Federal":
+        agency_full = f"{agency} (Federal)"
+    else:
+        agency_full = agency
 
     # Build contact line
     if contact_name and contact_email:
@@ -125,7 +145,7 @@ def build_sdr_message(opp: dict[str, Any]) -> str:
 
     msg = (
         f"Hi team... may I have an opp created for the following: "
-        f"{agency}. {contact_line} "
+        f"{agency_full}. {contact_line} "
         f"LOB is Workflow (please make Richard opportunity owner).\n\n"
         f"No Hiver at the moment, this is an open RFP sourced through an outbound effort."
     )
@@ -152,6 +172,7 @@ def _build_pursue_message(opp: dict[str, Any], reason: str = "") -> dict:
     score = opp.get("fit_score", 0)
     title = opp.get("title", "Untitled")
     agency = opp.get("agency", "Unknown")
+    state = _get_state(opp)
     deadline = opp.get("response_deadline", "TBD")
     url = opp.get("url", "")
     contact_name = opp.get("contact_name") or ""
@@ -177,7 +198,8 @@ def _build_pursue_message(opp: dict[str, Any], reason: str = "") -> dict:
                 "type": "mrkdwn",
                 "text": (
                     f"*Agency:* {agency}\n"
-                    f"*Fit Score:* {score}/100\n"
+                    + (f"*State:* {state}\n" if state else "")
+                    + f"*Fit Score:* {score}/100\n"
                     f"*Deadline:* {deadline}\n"
                     + (f"*Solicitation:* {sol_number}\n" if sol_number else "")
                     + (f"*Contact:* {contact_str}\n" if contact_str else "")

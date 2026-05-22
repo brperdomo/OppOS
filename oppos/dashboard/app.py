@@ -36,48 +36,11 @@ for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHRO
     except Exception as e:
         _secrets_errors.append(f"{key}: {e}")
 
-from oppos.config import DB_PATH
+from oppos.config import DB_PATH, SOURCE_STATE_MAP
 from oppos.sources.registry import list_available
 from oppos.storage.db import get_all_scored, get_by_pipeline_status, init_db, set_pipeline_status
 
 ATTACHMENTS_DIR = DB_PATH.parent / "attachments"
-
-SOURCE_STATE_MAP = {
-    "sam_gov": "Federal",
-    "nevada_epro": "Nevada",
-    "massachusetts_commbuys": "Massachusetts",
-    "new_jersey_njstart": "New Jersey",
-    "illinois_bidbuy": "Illinois",
-    "oregon_oregonbuys": "Oregon",
-    "arkansas_arbuy": "Arkansas",
-    "arizona_app": "Arizona",
-    "iowa_impacs": "Iowa",
-    "montana_emacs": "Montana",
-    "new_mexico_epro": "New Mexico",
-    "pennsylvania_costars": "Pennsylvania",
-    "utah_dps": "Utah",
-    "west_virginia_wvpurchasing": "West Virginia",
-    "kentucky_emars": "Kentucky",
-    "colorado_vss": "Colorado",
-    "michigan_sigma": "Michigan",
-    "alaska_iris": "Alaska",
-    "maine_vss": "Maine",
-    "tennessee_edison": "Tennessee",
-    "georgia_tgm": "Georgia",
-    "indiana_idoa": "Indiana",
-    "kansas_esupplier": "Kansas",
-    "minnesota_swift": "Minnesota",
-    "oklahoma_omes": "Oklahoma",
-    "wisconsin_vendornet": "Wisconsin",
-    "maryland_emma": "Maryland",
-    "virginia_eva": "Virginia",
-    "north_dakota_cps": "North Dakota",
-    "vermont_bgs": "Vermont",
-    "florida_mfmp": "Florida",
-    "north_carolina_ips": "North Carolina",
-    "mississippi_magic": "Mississippi",
-    "south_carolina_sceis": "South Carolina",
-}
 
 NUTRIENT_ICON_SVG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 50 36'%3E%3Cpath d='M4.15 22.15C1.86 22.15 0 20.29 0 18s1.86-4.15 4.15-4.15 4.15 1.86 4.15 4.15-1.86 4.15-4.15 4.15zm41.52-8.3c-2.29 0-4.15 1.86-4.15 4.15s1.86 4.15 4.15 4.15 4.15-1.86 4.15-4.15-1.86-4.15-4.15-4.15zM6.34 28.16c-1.76 1.47-1.99 4.09-.51 5.85s4.09 1.99 5.85.51 1.99-4.09.51-5.85-4.09-1.99-5.85-.51zm37.15-20.33c1.76-1.47 1.99-4.09.51-5.85s-4.09-1.99-5.85-.51-1.99 4.09-.51 5.85 4.09 1.99 5.85.51zM11.68 1.47C9.92 0 7.3.23 5.83 1.99s-.23 4.38 1.51 5.85 4.38.23 5.85-1.51.23-4.38-1.51-5.85zm31.81 26.69c-1.76-1.47-4.38-1.25-5.85.51s-1.25 4.38.51 5.85 4.38 1.25 5.85-.51 1.25-4.38-.51-5.85zm-10.6-8.9c-1.76-1.47-4.38-1.25-5.85.51s-1.25 4.38.51 5.85 4.38 1.25 5.85-.51 1.25-4.38-.51-5.85zm-10.6-8.9c-1.76-1.47-4.38-1.25-5.85.51s-1.25 4.38.51 5.85 4.38 1.25 5.85-.51 1.25-4.38-.51-5.85z' fill='%23f0c966'/%3E%3C/svg%3E"
 
