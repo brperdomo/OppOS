@@ -1331,6 +1331,7 @@ with tab_in_progress:
         render_empty("No RFPs in progress yet. Move opportunities here from the Pipeline tab.")
     for opp in ip_rows:
         render_card(opp, "ip")
+        ip_sid = opp.get("source_id", "")
         # SDR message for Salesforce opp creation
         from oppos.outputs.slack_alerts import build_sdr_message
         with st.expander("📋 Salesforce Opp Request"):
@@ -1342,6 +1343,19 @@ with tab_in_progress:
                 'Also sent to Slack when you clicked Pursue.</div>',
                 unsafe_allow_html=True,
             )
+        # Abandon button
+        with st.popover("Abandon", use_container_width=False):
+            abandon_reason = st.text_input(
+                "Why are we abandoning this?",
+                key=f"abandon_reason_{ip_sid}",
+                placeholder="Timeline too tight, requirements changed, lost to competitor",
+            )
+            if st.button("Confirm Abandon", key=f"confirm_abandon_{ip_sid}", type="primary", use_container_width=True):
+                from oppos.outputs.slack_alerts import send_abandon_alert
+                set_pipeline_status(ip_sid, "lost", notes=abandon_reason or "Abandoned after pursuit")
+                send_abandon_alert(opp, reason=abandon_reason or "")
+                st.rerun()
+        st.markdown("---")
 
 # --- Submitted tab ---
 with tab_submitted:

@@ -252,3 +252,54 @@ def send_pursue_alert(opp: dict[str, Any], reason: str = "") -> bool:
     except httpx.HTTPError as e:
         logger.error("Pursue alert failed: %s", e)
         return False
+
+
+def _build_abandon_message(opp: dict[str, Any], reason: str = "") -> dict:
+    """Build Slack blocks for an 'Abandoned' notification."""
+    title = opp.get("title", "Untitled")
+    agency = opp.get("agency", "Unknown")
+    state = _get_state(opp)
+    score = opp.get("fit_score", 0)
+
+    header_text = f"🚫 Abandoned: {title[:140]}"
+    detail_parts = f"*Agency:* {agency}\n"
+    if state:
+        detail_parts += f"*State:* {state}\n"
+    detail_parts += f"*Fit Score:* {score}/100"
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": header_text},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": detail_parts},
+        },
+    ]
+
+    if reason:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Reason:* {reason}"},
+        })
+
+    return {"blocks": blocks}
+
+
+def send_abandon_alert(opp: dict[str, Any], reason: str = "") -> bool:
+    """Send a Slack notification when a pursued RFP is abandoned."""
+    if not SLACK_WEBHOOK_URL:
+        logger.warning("SLACK_WEBHOOK_URL not set — skipping abandon alert")
+        return False
+
+    payload = _build_abandon_message(opp, reason)
+
+    try:
+        resp = httpx.post(SLACK_WEBHOOK_URL, json=payload, timeout=10.0)
+        resp.raise_for_status()
+        logger.info("Abandon alert sent for '%s'", opp.get("title", "?"))
+        return True
+    except httpx.HTTPError as e:
+        logger.error("Abandon alert failed: %s", e)
+        return False
