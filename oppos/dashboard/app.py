@@ -1318,7 +1318,9 @@ with tab_qualified:
                     placeholder="Not a workflow fit — pure staffing RFP",
                 )
                 if st.button("Confirm Skip", key=f"confirm_skip_{qsid}", use_container_width=True):
+                    from oppos.outputs.slack_alerts import send_abandon_alert
                     set_pipeline_status(qsid, "skipped", notes=skip_reason or "Skipped after qualification review")
+                    send_abandon_alert(opp, reason=skip_reason or "Skipped after qualification review", label="Skipped")
                     st.rerun()
         st.markdown("---")
 

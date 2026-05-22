@@ -254,14 +254,14 @@ def send_pursue_alert(opp: dict[str, Any], reason: str = "") -> bool:
         return False
 
 
-def _build_abandon_message(opp: dict[str, Any], reason: str = "") -> dict:
-    """Build Slack blocks for an 'Abandoned' notification."""
+def _build_abandon_message(opp: dict[str, Any], reason: str = "", label: str = "Abandoned") -> dict:
+    """Build Slack blocks for an 'Abandoned' or 'Skipped' notification."""
     title = opp.get("title", "Untitled")
     agency = opp.get("agency", "Unknown")
     state = _get_state(opp)
     score = opp.get("fit_score", 0)
 
-    header_text = f"🚫 Abandoned: {title[:140]}"
+    header_text = f"🚫 {label}: {title[:140]}"
     detail_parts = f"*Agency:* {agency}\n"
     if state:
         detail_parts += f"*State:* {state}\n"
@@ -287,13 +287,13 @@ def _build_abandon_message(opp: dict[str, Any], reason: str = "") -> dict:
     return {"blocks": blocks}
 
 
-def send_abandon_alert(opp: dict[str, Any], reason: str = "") -> bool:
-    """Send a Slack notification when a pursued RFP is abandoned."""
+def send_abandon_alert(opp: dict[str, Any], reason: str = "", label: str = "Abandoned") -> bool:
+    """Send a Slack notification when an RFP is abandoned or skipped."""
     if not SLACK_WEBHOOK_URL:
         logger.warning("SLACK_WEBHOOK_URL not set — skipping abandon alert")
         return False
 
-    payload = _build_abandon_message(opp, reason)
+    payload = _build_abandon_message(opp, reason, label=label)
 
     try:
         resp = httpx.post(SLACK_WEBHOOK_URL, json=payload, timeout=10.0)
