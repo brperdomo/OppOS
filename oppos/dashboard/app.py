@@ -1063,7 +1063,6 @@ def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
             label=f"Scan complete — Score: {old_score} → {new_score} ({delta_str})",
             state="complete",
         )
-    st.rerun()
 
 
 def _get_scanned_filenames(attachment_text: str) -> set[str]:
@@ -1384,7 +1383,8 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
                 <div class="detail-value" style="line-height:1.6;">{_esc(desc[:2000])}</div>
                 """, unsafe_allow_html=True)
 
-    with st.expander("AI Assessment"):
+    _has_assessment = bool(s2.get("summary") or s2.get("strengths") or s2.get("risks"))
+    with st.expander("AI Assessment", expanded=_has_assessment):
         detail_items = []
         if s2.get("pattern_match") and s2["pattern_match"] != "other":
             detail_items.append(("Pattern", s2["pattern_match"]))
