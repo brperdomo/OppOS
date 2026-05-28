@@ -709,6 +709,7 @@ if st.session_state.get("show_manual_form"):
 
                     if result.get("error"):
                         status.update(label=f"Failed: {result['error']}", state="error")
+                        st.error(f"Could not process URL: {result['error']}")
                     else:
                         score = result.get("fit_score", 0)
                         title = result.get("title", "Untitled")
@@ -730,13 +731,14 @@ if st.session_state.get("show_manual_form"):
 
                         status.update(label=f"Score: {score}/100 — {title[:50]}", state="complete")
 
-                    # Store attachment paths for deep scan
-                    if result.get("_att_files"):
-                        sid = result.get("source_id", "")
-                        st.session_state[f"att_files_{sid}"] = result["_att_files"]
+                        # Store attachment paths for deep scan
+                        if result.get("_att_files"):
+                            sid = result.get("source_id", "")
+                            st.session_state[f"att_files_{sid}"] = result["_att_files"]
 
-                st.session_state["show_manual_form"] = False
-                st.rerun()
+                        st.success(f"Added to Pipeline — **{title}** scored **{score}/100**")
+
+                # Don't auto-close — let user see results, then close or submit another
 
         with file_tab:
             uploaded = st.file_uploader(
@@ -765,6 +767,7 @@ if st.session_state.get("show_manual_form"):
 
                     if result.get("error"):
                         status.update(label=f"Failed: {result['error']}", state="error")
+                        st.error(f"Could not process file: {result['error']}")
                     else:
                         score = result.get("fit_score", 0)
                         title = result.get("title", "Untitled")
@@ -786,15 +789,14 @@ if st.session_state.get("show_manual_form"):
 
                         status.update(label=f"Score: {score}/100 — {title[:50]}", state="complete")
 
-                    if result.get("_att_files"):
-                        sid = result.get("source_id", "")
-                        st.session_state[f"att_files_{sid}"] = result["_att_files"]
+                        if result.get("_att_files"):
+                            sid = result.get("source_id", "")
+                            st.session_state[f"att_files_{sid}"] = result["_att_files"]
 
-                st.session_state["show_manual_form"] = False
-                st.rerun()
+                        st.success(f"Added to Pipeline — **{title}** scored **{score}/100**")
 
         # Close button
-        if st.button("Cancel", key="manual_cancel"):
+        if st.button("Close", key="manual_cancel"):
             st.session_state["show_manual_form"] = False
             st.rerun()
 
