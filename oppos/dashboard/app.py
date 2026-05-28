@@ -1020,8 +1020,11 @@ def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
             scored = qualify(opp, attachment_text=combined_text)
             scored["attachment_text"] = combined_text
             upsert_opportunity(scored)
+            # Keep expiring_soon status if already set — don't reset to qualified
+            _current_status = opp.get("pipeline_status") or "new"
+            _post_scan_status = _current_status if _current_status == "expiring_soon" else "qualified"
             set_pipeline_status(
-                opp["source_id"], "qualified",
+                opp["source_id"], _post_scan_status,
                 notes=f"Deep scan: {len(combined_text):,} chars from {len(selected_paths)} file(s)",
             )
         except Exception as e:
@@ -1051,7 +1054,10 @@ def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
         if s2.get("recommended_action"):
             st.write(f"**Recommendation:** {s2['recommended_action']}")
 
-        st.write("📂 **Moved to Qualified tab for review.**")
+        if _post_scan_status == "expiring_soon":
+            st.write("⚠️ **Scored — stays in Expiring Soon (deadline approaching).**")
+        else:
+            st.write("📂 **Moved to Qualified tab for review.**")
 
         status.update(
             label=f"Scan complete — Score: {old_score} → {new_score} ({delta_str})",
