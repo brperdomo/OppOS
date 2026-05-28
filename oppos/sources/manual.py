@@ -96,24 +96,47 @@ _HEADERS = {
 }
 
 
-def fetch_page(url: str) -> dict:
-    """Fetch a URL and return html, text, content_type, and any error."""
-    try:
-        with httpx.Client(
-            timeout=30.0,
-            follow_redirects=True,
-            headers=_HEADERS,
-            http2=True,
-        ) as client:
-            # Some sites need a session cookie — do a GET to the root first for .aspx sites
-            parsed = urlparse(url)
-            if ".aspx" in parsed.path.lower() or ".asp" in parsed.path.lower():
-                try:
-                    client.get(f"{parsed.scheme}://{parsed.netloc}/")
-                except Exception:
-                    pass  # best-effort session warm-up
+def _try_fetch(url: str, use_http2: bool = False, warm_session: bool = False) -> httpx.Response:
+    """Single fetch attempt with configurable options."""
+    kwargs: dict = {
+        "timeout": 30.0,
+        "follow_redirects": True,
+        "headers": _HEADERS,
+    }
+    if use_http2:
+        try:
+            import h2  # noqa: F401
+            kwargs["http2"] = True
+        except ImportError:
+            pass
 
-            resp = client.get(url)
+    with httpx.Client(**kwargs) as client:
+        if warm_session:
+            parsed = urlparse(url)
+            try:
+                client.get(f"{parsed.scheme}://{parsed.netloc}/")
+            except Exception:
+                pass
+        return client.get(url)
+
+
+def fetch_page(url: str) -> dict:
+    """Fetch a URL with multiple strategies. Returns html, text, content_type, error."""
+    is_aspx = ".aspx" in url.lower() or ".asp" in url.lower()
+
+    # Strategy list: try progressively simpler approaches
+    strategies = [
+        {"use_http2": False, "warm_session": is_aspx, "label": "standard"},
+        {"use_http2": False, "warm_session": True, "label": "with session warm-up"},
+    ]
+    if not is_aspx:
+        # For non-aspx, also try http2
+        strategies.insert(0, {"use_http2": True, "warm_session": False, "label": "http2"})
+
+    last_code = 0
+    for strat in strategies:
+        try:
+            resp = _try_fetch(url, use_http2=strat["use_http2"], warm_session=strat["warm_session"])
             resp.raise_for_status()
             ct = resp.headers.get("content-type", "")
             return {
@@ -124,17 +147,28 @@ def fetch_page(url: str) -> dict:
                 "status_code": resp.status_code,
                 "error": None,
             }
-    except httpx.HTTPStatusError as e:
-        code = e.response.status_code
-        if code == 401:
-            msg = f"HTTP {code} — this page requires authentication. Try uploading the PDF directly."
-        elif code == 403:
-            msg = f"HTTP {code} — site is blocking automated access. Try uploading the PDF directly."
-        else:
-            msg = f"HTTP {code}"
-        return {"html": "", "raw_bytes": None, "text": "", "content_type": "", "status_code": code, "error": msg}
-    except Exception as e:
-        return {"html": "", "raw_bytes": None, "text": "", "content_type": "", "status_code": 0, "error": str(e)}
+        except httpx.HTTPStatusError as e:
+            last_code = e.response.status_code
+            logger.info("Fetch strategy '%s' got HTTP %d for %s", strat["label"], last_code, url)
+            if last_code not in (403, 406, 429):
+                break  # non-retryable status, stop trying
+        except Exception as e:
+            logger.info("Fetch strategy '%s' failed for %s: %s", strat["label"], url, e)
+            continue
+
+    # All strategies failed
+    if last_code == 401:
+        msg = f"HTTP {last_code} — this page requires authentication. Try uploading the PDF directly."
+    elif last_code == 403:
+        msg = (
+            f"HTTP {last_code} — this site blocks requests from cloud servers. "
+            f"Download the page/PDF on your computer and use the Upload File tab instead."
+        )
+    elif last_code:
+        msg = f"HTTP {last_code}"
+    else:
+        msg = "Could not connect to the site. Check the URL and try again."
+    return {"html": "", "raw_bytes": None, "text": "", "content_type": "", "status_code": last_code, "error": msg}
 
 
 def is_direct_file_url(url: str, content_type: str = "") -> bool:
