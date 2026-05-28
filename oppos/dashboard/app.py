@@ -1083,9 +1083,10 @@ def _render_deep_scan(opp: dict, tab_key: str) -> None:
     scanned_files = _get_scanned_filenames(existing_text) if existing_text else set()
 
     if scanned_files:
+        _scan_score = int(opp.get("fit_score") or 0)
         st.markdown(
             f'<div style="font-size: 12px; color: var(--accent-green); margin-bottom: 4px;">'
-            f'✅ {len(scanned_files)} file(s) already scanned</div>',
+            f'✅ {len(scanned_files)} file(s) scanned — current score: <strong>{_scan_score}/100</strong></div>',
             unsafe_allow_html=True,
         )
 
@@ -1205,11 +1206,16 @@ def _render_deep_scan(opp: dict, tab_key: str) -> None:
             if scan_btn:
                 _run_ocr_and_score(opp, selected, tab_key)
         elif scannable and not any(f.name not in scanned_files for f in scannable):
-            st.markdown(
-                '<div style="font-size: 12px; color: var(--text-tertiary); padding: 4px 0;">'
-                'All scannable files have been processed.</div>',
-                unsafe_allow_html=True,
-            )
+            _rescore_col1, _rescore_col2 = st.columns([1, 3])
+            with _rescore_col1:
+                if st.button("Re-Score", key=f"rescore_{tab_key}_{sid}", use_container_width=True):
+                    _run_ocr_and_score(opp, scannable, tab_key)
+            with _rescore_col2:
+                st.markdown(
+                    '<div style="font-size: 12px; color: var(--text-tertiary); padding-top: 8px;">'
+                    'All files scanned — re-score with existing text to update fit score</div>',
+                    unsafe_allow_html=True,
+                )
 
 
 def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> None:
