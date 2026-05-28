@@ -363,7 +363,7 @@ def submit_url(url: str, on_progress=None) -> dict[str, Any]:
     """
     from oppos.scoring.qualifier import qualify
     from oppos.sources.extract_text import extract_file, SCANNABLE_EXTENSIONS, MAX_TOTAL_TEXT
-    from oppos.storage.db import is_seen, upsert_opportunity
+    from oppos.storage.db import is_seen, set_pipeline_status, upsert_opportunity
 
     def _progress(step, detail=""):
         if on_progress:
@@ -414,6 +414,7 @@ def submit_url(url: str, on_progress=None) -> dict[str, Any]:
         scored = qualify(opp, attachment_text=doc_text)
         scored["attachment_text"] = doc_text
         upsert_opportunity(scored)
+        set_pipeline_status(source_id, "qualified", notes="Manual submission — file analyzed")
         return scored
 
     # HTML page flow
@@ -452,6 +453,9 @@ def submit_url(url: str, on_progress=None) -> dict[str, Any]:
     scored = qualify(opp, attachment_text=att_text)
     scored["attachment_text"] = att_text or None
     upsert_opportunity(scored)
+    # If we extracted document text, go straight to Qualified; otherwise New
+    if att_text:
+        set_pipeline_status(source_id, "qualified", notes="Manual submission — documents analyzed")
     scored["_att_files"] = [str(f) for f in att_files]
     return scored
 
@@ -460,7 +464,7 @@ def submit_file(file_bytes: bytes, filename: str, on_progress=None) -> dict[str,
     """Submit an uploaded file for analysis. Returns the scored opportunity dict."""
     from oppos.scoring.qualifier import qualify
     from oppos.sources.extract_text import extract_file
-    from oppos.storage.db import upsert_opportunity
+    from oppos.storage.db import set_pipeline_status, upsert_opportunity
 
     def _progress(step, detail=""):
         if on_progress:
@@ -496,6 +500,7 @@ def submit_file(file_bytes: bytes, filename: str, on_progress=None) -> dict[str,
     scored = qualify(opp, attachment_text=doc_text)
     scored["attachment_text"] = doc_text
     upsert_opportunity(scored)
+    set_pipeline_status(source_id, "qualified", notes="Manual submission — file analyzed")
     scored["_att_files"] = [str(filepath)]
     return scored
 

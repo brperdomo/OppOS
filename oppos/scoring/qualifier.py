@@ -82,6 +82,46 @@ def _extract_json(text: str) -> str:
     return text
 
 
+def _repair_and_parse_json(text: str) -> dict:
+    """Try to parse JSON, repairing common LLM output issues if needed."""
+    raw = _extract_json(text)
+
+    # First try: direct parse
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Repair: replace literal newlines inside string values with \\n
+    import re
+    repaired = re.sub(
+        r'(?<=": ")(.*?)(?="[,\s\n]*["}])',
+        lambda m: m.group(0).replace("\n", "\\n").replace("\t", "\\t"),
+        raw,
+        flags=re.DOTALL,
+    )
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        pass
+
+    # Repair: truncate at last complete key-value pair and close the object
+    # Find the last valid "key": value pattern followed by a comma or brace
+    last_good = raw.rfind('",')
+    if last_good > 0:
+        truncated = raw[:last_good + 1] + "}"
+        # Balance any unclosed arrays
+        open_brackets = truncated.count("[") - truncated.count("]")
+        truncated = truncated[:-1] + ("]" * open_brackets) + "}"
+        try:
+            return json.loads(truncated)
+        except json.JSONDecodeError:
+            pass
+
+    # Give up — raise so caller hits the fallback
+    raise json.JSONDecodeError("Could not repair JSON", raw, 0)
+
+
 def _build_opportunity_text(opp: dict[str, Any], attachment_text: str = "") -> str:
     parts = [
         f"Title: {opp.get('title', 'N/A')}",
@@ -114,7 +154,7 @@ def stage1_filter(opportunity: dict[str, Any], attachment_text: str = "") -> dic
             system=STAGE1_SYSTEM,
             messages=[{"role": "user", "content": opp_text}],
         )
-        result = json.loads(_extract_json(resp.content[0].text))
+        result = _repair_and_parse_json(resp.content[0].text)
         result.setdefault("relevant", False)
         result.setdefault("confidence", 0.0)
         result.setdefault("reason", "")
@@ -139,7 +179,7 @@ def stage2_score(opportunity: dict[str, Any], attachment_text: str = "") -> dict
             system=STAGE2_SYSTEM,
             messages=[{"role": "user", "content": f"Score this RFP opportunity:\n\n{opp_text}"}],
         )
-        result = json.loads(_extract_json(resp.content[0].text))
+        result = _repair_and_parse_json(resp.content[0].text)
         return result
     except (json.JSONDecodeError, IndexError, KeyError) as e:
         logger.warning("Stage 2 parse error for '%s': %s", opportunity.get("title", "?"), e)
