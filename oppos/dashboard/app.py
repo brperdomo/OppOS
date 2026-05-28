@@ -1384,7 +1384,40 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
                 """, unsafe_allow_html=True)
 
     _has_assessment = bool(s2.get("summary") or s2.get("strengths") or s2.get("risks"))
-    with st.expander("AI Assessment", expanded=_has_assessment):
+
+    # Parse stage1 data for rejection reason display
+    _s1_raw = opp.get("stage1_json")
+    _s1 = {}
+    if _s1_raw:
+        try:
+            _s1 = json.loads(_s1_raw) if isinstance(_s1_raw, str) else _s1_raw
+        except (json.JSONDecodeError, TypeError):
+            pass
+    _was_filtered = bool(_s1 and not _s1.get("relevant") and not s2)
+
+    with st.expander("AI Assessment", expanded=_has_assessment or _was_filtered):
+        # Show stage1 rejection when stage2 was skipped
+        if _was_filtered:
+            _s1_reason = _s1.get("reason", "No reason provided")
+            _s1_conf = _s1.get("confidence", 0)
+            st.markdown(
+                f'<div style="background: rgba(242, 95, 69, 0.1); border: 1px solid rgba(242, 95, 69, 0.3); '
+                f'border-radius: 8px; padding: 12px; margin-bottom: 12px;">'
+                f'<div style="font-weight: 600; color: var(--accent-red); margin-bottom: 4px;">'
+                f'Stage 1 Filter: Not Relevant (confidence: {_s1_conf:.0%})</div>'
+                f'<div style="color: var(--text-secondary); font-size: 13px;">{_esc(_s1_reason)}</div>'
+                f'<div style="color: var(--text-tertiary); font-size: 11px; margin-top: 6px;">'
+                f'Stage 2 deep scoring was skipped. Use "Force Score" to override and run full analysis.</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        elif not s2 and not _s1:
+            st.markdown(
+                '<div style="color: var(--text-tertiary); font-size: 13px;">'
+                'Not yet scored. Use "Score This" or batch scoring to run AI analysis.</div>',
+                unsafe_allow_html=True,
+            )
+
         detail_items = []
         if s2.get("pattern_match") and s2["pattern_match"] != "other":
             detail_items.append(("Pattern", s2["pattern_match"]))
@@ -1550,8 +1583,8 @@ with tab_expiring:
     # --- Batch scoring controls ---
     if _unscored_exp:
         def _score_batch(batch: list[dict], label: str) -> None:
-            """Score a batch of opportunities using their description text."""
-            from oppos.scoring.qualifier import qualify
+            """Score a batch of opportunities — skips Stage 1, goes straight to deep scoring."""
+            from oppos.scoring.qualifier import force_score
             from oppos.storage.db import upsert_opportunity
 
             progress = st.progress(0, text=f"Scoring {label}...")
@@ -1564,7 +1597,7 @@ with tab_expiring:
                 )
                 try:
                     att_text = opp.get("attachment_text") or ""
-                    scored = qualify(opp, attachment_text=att_text)
+                    scored = force_score(opp, attachment_text=att_text)
                     scored["attachment_text"] = att_text or None
                     upsert_opportunity(scored)
                     set_pipeline_status(
@@ -1627,11 +1660,11 @@ with tab_expiring:
             sc1, sc2, sc3 = st.columns([1, 1, 2])
             with sc1:
                 if st.button("Score This", key=f"exp_score_{esid}", use_container_width=True):
-                    from oppos.scoring.qualifier import qualify
+                    from oppos.scoring.qualifier import force_score
                     from oppos.storage.db import upsert_opportunity
                     with st.spinner(f"Scoring {opp.get('title', '')[:40]}..."):
                         att_text = opp.get("attachment_text") or ""
-                        scored = qualify(opp, attachment_text=att_text)
+                        scored = force_score(opp, attachment_text=att_text)
                         scored["attachment_text"] = att_text or None
                         upsert_opportunity(scored)
                         set_pipeline_status(

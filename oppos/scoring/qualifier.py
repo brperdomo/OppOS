@@ -207,6 +207,26 @@ def stage2_score(opportunity: dict[str, Any], attachment_text: str = "") -> dict
         }
 
 
+def force_score(opportunity: dict[str, Any], attachment_text: str = "") -> dict[str, Any]:
+    """Skip Stage 1 filter and go straight to deep scoring.
+
+    Use when Stage 1 incorrectly filtered out a relevant opportunity.
+    """
+    s2 = stage2_score(opportunity, attachment_text)
+    opportunity["stage1"] = {"relevant": True, "confidence": 1.0, "reason": "Force-scored — Stage 1 bypassed"}
+    opportunity["stage2"] = s2
+    opportunity["fit_score"] = s2.get("fit_score", 0)
+    opportunity["recommended_action"] = s2.get("recommended_action", "investigate")
+
+    logger.info(
+        "Force-scored: '%s' — %d/100 (%s)",
+        opportunity.get("title", "?"),
+        opportunity["fit_score"],
+        opportunity["recommended_action"],
+    )
+    return opportunity
+
+
 def qualify(opportunity: dict[str, Any], attachment_text: str = "") -> dict[str, Any]:
     """Run the full two-stage pipeline. Returns the opportunity enriched with scoring."""
     s1 = stage1_filter(opportunity, attachment_text)
