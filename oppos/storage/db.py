@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
@@ -225,7 +225,10 @@ def set_slack_notified(source_id: str) -> None:
     )
 
 
-PIPELINE_STATUSES = ["new", "qualified", "in_progress", "submitted", "won", "lost", "skipped"]
+PIPELINE_STATUSES = [
+    "new", "qualified", "expiring_soon", "in_progress",
+    "submitted", "won", "lost", "skipped", "expired",
+]
 
 
 def set_pipeline_status(
@@ -271,3 +274,92 @@ def get_all_scored(min_score: int = 0) -> list[dict[str, Any]]:
         WHERE fit_score >= ?
         ORDER BY fit_score DESC, response_deadline ASC
     """, (min_score,))
+
+
+# ---------------------------------------------------------------------------
+# Deadline-based status transitions
+# ---------------------------------------------------------------------------
+
+# Statuses that should be checked for deadline expiration.
+# Once an RFP is won/lost/skipped it stays there regardless of deadline.
+_DEADLINE_CHECK_STATUSES = ("new", "qualified", "expiring_soon", "in_progress")
+
+_DEADLINE_FORMATS = [
+    "%Y-%m-%dT%H:%M:%S",       # ISO with time
+    "%Y-%m-%dT%H:%M:%S.%f",    # ISO with microseconds
+    "%Y-%m-%dT%H:%M:%S%z",     # ISO with timezone
+    "%Y-%m-%d %H:%M:%S",       # space-separated
+    "%Y-%m-%d",                 # date only (treat as end of day)
+    "%m/%d/%Y %I:%M %p",       # US format with time
+    "%m/%d/%Y",                 # US date only
+    "%b %d, %Y %I:%M %p",      # "Jan 15, 2026 2:00 PM"
+    "%b %d, %Y",                # "Jan 15, 2026"
+    "%B %d, %Y",                # "January 15, 2026"
+]
+
+
+def _parse_deadline(raw: str | None) -> datetime | None:
+    """Parse a response_deadline string into a datetime. Returns None if unparseable."""
+    if not raw:
+        return None
+    raw = raw.strip()
+    for fmt in _DEADLINE_FORMATS:
+        try:
+            dt = datetime.strptime(raw, fmt)
+            # If date-only format (no time component), assume end of business day
+            if fmt in ("%Y-%m-%d", "%m/%d/%Y", "%b %d, %Y", "%B %d, %Y"):
+                dt = dt.replace(hour=17, minute=0, second=0)
+            return dt
+        except ValueError:
+            continue
+    return None
+
+
+def check_deadlines(warn_days: int = 7) -> dict[str, int]:
+    """Check all active opportunities and move them to expiring_soon / expired.
+
+    - expired: deadline has passed (date + time)
+    - expiring_soon: deadline is within `warn_days` days
+
+    Returns {"expired": n, "expiring_soon": n} counts of transitions made.
+    """
+    now = datetime.utcnow()
+    warn_cutoff = now + timedelta(days=warn_days)
+
+    placeholders = ", ".join("?" for _ in _DEADLINE_CHECK_STATUSES)
+    rows = _query(
+        f"""SELECT source_id, response_deadline, pipeline_status
+            FROM opportunities
+            WHERE pipeline_status IN ({placeholders})
+              AND response_deadline IS NOT NULL
+              AND response_deadline != ''""",
+        tuple(_DEADLINE_CHECK_STATUSES),
+    )
+
+    counts = {"expired": 0, "expiring_soon": 0}
+
+    for row in rows:
+        dl = _parse_deadline(row.get("response_deadline"))
+        if dl is None:
+            continue
+        # Normalize to naive UTC for comparison
+        if dl.tzinfo is not None:
+            dl = dl.replace(tzinfo=None)
+
+        current_status = row.get("pipeline_status") or "new"
+        sid = row["source_id"]
+
+        if dl <= now:
+            # Deadline has passed — mark expired
+            if current_status != "expired":
+                set_pipeline_status(sid, "expired", notes="Auto-expired — deadline passed")
+                counts["expired"] += 1
+        elif dl <= warn_cutoff:
+            # Within warning window — mark expiring soon
+            # Don't downgrade in_progress to expiring_soon; they're already being worked
+            if current_status in ("new", "qualified", "expiring_soon"):
+                if current_status != "expiring_soon":
+                    set_pipeline_status(sid, "expiring_soon", notes=f"Deadline within {warn_days} days")
+                    counts["expiring_soon"] += 1
+
+    return counts

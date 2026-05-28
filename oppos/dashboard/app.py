@@ -38,7 +38,7 @@ for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHRO
 
 from oppos.config import DB_PATH, SOURCE_STATE_MAP
 from oppos.sources.registry import list_available
-from oppos.storage.db import get_all_scored, get_by_pipeline_status, init_db, set_pipeline_status
+from oppos.storage.db import check_deadlines, get_all_scored, get_by_pipeline_status, init_db, set_pipeline_status
 
 ATTACHMENTS_DIR = DB_PATH.parent / "attachments"
 
@@ -491,6 +491,32 @@ hr {
     color: var(--text-tertiary);
     border: 1px solid rgba(137, 126, 112, 0.2);
 }
+.pipeline-expiring_soon {
+    background: rgba(232, 148, 76, 0.2);
+    color: var(--accent-orange);
+    border: 1px solid rgba(232, 148, 76, 0.4);
+    animation: pulse-warning 2s ease-in-out infinite;
+}
+.pipeline-expired {
+    background: rgba(242, 95, 69, 0.15);
+    color: var(--accent-red);
+    border: 1px solid rgba(242, 95, 69, 0.3);
+    text-decoration: line-through;
+}
+@keyframes pulse-warning {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+.opp-tag.deadline-urgent {
+    background: rgba(232, 148, 76, 0.2);
+    color: var(--accent-orange);
+    font-weight: 600;
+}
+.opp-tag.deadline-expired {
+    background: rgba(242, 95, 69, 0.15);
+    color: var(--accent-red);
+    text-decoration: line-through;
+}
 
 /* NEW badge */
 .new-badge {
@@ -582,17 +608,20 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 init_db()
+check_deadlines()  # Auto-move expired / expiring-soon RFPs on every page load
 SOURCE_LABELS = dict(list_available())
 SOURCE_LABELS["manual"] = "Manual Submission"
 
 PIPELINE_LABELS = {
     "new": "New",
     "qualified": "Qualified",
+    "expiring_soon": "Expiring Soon",
     "in_progress": "In Progress",
     "submitted": "Submitted",
     "won": "Won",
     "lost": "Lost",
     "skipped": "Skipped",
+    "expired": "Expired",
 }
 
 STATUS_OPTIONS = list(PIPELINE_LABELS.keys())
@@ -812,6 +841,10 @@ st.markdown(f"""
         <div class="stat-label">High Fit (65+)</div>
     </div>
     <div class="stat-item">
+        <div class="stat-value" style="color: var(--accent-orange);">{status_counts.get('expiring_soon', 0)}</div>
+        <div class="stat-label">Expiring</div>
+    </div>
+    <div class="stat-item">
         <div class="stat-value gold">{status_counts.get('in_progress', 0)}</div>
         <div class="stat-label">In Progress</div>
     </div>
@@ -826,12 +859,18 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-tab_pipeline, tab_qualified, tab_in_progress, tab_submitted, tab_archive = st.tabs([
+_expiring_count = status_counts.get('expiring_soon', 0)
+_expired_count = status_counts.get('expired', 0)
+_archive_count = status_counts.get('won', 0) + status_counts.get('lost', 0) + status_counts.get('skipped', 0)
+
+tab_pipeline, tab_qualified, tab_expiring, tab_in_progress, tab_submitted, tab_archive, tab_expired = st.tabs([
     f"Pipeline ({status_counts.get('new', 0)})",
     f"Qualified ({status_counts.get('qualified', 0)})",
+    f"Expiring Soon ({_expiring_count})" if _expiring_count else "Expiring Soon",
     f"In Progress ({status_counts.get('in_progress', 0)})",
     f"Submitted ({status_counts.get('submitted', 0)})",
-    f"Archive ({status_counts.get('won', 0) + status_counts.get('lost', 0) + status_counts.get('skipped', 0)})",
+    f"Archive ({_archive_count})",
+    f"Expired ({_expired_count})" if _expired_count else "Expired",
 ])
 
 
@@ -1189,6 +1228,26 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
     pipeline_notes = opp.get("pipeline_notes") or ""
     assigned = opp.get("assigned_to") or ""
 
+    # Compute deadline urgency for tag styling
+    _deadline_css = "deadline"
+    _deadline_prefix = "Due"
+    if deadline:
+        from oppos.storage.db import _parse_deadline
+        _dl_dt = _parse_deadline(deadline)
+        if _dl_dt:
+            if _dl_dt.tzinfo is not None:
+                _dl_dt = _dl_dt.replace(tzinfo=None)
+            _days_left = (_dl_dt - datetime.utcnow()).total_seconds() / 86400
+            if _days_left < 0:
+                _deadline_css = "deadline-expired"
+                _deadline_prefix = "EXPIRED"
+            elif _days_left <= 3:
+                _deadline_css = "deadline-urgent"
+                _deadline_prefix = f"Due in {max(0, int(_days_left))}d"
+            elif _days_left <= 7:
+                _deadline_css = "deadline-urgent"
+                _deadline_prefix = f"Due in {int(_days_left)}d"
+
     title_html = f'<a class="opp-title" href="{_esc(url)}" target="_blank">{title}</a>' if url else f'<span class="opp-title">{title}</span>'
     state_name = _esc(SOURCE_STATE_MAP.get(opp.get("source", ""), ""))
 
@@ -1219,7 +1278,7 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
         f'<span class="pipeline-badge pipeline-{pipeline_status}">{status_label}</span>',
         f'<span class="opp-tag source">{source_label}</span>',
         sol_tag,
-        f'<span class="opp-tag deadline">Due {deadline_display}</span>',
+        f'<span class="opp-tag {_deadline_css}">{_deadline_prefix} {deadline_display}</span>',
         pattern_tag,
         '</div></div>',
         f'<div class="score-badge {_score_class(score)}">',
@@ -1460,6 +1519,48 @@ with tab_qualified:
                     st.rerun()
         st.markdown("---")
 
+# --- Expiring Soon tab ---
+with tab_expiring:
+    exp_rows = get_by_pipeline_status("expiring_soon")
+    exp_rows.sort(key=lambda r: r.get("response_deadline") or "9999")
+    st.markdown(
+        f'<div style="color: var(--accent-orange); font-size: 14px; margin-bottom: 16px;">'
+        f'<strong>{len(exp_rows)}</strong> opportunities expiring within 7 days — act fast or they move to Expired</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not exp_rows:
+        render_empty("No expiring opportunities. Deadlines are checked automatically on each page load.")
+    for opp in exp_rows:
+        render_card(opp, "exp", show_status_controls=False)
+        esid = opp.get("source_id", "")
+        ec1, ec2 = st.columns(2)
+        with ec1:
+            with st.popover("Pursue →", use_container_width=True):
+                exp_pursue_reason = st.text_input(
+                    "Why are we pursuing this?",
+                    key=f"exp_pursue_reason_{esid}",
+                    placeholder="Deadline approaching but strong fit — fast turnaround",
+                )
+                if st.button("Confirm Pursue", key=f"exp_confirm_pursue_{esid}", use_container_width=True):
+                    from oppos.outputs.slack_alerts import send_pursue_alert
+                    set_pipeline_status(esid, "in_progress", notes=exp_pursue_reason or "Pursuing — deadline approaching")
+                    send_pursue_alert(opp, reason=exp_pursue_reason or "")
+                    st.rerun()
+        with ec2:
+            with st.popover("Skip →", use_container_width=True):
+                exp_skip_reason = st.text_input(
+                    "Reason for skipping?",
+                    key=f"exp_skip_reason_{esid}",
+                    placeholder="Won't make the deadline, not worth rushing",
+                )
+                if st.button("Confirm Skip", key=f"exp_confirm_skip_{esid}", use_container_width=True):
+                    from oppos.outputs.slack_alerts import send_abandon_alert
+                    set_pipeline_status(esid, "skipped", notes=exp_skip_reason or "Skipped — deadline too close")
+                    send_abandon_alert(opp, reason=exp_skip_reason or "Skipped — deadline too close", label="Skipped")
+                    st.rerun()
+        st.markdown("---")
+
 # --- In Progress tab ---
 with tab_in_progress:
     ip_rows = get_by_pipeline_status("in_progress")
@@ -1517,6 +1618,21 @@ with tab_archive:
         render_empty("No archived opportunities yet.")
     for opp in archive_rows:
         render_card(opp, "arch")
+
+# --- Expired tab ---
+with tab_expired:
+    expired_rows = get_by_pipeline_status("expired")
+    expired_rows.sort(key=lambda r: r.get("response_deadline") or "", reverse=True)
+    st.markdown(
+        f'<div style="color: var(--accent-red); font-size: 14px; margin-bottom: 16px;">'
+        f'<strong>{len(expired_rows)}</strong> expired — deadline passed before action was taken</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not expired_rows:
+        render_empty("No expired opportunities. Deadlines are checked automatically on each page load.")
+    for opp in expired_rows:
+        render_card(opp, "expd", show_status_controls=False)
 
 st.markdown(f"""
 <div class="oppos-footer">
