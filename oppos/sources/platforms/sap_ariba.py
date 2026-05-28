@@ -1,6 +1,6 @@
 """Generic scraper for SAP/Ariba-based eProcurement portals.
 
-Covers: Florida (MFMP), Mississippi (MAGIC), North Carolina (eVP), South Carolina (SCEIS).
+Covers: Florida (MFMP), Louisiana (LaPAC), Mississippi (MAGIC), North Carolina (eVP), South Carolina (SCPro).
 """
 
 from __future__ import annotations
@@ -50,6 +50,12 @@ SITES: dict[str, SAPSite] = {
         base_url="https://procurement.sc.gov",
         bids_path="/doing-biz/bid-ops",
         place_default="South Carolina",
+    ),
+    "louisiana_lapac": SAPSite(
+        key="louisiana_lapac", state="LA", name="LaPAC Louisiana",
+        base_url="https://wwwcfprd.doa.louisiana.gov",
+        bids_path="/osp/lapac/pubmain.cfm",
+        place_default="Louisiana",
     ),
 }
 

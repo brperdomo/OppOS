@@ -1,6 +1,6 @@
 """Generic scraper for PeopleSoft/Oracle Supplier Portal eProcurement.
 
-Covers: Georgia, Indiana, Kansas, Minnesota, Oklahoma, Tennessee, Wisconsin.
+Covers: Georgia, Indiana, Kansas, Minnesota, New York, Oklahoma, Tennessee, Wisconsin.
 PeopleSoft portals share similar Fluid Supplier Portal UI patterns.
 """
 
@@ -70,6 +70,12 @@ SITES: dict[str, PeopleSoftSite] = {
         base_url="https://esupplier.wi.gov",
         bids_path="/psp/WISPRDSS/SUPPLIER/ERP/h/?tab=DEFAULT",
         place_default="Wisconsin",
+    ),
+    "new_york_sfs": PeopleSoftSite(
+        key="new_york_sfs", state="NY", name="NY SFS Vendor Portal",
+        base_url="https://esupplier.sfs.ny.gov",
+        bids_path="/psp/fsprda/SUPPLIER/ERP/h/?tab=DEFAULT",
+        place_default="New York",
     ),
 }
 

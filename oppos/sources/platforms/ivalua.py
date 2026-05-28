@@ -1,6 +1,6 @@
 """Generic scraper for Ivalua-based eProcurement portals.
 
-Covers: Maryland (eMMA), North Dakota (NDBuys), Vermont (VTBuys), Virginia (eVA).
+Covers: Alabama (AlabamaBuys), Maryland (eMMA), North Dakota (NDBuys), Ohio (OhioBuys), Vermont (VTBuys), Virginia (eVA).
 """
 
 from __future__ import annotations
@@ -51,6 +51,18 @@ SITES: dict[str, IvaluaSite] = {
         base_url="https://vtbuysprocurement.vermont.gov",
         bids_path="/",
         place_default="Vermont",
+    ),
+    "alabama_alabamabuys": IvaluaSite(
+        key="alabama_alabamabuys", state="AL", name="AlabamaBuys",
+        base_url="https://alabamabuys.gov",
+        bids_path="/",
+        place_default="Alabama",
+    ),
+    "ohio_ohiobuys": IvaluaSite(
+        key="ohio_ohiobuys", state="OH", name="OhioBuys",
+        base_url="https://ohiobuys.ohio.gov",
+        bids_path="/",
+        place_default="Ohio",
     ),
 }
 

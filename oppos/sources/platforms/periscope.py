@@ -1,6 +1,6 @@
 """Generic scraper for Periscope/SOVRA BuySpeed eProcurement portals.
 
-Covers: Arizona, Arkansas, Illinois, Massachusetts, Nevada, New Jersey, Oregon.
+Covers: Arizona, Arkansas, California, Illinois, Massachusetts, Nevada, New Jersey, Oregon.
 All share the same /bso/ application with identical URL patterns.
 """
 
@@ -62,6 +62,11 @@ SITES: dict[str, PeriscopeSite] = {
         key="arizona_app", state="AZ", name="Arizona Procurement Portal",
         base_url="https://app.az.gov",
         place_default="Arizona",
+    ),
+    "california_caleprocure": PeriscopeSite(
+        key="california_caleprocure", state="CA", name="Cal eProcure",
+        base_url="https://caleprocure.ca.gov",
+        place_default="California",
     ),
 }
 
