@@ -78,16 +78,41 @@ _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Chrome/126.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Sec-Ch-Ua": '"Chromium";v="126", "Not A(Brand";v="8", "Google Chrome";v="126"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 
 def fetch_page(url: str) -> dict:
     """Fetch a URL and return html, text, content_type, and any error."""
     try:
-        with httpx.Client(timeout=30.0, follow_redirects=True, headers=_HEADERS) as client:
+        with httpx.Client(
+            timeout=30.0,
+            follow_redirects=True,
+            headers=_HEADERS,
+            http2=True,
+        ) as client:
+            # Some sites need a session cookie — do a GET to the root first for .aspx sites
+            parsed = urlparse(url)
+            if ".aspx" in parsed.path.lower() or ".asp" in parsed.path.lower():
+                try:
+                    client.get(f"{parsed.scheme}://{parsed.netloc}/")
+                except Exception:
+                    pass  # best-effort session warm-up
+
             resp = client.get(url)
             resp.raise_for_status()
             ct = resp.headers.get("content-type", "")
@@ -101,8 +126,10 @@ def fetch_page(url: str) -> dict:
             }
     except httpx.HTTPStatusError as e:
         code = e.response.status_code
-        if code in (401, 403):
+        if code == 401:
             msg = f"HTTP {code} — this page requires authentication. Try uploading the PDF directly."
+        elif code == 403:
+            msg = f"HTTP {code} — site is blocking automated access. Try uploading the PDF directly."
         else:
             msg = f"HTTP {code}"
         return {"html": "", "raw_bytes": None, "text": "", "content_type": "", "status_code": code, "error": msg}
