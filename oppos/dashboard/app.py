@@ -664,6 +664,43 @@ if scan_clicked:
     st.rerun()
 
 # --- Manual RFP submission ---
+def _run_manual_url(url: str) -> dict:
+    """Run URL submission and return result dict."""
+    from oppos.sources.manual import submit_url
+    progress_log = []
+
+    def _on_progress(step, detail=""):
+        labels = {
+            "duplicate": "⚠️", "fetch": "🌐", "direct_file": "📄",
+            "metadata": "🧠", "attachments": "📎", "extract_text": "🔍", "scoring": "📊",
+        }
+        icon = labels.get(step, "➡️")
+        if detail:
+            st.write(f"{icon} {detail}")
+            progress_log.append(f"{icon} {detail}")
+
+    result = submit_url(url, on_progress=_on_progress)
+    result["_progress_log"] = progress_log
+    return result
+
+
+def _run_manual_file(file_bytes: bytes, filename: str) -> dict:
+    """Run file submission and return result dict."""
+    from oppos.sources.manual import submit_file
+    progress_log = []
+
+    def _on_progress(step, detail=""):
+        labels = {"extract_text": "🔍", "metadata": "🧠", "scoring": "📊"}
+        icon = labels.get(step, "➡️")
+        if detail:
+            st.write(f"{icon} {detail}")
+            progress_log.append(f"{icon} {detail}")
+
+    result = submit_file(file_bytes, filename, on_progress=_on_progress)
+    result["_progress_log"] = progress_log
+    return result
+
+
 if st.session_state.get("show_manual_form"):
     with st.container():
         st.markdown(
@@ -688,57 +725,19 @@ if st.session_state.get("show_manual_form"):
             )
             url_submit = st.button("Analyze URL", key="manual_url_submit", use_container_width=True)
             if url_submit and manual_url:
-                from oppos.sources.manual import submit_url
-
                 with st.status("Analyzing RFP...", expanded=True) as status:
-                    def _url_progress(step, detail=""):
-                        labels = {
-                            "duplicate": "⚠️",
-                            "fetch": "🌐",
-                            "direct_file": "📄",
-                            "metadata": "🧠",
-                            "attachments": "📎",
-                            "extract_text": "🔍",
-                            "scoring": "📊",
-                        }
-                        icon = labels.get(step, "➡️")
-                        if detail:
-                            st.write(f"{icon} {detail}")
-
-                    result = submit_url(manual_url, on_progress=_url_progress)
-
+                    result = _run_manual_url(manual_url)
                     if result.get("error"):
                         status.update(label=f"Failed: {result['error']}", state="error")
-                        st.error(f"Could not process URL: {result['error']}")
                     else:
                         score = result.get("fit_score", 0)
                         title = result.get("title", "Untitled")
-                        agency = result.get("agency", "")
-                        s2 = result.get("stage2") or {}
-
-                        st.divider()
-                        st.write(f"**{title}**")
-                        if agency:
-                            st.write(f"Agency: {agency}")
-                        st.write(f"**Score: {score}/100** — {result.get('recommended_action', '?')}")
-
-                        if s2.get("summary"):
-                            st.write(f"_{s2['summary']}_")
-                        if s2.get("strengths"):
-                            st.write("**Strengths:** " + " · ".join(s2["strengths"][:3]))
-                        if s2.get("risks"):
-                            st.write("**Risks:** " + " · ".join(s2["risks"][:3]))
-
                         status.update(label=f"Score: {score}/100 — {title[:50]}", state="complete")
-
-                        # Store attachment paths for deep scan
-                        if result.get("_att_files"):
-                            sid = result.get("source_id", "")
-                            st.session_state[f"att_files_{sid}"] = result["_att_files"]
-
-                        st.success(f"Added to Pipeline — **{title}** scored **{score}/100**")
-
-                # Don't auto-close — let user see results, then close or submit another
+                # Persist result so it survives reruns
+                st.session_state["manual_result"] = result
+                if result.get("_att_files"):
+                    sid = result.get("source_id", "")
+                    st.session_state[f"att_files_{sid}"] = result["_att_files"]
 
         with file_tab:
             uploaded = st.file_uploader(
@@ -748,56 +747,48 @@ if st.session_state.get("show_manual_form"):
             )
             file_submit = st.button("Analyze File", key="manual_file_submit", use_container_width=True)
             if file_submit and uploaded:
-                from oppos.sources.manual import submit_file
-
                 file_bytes = uploaded.read()
-
                 with st.status(f"Analyzing {uploaded.name}...", expanded=True) as status:
-                    def _file_progress(step, detail=""):
-                        labels = {
-                            "extract_text": "🔍",
-                            "metadata": "🧠",
-                            "scoring": "📊",
-                        }
-                        icon = labels.get(step, "➡️")
-                        if detail:
-                            st.write(f"{icon} {detail}")
-
-                    result = submit_file(file_bytes, uploaded.name, on_progress=_file_progress)
-
+                    result = _run_manual_file(file_bytes, uploaded.name)
                     if result.get("error"):
                         status.update(label=f"Failed: {result['error']}", state="error")
-                        st.error(f"Could not process file: {result['error']}")
                     else:
                         score = result.get("fit_score", 0)
                         title = result.get("title", "Untitled")
-                        agency = result.get("agency", "")
-                        s2 = result.get("stage2") or {}
-
-                        st.divider()
-                        st.write(f"**{title}**")
-                        if agency:
-                            st.write(f"Agency: {agency}")
-                        st.write(f"**Score: {score}/100** — {result.get('recommended_action', '?')}")
-
-                        if s2.get("summary"):
-                            st.write(f"_{s2['summary']}_")
-                        if s2.get("strengths"):
-                            st.write("**Strengths:** " + " · ".join(s2["strengths"][:3]))
-                        if s2.get("risks"):
-                            st.write("**Risks:** " + " · ".join(s2["risks"][:3]))
-
                         status.update(label=f"Score: {score}/100 — {title[:50]}", state="complete")
+                st.session_state["manual_result"] = result
+                if result.get("_att_files"):
+                    sid = result.get("source_id", "")
+                    st.session_state[f"att_files_{sid}"] = result["_att_files"]
 
-                        if result.get("_att_files"):
-                            sid = result.get("source_id", "")
-                            st.session_state[f"att_files_{sid}"] = result["_att_files"]
+        # --- Persistent result display (survives reruns) ---
+        manual_result = st.session_state.get("manual_result")
+        if manual_result:
+            if manual_result.get("error"):
+                st.error(f"Could not process: {manual_result['error']}")
+            else:
+                score = manual_result.get("fit_score", 0)
+                title = manual_result.get("title", "Untitled")
+                agency = manual_result.get("agency", "")
+                s2 = manual_result.get("stage2") or {}
 
-                        st.success(f"Added to Pipeline — **{title}** scored **{score}/100**")
+                st.success(f"Added to Pipeline — **{title}** scored **{score}/100**")
 
-        # Close button
+                with st.expander("Analysis Details", expanded=True):
+                    if agency:
+                        st.write(f"**Agency:** {agency}")
+                    st.write(f"**Score:** {score}/100 — {manual_result.get('recommended_action', '?')}")
+                    if s2.get("summary"):
+                        st.write(f"_{s2['summary']}_")
+                    if s2.get("strengths"):
+                        st.write("**Strengths:** " + " · ".join(s2["strengths"][:3]))
+                    if s2.get("risks"):
+                        st.write("**Risks:** " + " · ".join(s2["risks"][:3]))
+
+        # Close / clear
         if st.button("Close", key="manual_cancel"):
             st.session_state["show_manual_form"] = False
+            st.session_state.pop("manual_result", None)
             st.rerun()
 
         st.markdown("</div>", unsafe_allow_html=True)
