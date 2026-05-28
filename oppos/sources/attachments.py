@@ -145,6 +145,13 @@ def download_attachments(opp: dict[str, Any]) -> list[Path]:
     if source == "sam_gov":
         return download_sam_gov(opp)
 
+    if source == "manual":
+        # Manual submissions already have files downloaded by the manual module
+        opp_dir = ATTACHMENTS_DIR / _sanitize_filename(opp.get("source_id", ""))
+        if opp_dir.is_dir():
+            return sorted(f for f in opp_dir.iterdir() if f.is_file())
+        return []
+
     from oppos.sources.platforms.periscope import SITES
     if source in SITES:
         return download_periscope(opp, SITES[source].base_url)

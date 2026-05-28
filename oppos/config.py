@@ -35,6 +35,7 @@ ENABLED_SOURCES: list[str] = [
 ]
 
 SOURCE_STATE_MAP: dict[str, str] = {
+    "manual": "Manual",
     "sam_gov": "Federal",
     "nevada_epro": "Nevada",
     "massachusetts_commbuys": "Massachusetts",
