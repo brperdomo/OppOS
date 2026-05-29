@@ -1651,63 +1651,56 @@ with tab_expiring:
     if not exp_rows:
         render_empty("No expiring opportunities. Deadlines are checked automatically on each page load.")
     for opp in exp_rows:
-        render_card(opp, "exp", show_status_controls=False)
+        render_card(opp, "exp")
         esid = opp.get("source_id", "")
         _opp_score = int(opp.get("fit_score") or 0)
 
         # Individual score button for unscored opps
         if _opp_score == 0:
-            sc1, sc2, sc3 = st.columns([1, 1, 2])
-            with sc1:
-                if st.button("Score This", key=f"exp_score_{esid}", use_container_width=True):
-                    from oppos.scoring.qualifier import force_score
-                    from oppos.storage.db import upsert_opportunity
-                    with st.spinner(f"Scoring {opp.get('title', '')[:40]}..."):
-                        att_text = opp.get("attachment_text") or ""
-                        scored = force_score(opp, attachment_text=att_text)
-                        scored["attachment_text"] = att_text or None
-                        upsert_opportunity(scored)
-                        set_pipeline_status(
-                            esid, "expiring_soon",
-                            notes=f"Scored from description — {scored.get('fit_score', 0)}/100",
-                        )
-                    new_score = scored.get("fit_score", 0)
-                    s2_result = scored.get("stage2") or {}
-                    st.success(f"Score: **{new_score}/100** — {s2_result.get('recommended_action', 'N/A')}")
-                    if s2_result.get("summary"):
-                        st.info(s2_result["summary"])
-            with sc2:
-                pass
-            with sc3:
-                pass
+            if st.button("Score This", key=f"exp_score_{esid}"):
+                from oppos.scoring.qualifier import force_score
+                from oppos.storage.db import upsert_opportunity
+                with st.spinner(f"Scoring {opp.get('title', '')[:40]}..."):
+                    att_text = opp.get("attachment_text") or ""
+                    scored = force_score(opp, attachment_text=att_text)
+                    scored["attachment_text"] = att_text or None
+                    upsert_opportunity(scored)
+                    set_pipeline_status(
+                        esid, "expiring_soon",
+                        notes=f"Scored from description — {scored.get('fit_score', 0)}/100",
+                    )
+                new_score = scored.get("fit_score", 0)
+                s2_result = scored.get("stage2") or {}
+                st.success(f"Score: **{new_score}/100** — {s2_result.get('recommended_action', 'N/A')}")
+                if s2_result.get("summary"):
+                    st.info(s2_result["summary"])
 
-        # Pursue / Skip actions (for scored opps)
-        if _opp_score > 0:
-            ec1, ec2 = st.columns(2)
-            with ec1:
-                with st.popover("Pursue →", use_container_width=True):
-                    exp_pursue_reason = st.text_input(
-                        "Why are we pursuing this?",
-                        key=f"exp_pursue_reason_{esid}",
-                        placeholder="Deadline approaching but strong fit — fast turnaround",
-                    )
-                    if st.button("Confirm Pursue", key=f"exp_confirm_pursue_{esid}", use_container_width=True):
-                        from oppos.outputs.slack_alerts import send_pursue_alert
-                        set_pipeline_status(esid, "in_progress", notes=exp_pursue_reason or "Pursuing — deadline approaching")
-                        send_pursue_alert(opp, reason=exp_pursue_reason or "")
-                        st.rerun()
-            with ec2:
-                with st.popover("Skip →", use_container_width=True):
-                    exp_skip_reason = st.text_input(
-                        "Reason for skipping?",
-                        key=f"exp_skip_reason_{esid}",
-                        placeholder="Won't make the deadline, not worth rushing",
-                    )
-                    if st.button("Confirm Skip", key=f"exp_confirm_skip_{esid}", use_container_width=True):
-                        from oppos.outputs.slack_alerts import send_abandon_alert
-                        set_pipeline_status(esid, "skipped", notes=exp_skip_reason or "Skipped — deadline too close")
-                        send_abandon_alert(opp, reason=exp_skip_reason or "Skipped — deadline too close", label="Skipped")
-                        st.rerun()
+        # Pursue / Skip actions — always available
+        ec1, ec2 = st.columns(2)
+        with ec1:
+            with st.popover("Pursue →", use_container_width=True):
+                exp_pursue_reason = st.text_input(
+                    "Why are we pursuing this?",
+                    key=f"exp_pursue_reason_{esid}",
+                    placeholder="Deadline approaching but strong fit — fast turnaround",
+                )
+                if st.button("Confirm Pursue", key=f"exp_confirm_pursue_{esid}", use_container_width=True):
+                    from oppos.outputs.slack_alerts import send_pursue_alert
+                    set_pipeline_status(esid, "in_progress", notes=exp_pursue_reason or "Pursuing — deadline approaching")
+                    send_pursue_alert(opp, reason=exp_pursue_reason or "")
+                    st.rerun()
+        with ec2:
+            with st.popover("Skip →", use_container_width=True):
+                exp_skip_reason = st.text_input(
+                    "Reason for skipping?",
+                    key=f"exp_skip_reason_{esid}",
+                    placeholder="Won't make the deadline, not worth rushing",
+                )
+                if st.button("Confirm Skip", key=f"exp_confirm_skip_{esid}", use_container_width=True):
+                    from oppos.outputs.slack_alerts import send_abandon_alert
+                    set_pipeline_status(esid, "skipped", notes=exp_skip_reason or "Skipped — deadline too close")
+                    send_abandon_alert(opp, reason=exp_skip_reason or "Skipped — deadline too close", label="Skipped")
+                    st.rerun()
         st.markdown("---")
 
 # --- In Progress tab ---
