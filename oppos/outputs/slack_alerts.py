@@ -160,7 +160,7 @@ def build_sdr_message(opp: dict[str, Any]) -> str:
     return msg
 
 
-def _build_pursue_message(opp: dict[str, Any], reason: str = "") -> dict:
+def _build_pursue_message(opp: dict[str, Any], reason: str = "", notion_url: str = "") -> dict:
     """Build Slack blocks for a 'Pursuing' notification."""
     s2 = opp.get("stage2") or opp.get("stage2_json") or {}
     if isinstance(s2, str):
@@ -226,6 +226,16 @@ def _build_pursue_message(opp: dict[str, Any], reason: str = "") -> dict:
         },
     })
 
+    # Notion link for response drafting
+    if notion_url:
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*📝 Draft Response:* <{notion_url}|Open in Notion>",
+            },
+        })
+
     summary = s2.get("summary", "")
     if summary:
         blocks.append({
@@ -236,13 +246,13 @@ def _build_pursue_message(opp: dict[str, Any], reason: str = "") -> dict:
     return {"blocks": blocks}
 
 
-def send_pursue_alert(opp: dict[str, Any], reason: str = "") -> bool:
+def send_pursue_alert(opp: dict[str, Any], reason: str = "", notion_url: str = "") -> bool:
     """Send a Slack notification when an RFP is moved to 'Pursuing'."""
     if not SLACK_WEBHOOK_URL:
         logger.warning("SLACK_WEBHOOK_URL not set — skipping pursue alert")
         return False
 
-    payload = _build_pursue_message(opp, reason)
+    payload = _build_pursue_message(opp, reason, notion_url=notion_url)
 
     try:
         resp = httpx.post(SLACK_WEBHOOK_URL, json=payload, timeout=10.0)

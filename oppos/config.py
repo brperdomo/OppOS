@@ -14,6 +14,7 @@ SCORING_MODEL_STAGE2 = os.environ.get("SCORING_MODEL_STAGE2", "claude-sonnet-4-6
 
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
+NOTION_DATASOURCE_ID = os.environ.get("NOTION_DATASOURCE_ID", "b43f162e-0dac-4e66-aeb5-664d6b5296a5")
 
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 

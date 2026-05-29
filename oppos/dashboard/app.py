@@ -26,7 +26,7 @@ try:
 except Exception as e:
     _secrets_errors.append(f"listing secrets: {e}")
 
-for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHROPIC_API_KEY", "SLACK_WEBHOOK_URL", "NUTRIENT_API_KEY"):
+for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHROPIC_API_KEY", "SLACK_WEBHOOK_URL", "NUTRIENT_API_KEY", "NOTION_TOKEN", "NOTION_DATABASE_ID"):
     try:
         if hasattr(st, "secrets") and key in st.secrets:
             val = str(st.secrets[key]).strip().strip('"').strip("'")
@@ -632,13 +632,14 @@ def _run_scan() -> dict:
     """Run the pipeline in-process and return stats."""
     import logging
     from oppos.config import STAGE2_MIN_SCORE
+    from oppos.scoring.prefilter import prefilter
     from oppos.scoring.qualifier import qualify
     from oppos.sources.registry import get_enabled_sources
     from oppos.storage.db import is_seen, upsert_opportunity
 
     logging.basicConfig(level=logging.INFO)
     sources = get_enabled_sources()
-    stats = {"fetched": 0, "new": 0, "scored": 0, "errors": []}
+    stats = {"fetched": 0, "new": 0, "filtered_out": 0, "scored": 0, "errors": []}
     posted_from = datetime.now() - timedelta(days=14)
 
     for key, name, fetch_fn in sources:
@@ -649,6 +650,11 @@ def _run_scan() -> dict:
                 if is_seen(opp["source_id"]):
                     continue
                 stats["new"] += 1
+                # Rules-based pre-filter — skip obvious non-software
+                prefilter(opp)
+                if not opp["prefilter"]["passed"]:
+                    stats["filtered_out"] += 1
+                    continue
                 scored = qualify(opp)
                 if scored.get("fit_score", 0) >= STAGE2_MIN_SCORE:
                     stats["scored"] += 1
@@ -672,11 +678,13 @@ if manual_open:
 if scan_clicked:
     with st.spinner("Scanning all sources for new opportunities..."):
         scan_stats = _run_scan()
+    filtered = scan_stats.get("filtered_out", 0)
     if scan_stats["new"] > 0:
+        filter_note = f" · {filtered} non-software filtered out" if filtered else ""
         st.markdown(f"""
         <div class="scan-result">
             Found <strong>{scan_stats["new"]} new</strong> opportunities
-            ({scan_stats["scored"]} scored above threshold)
+            ({scan_stats["scored"]} scored above threshold{filter_note})
             from {scan_stats["fetched"]} total listings scanned.
         </div>
         """, unsafe_allow_html=True)
@@ -933,6 +941,80 @@ def _ensure_files_exist(opp: dict, selected_paths: list) -> list:
         elif f.exists():
             refreshed.append(f)
     return refreshed
+
+
+def _pursue_opportunity(opp: dict, reason: str = "") -> None:
+    """Full Pursue flow: Notion push → Slack alert (with Notion link) → status update."""
+    from oppos.outputs.notion_sync import push_opportunity
+    from oppos.outputs.slack_alerts import send_pursue_alert
+    from oppos.storage.db import set_notion_page_id, upsert_opportunity
+
+    sid = opp.get("source_id", "")
+    title = opp.get("title", "Untitled")
+
+    with st.status(f"Pursuing: {title[:50]}…", expanded=True) as status:
+        # Step 1: Push to Notion
+        notion_url = ""
+        st.write("📤 Pushing to Notion…")
+        try:
+            # Set status before push so Notion shows "In Progress"
+            opp["pipeline_status"] = "in_progress"
+            opp["pipeline_notes"] = reason or "Qualified — pursuing"
+
+            att_dir = ATTACHMENTS_DIR / sid
+            att_paths = sorted(att_dir.glob("*")) if att_dir.exists() else []
+            page_id = push_opportunity(opp, attachment_paths=att_paths or None)
+            if page_id:
+                set_notion_page_id(sid, page_id)
+                notion_url = f"https://notion.so/{page_id.replace('-', '')}"
+                st.write(f"✓ Notion page created — [Open]({notion_url})")
+            else:
+                st.write("⚠️ Notion push failed — continuing with Slack…")
+        except Exception as e:
+            st.write(f"⚠️ Notion error: {e} — continuing with Slack…")
+
+        # Step 2: Update pipeline status
+        st.write("📋 Updating pipeline status…")
+        set_pipeline_status(sid, "in_progress", notes=reason or "Qualified — pursuing")
+
+        # Step 3: Send Slack alert with Notion link
+        st.write("📣 Sending Slack alert…")
+        send_pursue_alert(opp, reason=reason, notion_url=notion_url)
+
+        status.update(label="Pursuing ✓", state="complete")
+        st.success(f"**{title[:60]}** moved to In Progress" + (f" — [Notion]({notion_url})" if notion_url else ""))
+
+
+def _push_to_notion(opp: dict) -> None:
+    """Push an opportunity to the Notion RFP Pipeline database."""
+    from oppos.outputs.notion_sync import push_opportunity
+    from oppos.storage.db import set_notion_page_id
+
+    sid = opp.get("source_id", "")
+    title = opp.get("title", "Untitled")
+
+    with st.status(f"Pushing to Notion: {title[:50]}…", expanded=True) as status:
+        st.write("📤 Sending RFP data, scanned documents, and capability profile…")
+
+        # Collect attachment files if they exist on disk
+        att_dir = ATTACHMENTS_DIR / sid
+        attachment_paths = sorted(att_dir.glob("*")) if att_dir.exists() else []
+        if attachment_paths:
+            st.write(f"📎 {len(attachment_paths)} attachment(s) will be uploaded")
+
+        try:
+            page_id = push_opportunity(opp, attachment_paths=attachment_paths or None)
+            if page_id:
+                set_notion_page_id(sid, page_id)
+                clean_id = page_id.replace("-", "")
+                status.update(label="Pushed to Notion ✓", state="complete")
+                st.success(f"Page created — [Open in Notion](https://notion.so/{clean_id})")
+            else:
+                status.update(label="Notion push failed", state="error")
+                st.error("Push failed — check that NOTION_TOKEN and NOTION_DATABASE_ID are set.")
+        except Exception as e:
+            status.update(label="Notion push failed", state="error")
+            st.error(f"Error: {e}")
 
 
 def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
@@ -1546,9 +1628,7 @@ with tab_qualified:
                     placeholder="Strong fit for case management, aligns with public sector push",
                 )
                 if st.button("Confirm Pursue", key=f"confirm_pursue_{qsid}", use_container_width=True):
-                    from oppos.outputs.slack_alerts import send_pursue_alert
-                    set_pipeline_status(qsid, "in_progress", notes=pursue_reason or "Qualified — pursuing")
-                    send_pursue_alert(opp, reason=pursue_reason or "")
+                    _pursue_opportunity(opp, reason=pursue_reason or "")
                     st.rerun()
         with qc2:
             with st.popover("Skip →", use_container_width=True):
@@ -1685,9 +1765,7 @@ with tab_expiring:
                     placeholder="Deadline approaching but strong fit — fast turnaround",
                 )
                 if st.button("Confirm Pursue", key=f"exp_confirm_pursue_{esid}", use_container_width=True):
-                    from oppos.outputs.slack_alerts import send_pursue_alert
-                    set_pipeline_status(esid, "in_progress", notes=exp_pursue_reason or "Pursuing — deadline approaching")
-                    send_pursue_alert(opp, reason=exp_pursue_reason or "")
+                    _pursue_opportunity(opp, reason=exp_pursue_reason or "Deadline approaching — fast turnaround")
                     st.rerun()
         with ec2:
             with st.popover("Skip →", use_container_width=True):
@@ -1713,29 +1791,50 @@ with tab_in_progress:
     for opp in ip_rows:
         render_card(opp, "ip")
         ip_sid = opp.get("source_id", "")
+
+        ip_c1, ip_c2, ip_c3 = st.columns([1, 1, 1])
+
+        # Push to Notion
+        with ip_c1:
+            notion_page_id = opp.get("notion_page_id") or ""
+            if notion_page_id:
+                st.markdown(
+                    f'<a href="https://notion.so/{notion_page_id.replace("-", "")}" target="_blank" '
+                    f'style="color: var(--accent-gold); font-size: 13px;">📝 Open in Notion</a>',
+                    unsafe_allow_html=True,
+                )
+                if st.button("🔄 Re-push to Notion", key=f"repush_notion_{ip_sid}", use_container_width=True):
+                    _push_to_notion(opp)
+            else:
+                if st.button("📝 Push to Notion", key=f"push_notion_{ip_sid}", use_container_width=True):
+                    _push_to_notion(opp)
+
         # SDR message for Salesforce opp creation
-        from oppos.outputs.slack_alerts import build_sdr_message
-        with st.expander("📋 Salesforce Opp Request"):
-            sdr_msg = build_sdr_message(opp)
-            st.code(sdr_msg, language=None)
-            st.markdown(
-                '<div style="font-size: 11px; color: var(--text-tertiary);">'
-                'Copy the message above and paste it to the SDRs for Salesforce opp creation. '
-                'Also sent to Slack when you clicked Pursue.</div>',
-                unsafe_allow_html=True,
-            )
+        with ip_c2:
+            from oppos.outputs.slack_alerts import build_sdr_message
+            with st.popover("📋 Salesforce Opp", use_container_width=True):
+                sdr_msg = build_sdr_message(opp)
+                st.code(sdr_msg, language=None)
+                st.markdown(
+                    '<div style="font-size: 11px; color: var(--text-tertiary);">'
+                    'Copy the message above and paste it to the SDRs for Salesforce opp creation. '
+                    'Also sent to Slack when you clicked Pursue.</div>',
+                    unsafe_allow_html=True,
+                )
+
         # Abandon button
-        with st.popover("Abandon", use_container_width=False):
-            abandon_reason = st.text_input(
-                "Why are we abandoning this?",
-                key=f"abandon_reason_{ip_sid}",
-                placeholder="Timeline too tight, requirements changed, lost to competitor",
-            )
-            if st.button("Confirm Abandon", key=f"confirm_abandon_{ip_sid}", type="primary", use_container_width=True):
-                from oppos.outputs.slack_alerts import send_abandon_alert
-                set_pipeline_status(ip_sid, "lost", notes=abandon_reason or "Abandoned after pursuit")
-                send_abandon_alert(opp, reason=abandon_reason or "")
-                st.rerun()
+        with ip_c3:
+            with st.popover("Abandon", use_container_width=True):
+                abandon_reason = st.text_input(
+                    "Why are we abandoning this?",
+                    key=f"abandon_reason_{ip_sid}",
+                    placeholder="Timeline too tight, requirements changed, lost to competitor",
+                )
+                if st.button("Confirm Abandon", key=f"confirm_abandon_{ip_sid}", type="primary", use_container_width=True):
+                    from oppos.outputs.slack_alerts import send_abandon_alert
+                    set_pipeline_status(ip_sid, "lost", notes=abandon_reason or "Abandoned after pursuit")
+                    send_abandon_alert(opp, reason=abandon_reason or "")
+                    st.rerun()
         st.markdown("---")
 
 # --- Submitted tab ---

@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from oppos.config import SLACK_ALERT_MIN_SCORE, STAGE2_MIN_SCORE
 from oppos.outputs.notion_sync import push_opportunity
 from oppos.outputs.slack_alerts import send_alert
+from oppos.scoring.prefilter import prefilter
 from oppos.scoring.qualifier import qualify
 from oppos.sources.attachments import download_attachments
 from oppos.sources.registry import get_enabled_sources, list_available
@@ -84,6 +85,7 @@ def run(
     stats = {
         "fetched": 0,
         "new": 0,
+        "prefilter_rejected": 0,
         "relevant_stage1": 0,
         "scored": 0,
         "notion_synced": 0,
@@ -101,6 +103,17 @@ def run(
         if is_seen(sid):
             continue
         stats["new"] += 1
+
+        # Rules-based pre-filter — reject obvious non-software (free, instant)
+        prefilter(opp)
+        if not opp["prefilter"]["passed"]:
+            stats["prefilter_rejected"] += 1
+            logger.info(
+                "Pre-filtered out: '%s' — %s",
+                opp.get("title", "?")[:80],
+                opp["prefilter"]["reason"],
+            )
+            continue
 
         scored = qualify(opp)
 
