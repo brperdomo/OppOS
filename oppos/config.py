@@ -81,4 +81,8 @@ SOURCE_STATE_MAP: dict[str, str] = {
     "mississippi_magic": "Mississippi",
     "south_carolina_scpro": "South Carolina",
     "louisiana_lapac": "Louisiana",
+    # PROACTIS/WebProcure (3)
+    "connecticut_ctsource": "Connecticut",
+    "missouri_missouribuys": "Missouri",
+    "rhode_island_osp": "Rhode Island",
 }

@@ -65,6 +65,11 @@ def _load_registry() -> dict[str, tuple[str, FetchFn]]:
     for key, site in s_sites.items():
         _REGISTRY[key] = (f"{site.name} ({site.state})", _bind(s_fetch, site))
 
+    # --- PROACTIS/WebProcure states (3) ---
+    from oppos.sources.platforms.proactis import SITES as pr_sites, fetch_opportunities as pr_fetch
+    for key, site in pr_sites.items():
+        _REGISTRY[key] = (f"{site.name} ({site.state})", _bind(pr_fetch, site))
+
     return _REGISTRY
 
 
