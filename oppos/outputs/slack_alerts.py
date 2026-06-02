@@ -13,12 +13,51 @@ from oppos.config import SLACK_WEBHOOK_URL, SOURCE_STATE_MAP
 logger = logging.getLogger(__name__)
 
 
+_US_STATES = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
+    "CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
+    "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho",
+    "IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas",
+    "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi",
+    "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
+    "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
+    "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma",
+    "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
+    "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah",
+    "VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
+    "WI": "Wisconsin", "WY": "Wyoming", "DC": "District of Columbia",
+}
+_STATE_NAMES = set(_US_STATES.values())
+
+
 def _get_state(opp: dict[str, Any]) -> str:
     """Derive state/region from source key, place_of_performance, or office."""
     state = SOURCE_STATE_MAP.get(opp.get("source", ""), "")
-    if not state:
-        state = opp.get("place_of_performance") or opp.get("office") or ""
-    return state
+    if state:
+        return state
+
+    # Fall back to place_of_performance / office — try to extract just the state name
+    raw = opp.get("place_of_performance") or opp.get("office") or ""
+    if not raw:
+        return ""
+
+    # Check if the raw value IS a state name
+    if raw in _STATE_NAMES:
+        return raw
+
+    # Look for a state abbreviation (e.g., "Harrisburg, PA 17120")
+    import re
+    abbr_match = re.search(r"\b([A-Z]{2})\b", raw)
+    if abbr_match and abbr_match.group(1) in _US_STATES:
+        return _US_STATES[abbr_match.group(1)]
+
+    # Look for a state name embedded in the text
+    for name in _STATE_NAMES:
+        if name.lower() in raw.lower():
+            return name
+
+    return raw
 
 
 def _build_message(opp: dict[str, Any]) -> dict:

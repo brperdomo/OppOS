@@ -36,7 +36,6 @@ ENABLED_SOURCES: list[str] = [
 ]
 
 SOURCE_STATE_MAP: dict[str, str] = {
-    "manual": "Manual",
     "sam_gov": "Federal",
     # Periscope/SOVRA (8)
     "nevada_epro": "Nevada",
