@@ -38,7 +38,7 @@ for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHRO
 
 from oppos.config import DB_PATH, SOURCE_STATE_MAP
 from oppos.sources.registry import list_available
-from oppos.storage.db import check_deadlines, get_all_scored, get_by_pipeline_status, init_db, set_pipeline_status
+from oppos.storage.db import check_deadlines, get_all_scored, get_by_pipeline_status, get_meta, init_db, set_meta, set_pipeline_status
 
 ATTACHMENTS_DIR = DB_PATH.parent / "attachments"
 
@@ -635,7 +635,7 @@ def _run_scan() -> dict:
     from oppos.scoring.prefilter import prefilter
     from oppos.scoring.qualifier import qualify
     from oppos.sources.registry import get_enabled_sources
-    from oppos.storage.db import is_seen, upsert_opportunity
+    from oppos.storage.db import is_seen, set_meta as _set_meta, upsert_opportunity
 
     logging.basicConfig(level=logging.INFO)
     sources = get_enabled_sources()
@@ -662,6 +662,9 @@ def _run_scan() -> dict:
         except Exception as e:
             stats["errors"].append(f"{name}: {e}")
 
+    # Record scan timestamp
+    _set_meta("last_scan", datetime.utcnow().isoformat())
+
     return stats
 
 
@@ -669,6 +672,28 @@ def _run_scan() -> dict:
 scan_col, manual_col = st.columns([1, 1])
 with scan_col:
     scan_clicked = st.button("Scan for New RFPs", use_container_width=True, type="primary")
+    # Show last scan timestamp
+    _last_scan_raw = get_meta("last_scan")
+    if _last_scan_raw:
+        try:
+            _last_scan_dt = datetime.fromisoformat(_last_scan_raw).replace(tzinfo=timezone.utc)
+            _now_utc = datetime.now(timezone.utc)
+            _delta = _now_utc - _last_scan_dt
+            if _delta.total_seconds() < 60:
+                _ago = "just now"
+            elif _delta.total_seconds() < 3600:
+                _mins = int(_delta.total_seconds() // 60)
+                _ago = f"{_mins}m ago"
+            elif _delta.total_seconds() < 86400:
+                _hrs = int(_delta.total_seconds() // 3600)
+                _ago = f"{_hrs}h ago"
+            else:
+                _days = int(_delta.days)
+                _ago = f"{_days}d ago"
+            _local_str = _last_scan_dt.astimezone().strftime("%-m/%-d %I:%M %p")
+            st.caption(f"Last scan: {_local_str} ({_ago})")
+        except Exception:
+            st.caption(f"Last scan: {_last_scan_raw}")
 with manual_col:
     manual_open = st.button("Submit Manual RFP", use_container_width=True)
 

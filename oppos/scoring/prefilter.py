@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _MIN_TEXT_LENGTH = 40
 
+# If title+description is at least this long and has NO software signals,
+# reject — there's enough context to determine it's not software-related.
+_MIN_RELEVANT_TEXT = 80
+
 # ---------------------------------------------------------------------------
 # NAICS codes that are ALWAYS relevant (software / IT)
 # ---------------------------------------------------------------------------
@@ -36,8 +40,10 @@ _SOFTWARE_NAICS_PREFIXES = (
     "541511", # Custom programming
     "541513", # Computer facilities management
     "541519", # Other computer related
-    "334",    # Computer & electronic products
     "5182",   # Data processing & hosting
+    # NOTE: 334 (Computer & electronic products) intentionally excluded —
+    # too broad, covers physical hardware (circuit boards, cables, connectors).
+    # Genuine software RFPs under 334xxx will still pass via keyword matching.
 )
 
 # NAICS codes that are NEVER relevant (physical / labor / unrelated)
@@ -216,15 +222,23 @@ _PASS_PATTERNS: list[re.Pattern] = [
 ]
 
 
+_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+
+
 def _combine_text(opp: dict[str, Any]) -> str:
-    """Build searchable text from title + description + category."""
+    """Build searchable text from title + description + category.
+
+    URLs are stripped so patterns like \\bAPI\\b don't match inside
+    ``https://api.sam.gov/…`` and similar endpoints.
+    """
     parts = [
         opp.get("title") or "",
         opp.get("description") or "",
         opp.get("notice_type") or "",
         opp.get("classification_code") or "",
     ]
-    return " ".join(parts)
+    text = " ".join(parts)
+    return _URL_RE.sub("", text)
 
 
 def prefilter(opp: dict[str, Any]) -> dict[str, Any]:
@@ -243,20 +257,23 @@ def prefilter(opp: dict[str, Any]) -> dict[str, Any]:
 
     # ── NAICS fast-track ──────────────────────────────────────
     if naics:
+        is_software_naics = any(naics.startswith(p) for p in _SOFTWARE_NAICS_PREFIXES)
+        has_software_signal = any(pat.search(combined) for pat in _PASS_PATTERNS)
+
         # Software NAICS → always pass
-        if any(naics.startswith(p) for p in _SOFTWARE_NAICS_PREFIXES):
+        if is_software_naics:
             opp["prefilter"] = {"passed": True, "reason": f"Software NAICS: {naics}", "rule": "naics_pass"}
             return opp
 
-        # Physical/labor NAICS → reject UNLESS software signals present
-        if any(naics.startswith(p) for p in _REJECT_NAICS_PREFIXES):
-            if not any(pat.search(combined) for pat in _PASS_PATTERNS):
-                opp["prefilter"] = {"passed": False, "reason": f"Non-software NAICS: {naics}", "rule": "naics_reject"}
-                logger.debug("Pre-filter REJECT (NAICS %s): %s", naics, title[:80])
-                return opp
-            # Has software signals despite physical NAICS — let through
-            opp["prefilter"] = {"passed": True, "reason": f"Physical NAICS {naics} but has software signals", "rule": "naics_override_pass"}
+        # Non-software NAICS — only pass if there's a software signal in the text
+        if has_software_signal:
+            opp["prefilter"] = {"passed": True, "reason": f"Non-software NAICS {naics} but has software signals", "rule": "naics_override_pass"}
             return opp
+
+        # Non-software NAICS, no software signals → reject
+        opp["prefilter"] = {"passed": False, "reason": f"Non-software NAICS: {naics}", "rule": "naics_reject"}
+        logger.debug("Pre-filter REJECT (NAICS %s): %s", naics, title[:80])
+        return opp
 
     # ── Sparse description → auto-pass ────────────────────────
     text_length = len(title) + len(description)
@@ -276,15 +293,23 @@ def prefilter(opp: dict[str, Any]) -> dict[str, Any]:
 
     if has_reject_signal:
         # Strong non-software signal, no software signals → reject
-        # Find which pattern matched for logging
         matched = next((pat.pattern for pat in _REJECT_PATTERNS if pat.search(combined)), "?")
         opp["prefilter"] = {"passed": False, "reason": f"Non-software: matched '{matched}'", "rule": "keyword_reject"}
         logger.debug("Pre-filter REJECT (keyword): %s — %s", title[:80], matched)
         return opp
 
-    # ── Default: pass ─────────────────────────────────────────
-    # No strong signals either way — let Stage 1 decide
-    opp["prefilter"] = {"passed": True, "reason": "No strong signals — passing to Stage 1", "rule": "default_pass"}
+    # ── Default: REJECT if enough text but no software signal ─
+    # Nutrient sells software. If there's a meaningful title+description
+    # with zero software/IT/technology signals, it's almost certainly
+    # not relevant (herbicides, vehicles, frozen vegetables, etc.).
+    # Sparse descriptions already passed above — those may have attachments.
+    if text_length >= _MIN_RELEVANT_TEXT:
+        opp["prefilter"] = {"passed": False, "reason": "No software/IT signal in title or description", "rule": "no_signal_reject"}
+        logger.debug("Pre-filter REJECT (no signal): %s", title[:80])
+        return opp
+
+    # Short but not sparse — let Stage 1 decide
+    opp["prefilter"] = {"passed": True, "reason": "Short description — passing to Stage 1", "rule": "default_pass"}
     return opp
 
 

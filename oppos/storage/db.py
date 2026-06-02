@@ -143,6 +143,13 @@ _CREATE_TABLE_SQL = """
     )
 """
 
+_CREATE_META_SQL = """
+    CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )
+"""
+
 _MIGRATIONS = [
     "ALTER TABLE opportunities ADD COLUMN attachment_text TEXT",
 ]
@@ -150,11 +157,26 @@ _MIGRATIONS = [
 
 def init_db() -> None:
     _execute(_CREATE_TABLE_SQL)
+    _execute(_CREATE_META_SQL)
     for migration in _MIGRATIONS:
         try:
             _execute(migration)
         except Exception:
             pass
+
+
+def set_meta(key: str, value: str) -> None:
+    """Upsert a key-value pair in the meta table."""
+    _execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+
+
+def get_meta(key: str) -> str | None:
+    """Get a value from the meta table."""
+    rows = _query("SELECT value FROM meta WHERE key = ?", (key,))
+    return rows[0]["value"] if rows else None
 
 
 def is_seen(source_id: str) -> bool:
