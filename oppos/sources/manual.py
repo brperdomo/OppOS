@@ -134,6 +134,7 @@ def fetch_page(url: str) -> dict:
         strategies.insert(0, {"use_http2": True, "warm_session": False, "label": "http2"})
 
     last_code = 0
+    last_body = ""
     for strat in strategies:
         try:
             resp = _try_fetch(url, use_http2=strat["use_http2"], warm_session=strat["warm_session"])
@@ -149,6 +150,7 @@ def fetch_page(url: str) -> dict:
             }
         except httpx.HTTPStatusError as e:
             last_code = e.response.status_code
+            last_body = e.response.text[:500]
             logger.info("Fetch strategy '%s' got HTTP %d for %s", strat["label"], last_code, url)
             if last_code not in (403, 406, 429):
                 break  # non-retryable status, stop trying
@@ -156,12 +158,44 @@ def fetch_page(url: str) -> dict:
             logger.info("Fetch strategy '%s' failed for %s: %s", strat["label"], url, e)
             continue
 
+    # Cloudflare 403 — try /api/ prefix bypass (works for OpenGov and some other SPAs)
+    if last_code == 403 and "just a moment" in last_body.lower():
+        parsed = urlparse(url)
+        api_url = f"{parsed.scheme}://{parsed.netloc}/api{parsed.path}"
+        logger.info("Cloudflare detected — trying /api/ prefix: %s", api_url)
+        try:
+            resp = _try_fetch(api_url, use_http2=False, warm_session=False)
+            if resp.status_code == 200:
+                ct = resp.headers.get("content-type", "")
+                html = resp.text if "html" in ct else ""
+                text = _html_to_text(html) if html else ""
+                # Only use if we got meaningful content (not just an SPA shell)
+                if text and len(text) > 200:
+                    logger.info("Cloudflare bypass succeeded via /api/ prefix")
+                    return {
+                        "html": html,
+                        "raw_bytes": None,
+                        "text": text,
+                        "content_type": ct,
+                        "status_code": 200,
+                        "error": None,
+                    }
+        except Exception:
+            pass
+
     # All strategies failed
+    is_cloudflare = "just a moment" in last_body.lower()
     if last_code == 401:
         msg = f"HTTP {last_code} — this page requires authentication. Try uploading the PDF directly."
+    elif last_code == 403 and is_cloudflare:
+        msg = (
+            f"This site uses Cloudflare bot protection and blocks automated access. "
+            f"Open the link in your browser, download the RFP document (PDF), "
+            f"and use the Upload File tab to submit it."
+        )
     elif last_code == 403:
         msg = (
-            f"HTTP {last_code} — this site blocks requests from cloud servers. "
+            f"HTTP {last_code} — this site blocks automated requests. "
             f"Download the page/PDF on your computer and use the Upload File tab instead."
         )
     elif last_code:
