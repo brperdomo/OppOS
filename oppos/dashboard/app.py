@@ -1434,7 +1434,16 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
             with sc3:
                 st.markdown("<br>", unsafe_allow_html=True)
                 if st.button("Save", key=f"save_{tab_key}_{sid}", use_container_width=True):
-                    set_pipeline_status(sid, new_status, notes=new_notes)
+                    # If moving to in_progress, trigger full Pursue flow (Notion + Slack)
+                    if new_status == "in_progress" and pipeline_status != "in_progress":
+                        _pursue_opportunity(opp, reason=new_notes or "")
+                    else:
+                        set_pipeline_status(sid, new_status, notes=new_notes)
+                        # Send Slack abandon alert when skipping/losing an in-progress item
+                        if pipeline_status == "in_progress" and new_status in ("skipped", "lost"):
+                            from oppos.outputs.slack_alerts import send_abandon_alert
+                            _label = "Abandoned" if new_status == "lost" else "Skipped"
+                            send_abandon_alert(opp, reason=new_notes or "", label=_label)
                     st.rerun()
 
     with st.expander("Details & Contact"):
