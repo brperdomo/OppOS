@@ -47,12 +47,8 @@ SITES: dict[str, JaggaerSite] = {
         customer_org="StateOfNewMexico",
         place_default="New Mexico",
     ),
-    "pennsylvania_emarketplace": JaggaerSite(
-        key="pennsylvania_emarketplace", state="PA", name="PA eMarketplace",
-        base_url="https://www.emarketplace.state.pa.us",
-        customer_org="",
-        place_default="Pennsylvania",
-    ),
+    # NOTE: Pennsylvania removed — uses custom ASP.NET site, not JAGGAER.
+    # See pa_emarketplace.py for the PA scraper.
     "utah_u3p": JaggaerSite(
         key="utah_u3p", state="UT", name="Utah U3P",
         base_url="https://bids.sciquest.com",

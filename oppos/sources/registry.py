@@ -70,6 +70,10 @@ def _load_registry() -> dict[str, tuple[str, FetchFn]]:
     for key, site in pr_sites.items():
         _REGISTRY[key] = (f"{site.name} ({site.state})", _bind(pr_fetch, site))
 
+    # --- PA eMarketplace (custom ASP.NET site, not JAGGAER) ---
+    from oppos.sources.platforms.pa_emarketplace import fetch_opportunities as pa_fetch
+    _REGISTRY["pennsylvania_emarketplace"] = ("PA eMarketplace (PA)", pa_fetch)
+
     return _REGISTRY
 
 
