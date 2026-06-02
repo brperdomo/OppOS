@@ -255,6 +255,16 @@ def prefilter(opp: dict[str, Any]) -> dict[str, Any]:
     naics = opp.get("naics_code") or ""
     combined = _combine_text(opp)
 
+    # ── Empty / broken scrape → reject ─────────────────────────
+    # If title is missing/generic AND description is empty, there's nothing
+    # to evaluate — this is a broken scrape, not a real sparse listing.
+    _title_empty = not title or title.strip().lower() == "untitled"
+    _desc_empty = not description or not description.strip()
+    if _title_empty and _desc_empty:
+        opp["prefilter"] = {"passed": False, "reason": "No title or description — broken scrape", "rule": "empty_reject"}
+        logger.debug("Pre-filter REJECT (empty): source_id=%s", opp.get("source_id", "?"))
+        return opp
+
     # ── NAICS fast-track ──────────────────────────────────────
     if naics:
         is_software_naics = any(naics.startswith(p) for p in _SOFTWARE_NAICS_PREFIXES)
