@@ -74,6 +74,13 @@ def _load_registry() -> dict[str, tuple[str, FetchFn]]:
     from oppos.sources.platforms.pa_emarketplace import fetch_opportunities as pa_fetch
     _REGISTRY["pennsylvania_emarketplace"] = ("PA eMarketplace (PA)", pa_fetch)
 
+    # --- Private sector sources ---
+    from oppos.sources.google_cse import fetch_opportunities as gcse_fetch
+    _REGISTRY["google_cse"] = ("Google CSE (Private Sector)", gcse_fetch)
+
+    from oppos.sources.target_accounts import fetch_opportunities as ta_fetch
+    _REGISTRY["target_accounts"] = ("Target Accounts (Private Sector)", ta_fetch)
+
     return _REGISTRY
 
 

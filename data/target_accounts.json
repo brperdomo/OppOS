@@ -1,0 +1,126 @@
+{
+  "_comment": "Target organizations to monitor for RFPs. Add new entries as needed.",
+  "accounts": [
+    {
+      "key": "hca_healthcare",
+      "name": "HCA Healthcare",
+      "industry": "Healthcare",
+      "urls": [
+        "https://hfrarchitects.com/projects/hca-healthcare",
+        "https://supplier.hcahealthcare.com/"
+      ]
+    },
+    {
+      "key": "kaiser_permanente",
+      "name": "Kaiser Permanente",
+      "industry": "Healthcare",
+      "urls": [
+        "https://supplier.kp.org/"
+      ]
+    },
+    {
+      "key": "ascension_health",
+      "name": "Ascension Health",
+      "industry": "Healthcare",
+      "urls": [
+        "https://ascension.org/about/suppliers"
+      ]
+    },
+    {
+      "key": "cleveland_clinic",
+      "name": "Cleveland Clinic",
+      "industry": "Healthcare",
+      "urls": [
+        "https://my.clevelandclinic.org/about/community/supplier-diversity"
+      ]
+    },
+    {
+      "key": "commonspirit_health",
+      "name": "CommonSpirit Health",
+      "industry": "Healthcare",
+      "urls": [
+        "https://www.commonspirit.org/what-we-do/supply-chain-management"
+      ]
+    },
+    {
+      "key": "uc_system",
+      "name": "University of California System",
+      "industry": "Higher Education",
+      "urls": [
+        "https://www.ucop.edu/procurement-services/for-suppliers/open-rfps.html"
+      ]
+    },
+    {
+      "key": "texas_am_system",
+      "name": "Texas A&M University System",
+      "industry": "Higher Education",
+      "urls": [
+        "https://www.tamus.edu/business/procurement/bid-opportunities/"
+      ]
+    },
+    {
+      "key": "penn_state",
+      "name": "Penn State University",
+      "industry": "Higher Education",
+      "urls": [
+        "https://procurement.psu.edu/current-bid-opportunities"
+      ]
+    },
+    {
+      "key": "ohio_state",
+      "name": "Ohio State University",
+      "industry": "Higher Education",
+      "urls": [
+        "https://busfin.osu.edu/buy-pay/purchasing-services/bid-opportunities"
+      ]
+    },
+    {
+      "key": "suny_system",
+      "name": "SUNY System",
+      "industry": "Higher Education",
+      "urls": [
+        "https://www.suny.edu/about/leadership/offices/business/procurement/"
+      ]
+    },
+    {
+      "key": "unitedhealth_group",
+      "name": "UnitedHealth Group",
+      "industry": "Insurance",
+      "urls": [
+        "https://www.unitedhealthgroup.com/suppliers.html"
+      ]
+    },
+    {
+      "key": "elevance_health",
+      "name": "Elevance Health (Anthem)",
+      "industry": "Insurance",
+      "urls": [
+        "https://www.elevancehealth.com/who-we-are/suppliers"
+      ]
+    },
+    {
+      "key": "cigna",
+      "name": "Cigna Group",
+      "industry": "Insurance",
+      "urls": [
+        "https://www.thecignagroup.com/about-us/supplier-diversity"
+      ]
+    },
+    {
+      "key": "target_corp",
+      "name": "Target Corporation",
+      "industry": "Retail",
+      "urls": [
+        "https://corporate.target.com/about/sourcing"
+      ]
+    },
+    {
+      "key": "jnj",
+      "name": "Johnson & Johnson",
+      "industry": "Pharma",
+      "urls": [
+        "https://www.jnj.com/partners/suppliers"
+      ]
+    }
+  ]
+}
