@@ -38,31 +38,31 @@ SITES: dict[str, CGISite] = {
     "kentucky_emars": CGISite(
         key="kentucky_emars", state="KY", name="eMARS Kentucky",
         base_url="https://vss.ky.gov",
-        bids_path="/",
+        bids_path="/vssprod-ext/Advantage4",  # Migrated to CGI Advantage 4
         place_default="Kentucky",
     ),
     "colorado_vss": CGISite(
         key="colorado_vss", state="CO", name="Colorado VSS",
-        base_url="https://vss.state.co.us",
-        bids_path="/",
+        base_url="https://prd.co.cgiadvantage.com",  # Migrated to CGI Federal cloud
+        bids_path="/PRDVSS1X1/Advantage4",
         place_default="Colorado",
     ),
     "michigan_sigma": CGISite(
         key="michigan_sigma", state="MI", name="SIGMA Michigan",
         base_url="https://sigma.michigan.gov",
-        bids_path="/webapp/PRDVSS2X1/AltSelfService",
+        bids_path="/PRDVSS1X1/Advantage4",  # Migrated to Advantage 4
         place_default="Michigan",
     ),
     "alaska_iris": CGISite(
         key="alaska_iris", state="AK", name="IRIS Alaska",
         base_url="https://iris-vss.alaska.gov",
-        bids_path="/",
+        bids_path="/PRDVSS1X1/Advantage4",  # Migrated to Advantage 4
         place_default="Alaska",
     ),
     "maine_vss": CGISite(
         key="maine_vss", state="ME", name="Maine VSS",
-        base_url="https://maine.gob2g.com",
-        bids_path="/",
+        base_url="https://mevss.hostams.com",  # Migrated from gob2g to CGI Federal cloud
+        bids_path="/PRDVSS1X1/AltSelfService",
         place_default="Maine",
     ),
 }
