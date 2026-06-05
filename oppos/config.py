@@ -89,7 +89,8 @@ SOURCE_STATE_MAP: dict[str, str] = {
     "connecticut_ctsource": "Connecticut",
     "missouri_missouribuys": "Missouri",
     "rhode_island_osp": "Rhode Island",
-    # Private sector sources
+    # Aggregators & private sector sources
+    "starbridge": "",
     "google_cse": "",
     "target_accounts": "",
 }

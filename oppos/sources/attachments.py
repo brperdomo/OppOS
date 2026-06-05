@@ -145,7 +145,7 @@ def download_attachments(opp: dict[str, Any]) -> list[Path]:
     if source == "sam_gov":
         return download_sam_gov(opp)
 
-    if source in ("manual", "google_cse", "target_accounts"):
+    if source in ("manual", "google_cse", "target_accounts", "starbridge"):
         # These sources download files inline or have no server-side attachments
         opp_dir = ATTACHMENTS_DIR / _sanitize_filename(opp.get("source_id", ""))
         if opp_dir.is_dir():
