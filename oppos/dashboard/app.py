@@ -644,6 +644,7 @@ def _run_scan() -> dict:
 
     for key, name, fetch_fn in sources:
         try:
+            st.write(f"Scanning {name}...")
             opps = fetch_fn(posted_from=posted_from) if key == "sam_gov" else fetch_fn()
             stats["fetched"] += len(opps)
             for opp in opps:
