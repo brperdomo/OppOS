@@ -518,6 +518,34 @@ _SCANNABLE_EXTENSIONS = {".pdf", ".docx", ".doc"}
 _DOWNLOAD_PATTERNS = re.compile(r"/download|/attachment|/file|/document|/getfile", re.IGNORECASE)
 
 
+_PERISCOPE_DOMAINS = {
+    "commbuys.com", "nevadaepro.com", "njstart.gov",
+    "bidbuy.illinois.gov", "oregonbuys.gov", "arbuy.arkansas.gov",
+    "app.az.gov", "caleprocure.ca.gov",
+}
+
+
+def _detect_periscope(url: str) -> tuple[str, str] | None:
+    """If *url* is a Periscope/SOVRA bid detail page, return (base_url, docId).
+
+    Returns None for non-Periscope URLs.
+    """
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if not any(host == d or host.endswith("." + d) for d in _PERISCOPE_DOMAINS):
+        return None
+
+    # Extract docId from query string
+    from urllib.parse import parse_qs
+    qs = parse_qs(parsed.query)
+    doc_id = (qs.get("docId") or qs.get("docid") or [""])[0]
+    if not doc_id:
+        return None
+
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    return base, doc_id
+
+
 def find_attachment_links(html: str, base_url: str) -> list[dict]:
     """Find PDF/DOCX links on a page. Returns list of {url, filename, ext}."""
     parser = _LinkExtractor()
@@ -724,19 +752,38 @@ def submit_url(url: str, on_progress=None) -> dict[str, Any]:
     meta = extract_metadata(page["text"], url)
 
     # Find and download attachments
-    links = find_attachment_links(page["html"], url)
     att_text = ""
     att_files: list[Path] = []
-    if links:
-        _progress("attachments", f"Found {len(links)} attachment(s) — downloading...")
-        pw_cookies = page.get("_pw_cookies")
-        if pw_cookies:
-            _progress("attachments", "Using browser session for Cloudflare-protected downloads…")
-            att_files = _pw_download_attachments(source_id, links, pw_cookies)
-        else:
-            att_files = download_manual_attachments(source_id, links)
 
-        # Extract text from downloaded files
+    # Periscope/SOVRA sites use JavaScript downloadFile() calls, not <a> links.
+    # Route through the dedicated Periscope downloader which handles CSRF + POST.
+    periscope_info = _detect_periscope(url)
+    if periscope_info:
+        p_base, p_doc_id = periscope_info
+        _progress("attachments", "Periscope site detected — downloading via CSRF handler...")
+        from oppos.sources.attachments import download_periscope
+        fake_opp = {"source_id": source_id, "solicitation_number": p_doc_id}
+        att_files = download_periscope(fake_opp, p_base)
+        if att_files:
+            _progress("attachments", f"Downloaded {len(att_files)} file(s) from Periscope")
+        else:
+            _progress("attachments", "No downloadable files found on this bid")
+        # Also use the doc_id as solicitation_number if Claude didn't extract one
+        if not meta.get("solicitation_number"):
+            meta["solicitation_number"] = p_doc_id
+    else:
+        links = find_attachment_links(page["html"], url)
+        if links:
+            _progress("attachments", f"Found {len(links)} attachment(s) — downloading...")
+            pw_cookies = page.get("_pw_cookies")
+            if pw_cookies:
+                _progress("attachments", "Using browser session for Cloudflare-protected downloads…")
+                att_files = _pw_download_attachments(source_id, links, pw_cookies)
+            else:
+                att_files = download_manual_attachments(source_id, links)
+
+    # Extract text from downloaded files
+    if att_files:
         scannable = [f for f in att_files if f.suffix.lower() in SCANNABLE_EXTENSIONS]
         if scannable:
             _progress("extract_text", f"Extracting text from {len(scannable)} file(s)...")

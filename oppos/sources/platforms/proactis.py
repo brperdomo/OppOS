@@ -214,7 +214,21 @@ def _record_to_opportunity(record: dict, site: ProactisSite) -> dict[str, Any]:
 
 
 def _is_active(record: dict) -> bool:
-    """Check if a bid is currently accepting submissions."""
+    """Check if a bid is currently accepting submissions.
+
+    Checks both PROACTIS status fields AND the closeDate to filter out
+    bids whose deadline has already passed (even if status still says Open).
+    """
+    # Reject if closeDate is in the past
+    close_ms = record.get("closeDate")
+    if close_ms is not None:
+        try:
+            close_dt = datetime.utcfromtimestamp(int(close_ms) / 1000)
+            if close_dt < datetime.utcnow():
+                return False
+        except (ValueError, TypeError, OSError):
+            pass
+
     bid_status = record.get("ctBidstatus") or {}
     status_code = bid_status.get("status")
     public_status = bid_status.get("publicStatus") or ""
@@ -282,14 +296,6 @@ def fetch_opportunities(site: ProactisSite, limit: int = 200) -> list[dict[str, 
             "%s: %d active out of %d total",
             site.name, len(active_records), len(all_records),
         )
-
-        # If no active bids found, include all — let the qualifier decide
-        if not active_records:
-            logger.info(
-                "%s: no active bids — including all %d for scoring",
-                site.name, len(all_records),
-            )
-            active_records = all_records
 
         # Convert to opportunity dicts
         for record in active_records[:limit]:

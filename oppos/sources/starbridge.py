@@ -233,6 +233,16 @@ def fetch_opportunities(limit: int = 100) -> list[dict[str, Any]]:
                     if listing.get("status", "").lower() == "closed":
                         continue
 
+                    # Skip listings with deadline already passed
+                    dl = listing.get("response_deadline")
+                    if dl:
+                        try:
+                            dl_dt = datetime.strptime(dl, "%Y-%m-%d")
+                            if dl_dt < datetime.utcnow():
+                                continue
+                        except ValueError:
+                            pass
+
                     opp: dict[str, Any] = {
                         "source": "starbridge",
                         "source_id": source_id,
