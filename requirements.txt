@@ -5,4 +5,5 @@ python-docx>=1.1.0
 python-dotenv>=1.0.0
 streamlit>=1.40.0
 notion-client>=2.2.0
-playwright>=1.40.0
+# playwright>=1.40.0 — install locally for Cloudflare bypass and CGI scrapers;
+# omitted from Cloud deploy (no headed browser available, scrapers degrade gracefully)
