@@ -421,13 +421,18 @@ hr {
 /* Empty state */
 .empty-state {
     text-align: center;
-    padding: 80px 24px;
+    padding: 48px 24px;
     color: var(--text-tertiary);
+    background: var(--bg-secondary);
+    border: 1px dashed var(--border-subtle);
+    border-radius: var(--radius-md);
 }
 .empty-state h3 {
     color: var(--text-secondary);
-    font-weight: 600;
-    margin-bottom: 8px;
+    font-weight: 500;
+    font-size: 14px;
+    margin-bottom: 0;
+    line-height: 1.5;
 }
 
 /* Contact section */
@@ -607,10 +612,11 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-init_db()
-check_deadlines()  # Auto-move expired / expiring-soon RFPs on every page load
-SOURCE_LABELS = dict(list_available())
-SOURCE_LABELS["manual"] = "Manual Submission"
+with st.spinner("Loading pipeline..."):
+    init_db()
+    check_deadlines()
+    SOURCE_LABELS = dict(list_available())
+    SOURCE_LABELS["manual"] = "Manual Submission"
 
 PIPELINE_LABELS = {
     "new": "New",
@@ -639,19 +645,22 @@ def _run_scan() -> dict:
 
     logging.basicConfig(level=logging.INFO)
     sources = get_enabled_sources()
+    total_sources = len(sources)
     stats = {"fetched": 0, "new": 0, "filtered_out": 0, "scored": 0, "errors": []}
     posted_from = datetime.now() - timedelta(days=14)
 
-    for key, name, fetch_fn in sources:
+    progress = st.progress(0, text="Starting scan...")
+
+    for idx, (key, name, fetch_fn) in enumerate(sources):
+        pct = idx / total_sources
+        progress.progress(pct, text=f"Scanning {name}  ({idx + 1}/{total_sources})")
         try:
-            st.write(f"Scanning {name}...")
             opps = fetch_fn(posted_from=posted_from) if key == "sam_gov" else fetch_fn()
             stats["fetched"] += len(opps)
             for opp in opps:
                 if is_seen(opp["source_id"]):
                     continue
                 stats["new"] += 1
-                # Rules-based pre-filter — skip obvious non-software
                 prefilter(opp)
                 if not opp["prefilter"]["passed"]:
                     stats["filtered_out"] += 1
@@ -663,7 +672,7 @@ def _run_scan() -> dict:
         except Exception as e:
             stats["errors"].append(f"{name}: {e}")
 
-    # Record scan timestamp
+    progress.progress(1.0, text=f"Done -- scanned {total_sources} sources, {stats['fetched']} listings")
     _set_meta("last_scan", datetime.utcnow().isoformat())
 
     return stats
@@ -702,29 +711,27 @@ if manual_open:
     st.session_state["show_manual_form"] = True
 
 if scan_clicked:
-    with st.spinner("Scanning all sources for new opportunities..."):
-        scan_stats = _run_scan()
-    filtered = scan_stats.get("filtered_out", 0)
-    if scan_stats["new"] > 0:
-        filter_note = f" · {filtered} non-software filtered out" if filtered else ""
-        st.markdown(f"""
-        <div class="scan-result">
-            Found <strong>{scan_stats["new"]} new</strong> opportunities
-            ({scan_stats["scored"]} scored above threshold{filter_note})
-            from {scan_stats["fetched"]} total listings scanned.
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown(f"""
-        <div class="scan-result no-new">
-            No new opportunities found. Scanned {scan_stats["fetched"]} listings across all sources.
-        </div>
-        """, unsafe_allow_html=True)
-    if scan_stats["errors"]:
-        with st.expander(f"{len(scan_stats['errors'])} source(s) had errors"):
-            for err in scan_stats["errors"]:
-                st.text(err)
+    scan_stats = _run_scan()
+    st.session_state["last_scan_stats"] = scan_stats
     st.rerun()
+
+# Show scan results from session state (persists across reruns)
+_scan_stats = st.session_state.pop("last_scan_stats", None)
+if _scan_stats:
+    filtered = _scan_stats.get("filtered_out", 0)
+    if _scan_stats["new"] > 0:
+        filter_note = f" · {filtered} non-software filtered out" if filtered else ""
+        st.success(
+            f"Found **{_scan_stats['new']} new** opportunities "
+            f"({_scan_stats['scored']} scored above threshold{filter_note}) "
+            f"from {_scan_stats['fetched']} total listings scanned."
+        )
+    else:
+        st.info(f"No new opportunities found. Scanned {_scan_stats['fetched']} listings across all sources.")
+    if _scan_stats["errors"]:
+        with st.expander(f"{len(_scan_stats['errors'])} source(s) had errors"):
+            for err in _scan_stats["errors"]:
+                st.text(err)
 
 # --- Manual RFP submission ---
 def _run_manual_url(url: str) -> dict:
@@ -1636,9 +1643,15 @@ with tab_pipeline:
     st.markdown(f'<div style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 16px;"><strong>{len(rows)}</strong> new opportunities</div>', unsafe_allow_html=True)
 
     if not rows:
-        render_empty("No new opportunities matching filters")
-    for opp in rows:
+        render_empty("No new opportunities matching filters. Hit 'Scan for New RFPs' above to pull the latest from all sources.")
+    _pipe_page_size = 50
+    _pipe_show = st.session_state.get("pipe_show", _pipe_page_size)
+    for opp in rows[:_pipe_show]:
         render_card(opp, "pipe")
+    if _pipe_show < len(rows):
+        if st.button(f"Show more ({len(rows) - _pipe_show} remaining)", key="pipe_more", use_container_width=True):
+            st.session_state["pipe_show"] = _pipe_show + _pipe_page_size
+            st.rerun()
 
 # --- Qualified tab ---
 with tab_qualified:
@@ -1650,7 +1663,7 @@ with tab_qualified:
     )
 
     if not qual_rows:
-        render_empty("No qualified RFPs yet. Deep Scan an opportunity from the Pipeline tab to move it here.")
+        render_empty("No qualified RFPs yet. Open an opportunity in Pipeline, click 'Load Attachments', then 'Scan & Score' to move it here.")
     for opp in qual_rows:
         render_card(opp, "qual", show_status_controls=False)
         qsid = opp.get("source_id", "")
@@ -1822,7 +1835,7 @@ with tab_in_progress:
     st.markdown(f'<div style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 16px;"><strong>{len(ip_rows)}</strong> in progress</div>', unsafe_allow_html=True)
 
     if not ip_rows:
-        render_empty("No RFPs in progress yet. Move opportunities here from the Pipeline tab.")
+        render_empty("No RFPs in progress. Click 'Pursue' on a Qualified opportunity to start working it -- this pushes to Notion and alerts the team on Slack.")
     for opp in ip_rows:
         render_card(opp, "ip")
         ip_sid = opp.get("source_id", "")
@@ -1892,8 +1905,14 @@ with tab_archive:
 
     if not archive_rows:
         render_empty("No archived opportunities yet.")
-    for opp in archive_rows:
+    _arch_page_size = 50
+    _arch_show = st.session_state.get("arch_show", _arch_page_size)
+    for opp in archive_rows[:_arch_show]:
         render_card(opp, "arch")
+    if _arch_show < len(archive_rows):
+        if st.button(f"Show more ({len(archive_rows) - _arch_show} remaining)", key="arch_more", use_container_width=True):
+            st.session_state["arch_show"] = _arch_show + _arch_page_size
+            st.rerun()
 
 # --- Expired tab ---
 with tab_expired:
@@ -1907,8 +1926,14 @@ with tab_expired:
 
     if not expired_rows:
         render_empty("No expired opportunities. Deadlines are checked automatically on each page load.")
-    for opp in expired_rows:
+    _expd_page_size = 50
+    _expd_show = st.session_state.get("expd_show", _expd_page_size)
+    for opp in expired_rows[:_expd_show]:
         render_card(opp, "expd", show_status_controls=False)
+    if _expd_show < len(expired_rows):
+        if st.button(f"Show more ({len(expired_rows) - _expd_show} remaining)", key="expd_more", use_container_width=True):
+            st.session_state["expd_show"] = _expd_show + _expd_page_size
+            st.rerun()
 
 st.markdown(f"""
 <div class="oppos-footer">
