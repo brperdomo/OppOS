@@ -156,8 +156,17 @@ def build_sdr_message(opp: dict[str, Any]) -> str:
     deadline = opp.get("response_deadline") or "TBD"
     url = opp.get("url") or ""
 
-    # Combine state + agency: "State of Nevada - Department of Health"
-    if state and state != "Federal":
+    # Combine state + agency — format depends on sector
+    source = opp.get("source", "")
+    is_private = source in ("google_cse", "target_accounts", "manual")
+
+    if is_private:
+        # Private sector: "HCA Healthcare (Nashville, TN)" — no "State of"
+        if state:
+            agency_full = f"{agency} ({state})"
+        else:
+            agency_full = agency
+    elif state and state != "Federal":
         agency_full = f"State of {state} - {agency}"
     elif state == "Federal":
         agency_full = f"{agency} (Federal)"

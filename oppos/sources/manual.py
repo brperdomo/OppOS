@@ -19,6 +19,14 @@ from oppos.sources.attachments import ATTACHMENTS_DIR, _sanitize_filename
 
 logger = logging.getLogger(__name__)
 
+# Optional Playwright for Cloudflare bypass
+_PLAYWRIGHT_AVAILABLE = False
+try:
+    import playwright.sync_api  # noqa: F401
+    _PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    pass
+
 _client: anthropic.Anthropic | None = None
 
 
@@ -120,8 +128,245 @@ def _try_fetch(url: str, use_http2: bool = False, warm_session: bool = False) ->
         return client.get(url)
 
 
-def fetch_page(url: str) -> dict:
+_STEALTH_JS = """
+// Hide navigator.webdriver
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+// Realistic plugins array
+Object.defineProperty(navigator, 'plugins', {
+    get: () => {
+        const arr = [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin' },
+        ];
+        arr.item = i => arr[i];
+        arr.namedItem = n => arr.find(p => p.name === n);
+        arr.refresh = () => {};
+        return arr;
+    },
+});
+
+// Realistic languages
+Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+
+// chrome.runtime stub
+window.chrome = window.chrome || {};
+window.chrome.runtime = window.chrome.runtime || {};
+
+// Permissions query override
+const _origPermQuery = navigator.permissions?.query?.bind(navigator.permissions);
+if (_origPermQuery) {
+    navigator.permissions.query = params =>
+        params.name === 'notifications'
+            ? Promise.resolve({ state: Notification.permission })
+            : _origPermQuery(params);
+}
+"""
+
+_CF_CHALLENGE_MARKERS = frozenset([
+    "just a moment",
+    "checking your browser",
+    "performing security verification",
+    "verifying you are human",
+    "security check",
+])
+
+
+def _is_cf_challenge(text: str) -> bool:
+    """Return True if *text* (title or body snippet) looks like a Cloudflare challenge."""
+    low = text.lower()
+    return any(marker in low for marker in _CF_CHALLENGE_MARKERS)
+
+
+def _try_playwright_fetch(url: str) -> dict | None:
+    """Fetch a Cloudflare-protected page with a real browser.
+
+    Uses **headed mode** (visible Chrome window) because Cloudflare's
+    Turnstile challenge detects headless browsers.  The window opens
+    briefly (~5 s) and closes automatically once the page is loaded.
+
+    For React SPAs like OpenGov, also tries to expand collapsed content
+    sections so the full text is captured.
+
+    Returns a ``fetch_page()``-compatible dict with an extra ``_pw_cookies``
+    key that downstream code can use to download attachments through the
+    same Cloudflare-cleared session.  Returns *None* on failure.
+    """
+    if not _PLAYWRIGHT_AVAILABLE:
+        logger.warning(
+            "playwright not installed — run: "
+            "pip install playwright && playwright install chromium"
+        )
+        return None
+
+    from playwright.sync_api import sync_playwright
+
+    try:
+        with sync_playwright() as pw:
+            # Headed mode + system Chrome is the only combo that clears
+            # Cloudflare Turnstile.  Headless (even with stealth patches)
+            # is detected.
+            launch_kwargs: dict[str, Any] = {
+                "headless": False,
+                "args": ["--disable-blink-features=AutomationControlled"],
+            }
+            try:
+                browser = pw.chromium.launch(channel="chrome", **launch_kwargs)
+            except Exception:
+                # System Chrome not available — fall back to bundled Chromium
+                browser = pw.chromium.launch(**launch_kwargs)
+
+            ctx = browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                locale="en-US",
+                timezone_id="America/New_York",
+                color_scheme="light",
+                accept_downloads=True,
+            )
+            ctx.add_init_script(_STEALTH_JS)
+
+            page = ctx.new_page()
+
+            logger.info("Playwright: opening browser for %s", url)
+            page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+
+            # Wait for Cloudflare challenge to clear (up to 30 s)
+            cleared = False
+            for i in range(30):
+                title = page.title() or ""
+                body_snippet = page.inner_text("body")[:500] if i % 3 == 0 else ""
+                if not _is_cf_challenge(title) and not _is_cf_challenge(body_snippet):
+                    cleared = True
+                    break
+                if i % 10 == 0:
+                    logger.info("Playwright: waiting for Cloudflare… (%ds)", i)
+                page.wait_for_timeout(1_000)
+
+            if not cleared:
+                logger.warning("Playwright: Cloudflare challenge did not clear after 30 s")
+                browser.close()
+                return None
+
+            # Give SPA frameworks time to render
+            try:
+                page.wait_for_load_state("networkidle", timeout=15_000)
+            except Exception:
+                pass  # some pages never fully idle
+
+            # Expand collapsed sections (OpenGov, etc.)
+            for label in ("View All Sections", "Show All", "Expand All"):
+                try:
+                    btn = page.get_by_text(label, exact=False)
+                    if btn.count() > 0:
+                        btn.first.click()
+                        page.wait_for_timeout(2_000)
+                        logger.info("Playwright: expanded sections via '%s'", label)
+                        break
+                except Exception:
+                    continue
+
+            html = page.content()
+            text = page.inner_text("body")
+            cookies = ctx.cookies()
+
+            browser.close()
+
+            if not text or len(text.strip()) < 50:
+                logger.warning(
+                    "Playwright: page rendered but content too thin (%d chars)",
+                    len((text or "").strip()),
+                )
+                return None
+
+            logger.info("Playwright: fetched %d chars from %s", len(text), url)
+            return {
+                "html": html,
+                "raw_bytes": None,
+                "text": text,
+                "content_type": "text/html",
+                "status_code": 200,
+                "error": None,
+                "_pw_cookies": cookies,
+            }
+    except Exception as e:
+        logger.error("Playwright fetch failed for %s: %s", url, e)
+        return None
+
+
+def _pw_download_attachments(
+    source_id: str,
+    links: list[dict],
+    cookies: list[dict],
+) -> list[Path]:
+    """Download attachments via Playwright (for Cloudflare-protected sites).
+
+    Uses the browser context's request API with Cloudflare clearance
+    cookies obtained from ``_try_playwright_fetch``.
+    """
+    if not _PLAYWRIGHT_AVAILABLE or not links:
+        return []
+
+    from playwright.sync_api import sync_playwright
+
+    opp_dir = ATTACHMENTS_DIR / _sanitize_filename(source_id)
+    opp_dir.mkdir(parents=True, exist_ok=True)
+    downloaded: list[Path] = []
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            ctx = browser.new_context(
+                user_agent=_HEADERS["User-Agent"],
+                accept_downloads=True,
+            )
+            if cookies:
+                ctx.add_cookies(cookies)
+
+            for link in links:
+                try:
+                    resp = ctx.request.get(link["url"], timeout=60_000)
+                    if not resp.ok:
+                        logger.warning(
+                            "Playwright DL HTTP %d: %s",
+                            resp.status,
+                            link["url"],
+                        )
+                        continue
+
+                    disp = resp.headers.get("content-disposition", "")
+                    m = re.search(r'filename="?([^";\n]+)"?', disp)
+                    fname = _sanitize_filename(
+                        m.group(1) if m else link["filename"]
+                    )
+                    body = resp.body()
+                    filepath = opp_dir / fname
+                    filepath.write_bytes(body)
+                    downloaded.append(filepath)
+                    logger.info(
+                        "Downloaded (Playwright): %s (%d bytes)",
+                        fname,
+                        len(body),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Playwright DL failed for %s: %s", link["url"], e
+                    )
+
+            ctx.dispose()
+            browser.close()
+    except Exception as e:
+        logger.warning("Playwright download session failed: %s", e)
+
+    return downloaded
+
+
+def fetch_page(url: str, on_progress=None) -> dict:
     """Fetch a URL with multiple strategies. Returns html, text, content_type, error."""
+    def _progress(detail: str) -> None:
+        if on_progress:
+            on_progress("fetch", detail)
+
     is_aspx = ".aspx" in url.lower() or ".asp" in url.lower()
 
     # Strategy list: try progressively simpler approaches
@@ -152,24 +397,42 @@ def fetch_page(url: str) -> dict:
             last_code = e.response.status_code
             last_body = e.response.text[:500]
             logger.info("Fetch strategy '%s' got HTTP %d for %s", strat["label"], last_code, url)
+            # On Cloudflare 403, skip remaining httpx strategies — additional
+            # failed requests raise the bot score and make Playwright less
+            # likely to succeed.
+            if last_code == 403 and "just a moment" in last_body.lower():
+                break
             if last_code not in (403, 406, 429):
                 break  # non-retryable status, stop trying
         except Exception as e:
             logger.info("Fetch strategy '%s' failed for %s: %s", strat["label"], url, e)
             continue
 
-    # Cloudflare 403 — try /api/ prefix bypass (works for OpenGov and some other SPAs)
-    if last_code == 403 and "just a moment" in last_body.lower():
+    is_cloudflare = "just a moment" in last_body.lower()
+
+    # Cloudflare 403 — jump straight to Playwright (headed browser).
+    # Doing this before /api/ prefix to avoid extra requests that
+    # raise Cloudflare's bot score.  Brief pause lets Cloudflare's
+    # rate-limiter settle before the real browser connects.
+    if last_code == 403 and is_cloudflare:
+        import time
+        time.sleep(2)
+        _progress("Cloudflare detected — opening browser to bypass…")
+        logger.info("Cloudflare detected — launching browser to bypass…")
+        pw_result = _try_playwright_fetch(url)
+        if pw_result:
+            return pw_result
+
+        # Playwright failed or unavailable — try /api/ prefix as last resort
         parsed = urlparse(url)
         api_url = f"{parsed.scheme}://{parsed.netloc}/api{parsed.path}"
-        logger.info("Cloudflare detected — trying /api/ prefix: %s", api_url)
+        logger.info("Trying /api/ prefix fallback: %s", api_url)
         try:
             resp = _try_fetch(api_url, use_http2=False, warm_session=False)
             if resp.status_code == 200:
                 ct = resp.headers.get("content-type", "")
                 html = resp.text if "html" in ct else ""
                 text = _html_to_text(html) if html else ""
-                # Only use if we got meaningful content (not just an SPA shell)
                 if text and len(text) > 200:
                     logger.info("Cloudflare bypass succeeded via /api/ prefix")
                     return {
@@ -184,15 +447,20 @@ def fetch_page(url: str) -> dict:
             pass
 
     # All strategies failed
-    is_cloudflare = "just a moment" in last_body.lower()
     if last_code == 401:
         msg = f"HTTP {last_code} — this page requires authentication. Try uploading the PDF directly."
     elif last_code == 403 and is_cloudflare:
-        msg = (
-            f"This site uses Cloudflare bot protection and blocks automated access. "
-            f"Open the link in your browser, download the RFP document (PDF), "
-            f"and use the Upload File tab to submit it."
-        )
+        if not _PLAYWRIGHT_AVAILABLE:
+            msg = (
+                "This site uses Cloudflare bot protection. Install Playwright for "
+                "automatic bypass: pip install playwright && playwright install chromium"
+            )
+        else:
+            msg = (
+                "This site uses Cloudflare bot protection and the headless browser "
+                "could not bypass it. Open the link in your browser, download the "
+                "RFP document (PDF), and use the Upload File tab to submit it."
+            )
     elif last_code == 403:
         msg = (
             f"HTTP {last_code} — this site blocks automated requests. "
@@ -248,6 +516,34 @@ class _LinkExtractor(HTMLParser):
 
 _SCANNABLE_EXTENSIONS = {".pdf", ".docx", ".doc"}
 _DOWNLOAD_PATTERNS = re.compile(r"/download|/attachment|/file|/document|/getfile", re.IGNORECASE)
+
+
+_PERISCOPE_DOMAINS = {
+    "commbuys.com", "nevadaepro.com", "njstart.gov",
+    "bidbuy.illinois.gov", "oregonbuys.gov", "arbuy.arkansas.gov",
+    "app.az.gov", "caleprocure.ca.gov",
+}
+
+
+def _detect_periscope(url: str) -> tuple[str, str] | None:
+    """If *url* is a Periscope/SOVRA bid detail page, return (base_url, docId).
+
+    Returns None for non-Periscope URLs.
+    """
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if not any(host == d or host.endswith("." + d) for d in _PERISCOPE_DOMAINS):
+        return None
+
+    # Extract docId from query string
+    from urllib.parse import parse_qs
+    qs = parse_qs(parsed.query)
+    doc_id = (qs.get("docId") or qs.get("docid") or [""])[0]
+    if not doc_id:
+        return None
+
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    return base, doc_id
 
 
 def find_attachment_links(html: str, base_url: str) -> list[dict]:
@@ -411,7 +707,7 @@ def submit_url(url: str, on_progress=None) -> dict[str, Any]:
 
     # Fetch page
     _progress("fetch", f"Fetching {url}")
-    page = fetch_page(url)
+    page = fetch_page(url, on_progress=on_progress)
     if page["error"]:
         return {"error": page["error"]}
 
@@ -456,14 +752,38 @@ def submit_url(url: str, on_progress=None) -> dict[str, Any]:
     meta = extract_metadata(page["text"], url)
 
     # Find and download attachments
-    links = find_attachment_links(page["html"], url)
     att_text = ""
     att_files: list[Path] = []
-    if links:
-        _progress("attachments", f"Found {len(links)} attachment(s) — downloading...")
-        att_files = download_manual_attachments(source_id, links)
 
-        # Extract text from downloaded files
+    # Periscope/SOVRA sites use JavaScript downloadFile() calls, not <a> links.
+    # Route through the dedicated Periscope downloader which handles CSRF + POST.
+    periscope_info = _detect_periscope(url)
+    if periscope_info:
+        p_base, p_doc_id = periscope_info
+        _progress("attachments", "Periscope site detected — downloading via CSRF handler...")
+        from oppos.sources.attachments import download_periscope
+        fake_opp = {"source_id": source_id, "solicitation_number": p_doc_id}
+        att_files = download_periscope(fake_opp, p_base)
+        if att_files:
+            _progress("attachments", f"Downloaded {len(att_files)} file(s) from Periscope")
+        else:
+            _progress("attachments", "No downloadable files found on this bid")
+        # Also use the doc_id as solicitation_number if Claude didn't extract one
+        if not meta.get("solicitation_number"):
+            meta["solicitation_number"] = p_doc_id
+    else:
+        links = find_attachment_links(page["html"], url)
+        if links:
+            _progress("attachments", f"Found {len(links)} attachment(s) — downloading...")
+            pw_cookies = page.get("_pw_cookies")
+            if pw_cookies:
+                _progress("attachments", "Using browser session for Cloudflare-protected downloads…")
+                att_files = _pw_download_attachments(source_id, links, pw_cookies)
+            else:
+                att_files = download_manual_attachments(source_id, links)
+
+    # Extract text from downloaded files
+    if att_files:
         scannable = [f for f in att_files if f.suffix.lower() in SCANNABLE_EXTENSIONS]
         if scannable:
             _progress("extract_text", f"Extracting text from {len(scannable)} file(s)...")
