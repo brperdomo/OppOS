@@ -18,6 +18,10 @@ NOTION_DATASOURCE_ID = os.environ.get("NOTION_DATASOURCE_ID", "b43f162e-0dac-4e6
 
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 
+GOOGLE_CSE_API_KEY = os.environ.get("GOOGLE_CSE_API_KEY", "")
+GOOGLE_CSE_CX = os.environ.get("GOOGLE_CSE_CX", "")  # Programmable Search Engine ID
+GOOGLE_CSE_DAILY_LIMIT = int(os.environ.get("GOOGLE_CSE_DAILY_LIMIT", "100"))
+
 NUTRIENT_API_KEY = os.environ.get("NUTRIENT_API_KEY", "")
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "oppos.db"
@@ -85,4 +89,8 @@ SOURCE_STATE_MAP: dict[str, str] = {
     "connecticut_ctsource": "Connecticut",
     "missouri_missouribuys": "Missouri",
     "rhode_island_osp": "Rhode Island",
+    # Aggregators & private sector sources
+    "starbridge": "",
+    "google_cse": "",
+    "target_accounts": "",
 }

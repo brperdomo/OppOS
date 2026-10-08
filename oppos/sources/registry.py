@@ -74,23 +74,43 @@ def _load_registry() -> dict[str, tuple[str, FetchFn]]:
     from oppos.sources.platforms.pa_emarketplace import fetch_opportunities as pa_fetch
     _REGISTRY["pennsylvania_emarketplace"] = ("PA eMarketplace (PA)", pa_fetch)
 
+    # --- Starbridge RFP aggregator ---
+    from oppos.sources.starbridge import fetch_opportunities as sb_fetch
+    _REGISTRY["starbridge"] = ("Starbridge (RFP Aggregator)", sb_fetch)
+
+    # --- Private sector sources ---
+    from oppos.sources.google_cse import fetch_opportunities as gcse_fetch
+    _REGISTRY["google_cse"] = ("Google CSE (Private Sector)", gcse_fetch)
+
+    from oppos.sources.target_accounts import fetch_opportunities as ta_fetch
+    _REGISTRY["target_accounts"] = ("Target Accounts (Private Sector)", ta_fetch)
+
     return _REGISTRY
+
+
+# Sources that are NOT state portals — excluded from "all_states" shortcut
+_NON_STATE_SOURCES = frozenset({
+    "sam_gov", "starbridge", "google_cse", "target_accounts",
+})
 
 
 def get_enabled_sources() -> list[tuple[str, str, FetchFn]]:
     """Returns [(source_key, display_name, fetch_fn)] for all enabled sources."""
     registry = _load_registry()
     enabled = []
+    seen = set()
     for key in ENABLED_SOURCES:
         if key == "all_states":
             for k, (name, fn) in registry.items():
-                if k != "sam_gov":
+                if k not in _NON_STATE_SOURCES and k not in seen:
+                    seen.add(k)
                     enabled.append((k, name, fn))
             continue
-        if key in registry:
+        if key in registry and key not in seen:
+            seen.add(key)
             name, fn = registry[key]
             enabled.append((key, name, fn))
-        else:
+        elif key not in registry:
             logger.warning("Unknown source '%s' in ENABLED_SOURCES — skipping", key)
     return enabled
 

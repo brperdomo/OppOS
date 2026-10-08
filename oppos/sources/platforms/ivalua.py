@@ -31,37 +31,29 @@ SITES: dict[str, IvaluaSite] = {
     "maryland_emma": IvaluaSite(
         key="maryland_emma", state="MD", name="eMMA Maryland",
         base_url="https://emma.maryland.gov",
-        bids_path="/page.aspx/en/bpm/process_manage_498/solicitations",
+        bids_path="/page.aspx/en/rfp/request_browse_public",
         place_default="Maryland",
     ),
-    "virginia_eva": IvaluaSite(
-        key="virginia_eva", state="VA", name="eVA Virginia",
-        base_url="https://eva.virginia.gov",
-        bids_path="/pages/eva-public-solicitations.htm",
-        place_default="Virginia",
-    ),
+    # NOTE: Virginia eVA uses a CGI-hosted legacy JSP for public bids, not Ivalua's
+    # standard path.  Needs a custom scraper — see mvendor.cgieva.com.
     "north_dakota_ndbuys": IvaluaSite(
         key="north_dakota_ndbuys", state="ND", name="NDBuys",
         base_url="https://ndbuys.nd.gov",
-        bids_path="/",
+        bids_path="/page/public-solicitations",
         place_default="North Dakota",
     ),
-    "vermont_vtbuys": IvaluaSite(
-        key="vermont_vtbuys", state="VT", name="VTBuys",
-        base_url="https://vtbuysprocurement.vermont.gov",
-        bids_path="/",
-        place_default="Vermont",
-    ),
+    # NOTE: Vermont VTBuys requires login to browse solicitations.
+    # Public bids at https://bgs.vermont.gov/purchasing/bids — needs custom scraper.
     "alabama_alabamabuys": IvaluaSite(
         key="alabama_alabamabuys", state="AL", name="AlabamaBuys",
         base_url="https://alabamabuys.gov",
-        bids_path="/",
+        bids_path="/page.aspx/en/rfp/request_browse_public",
         place_default="Alabama",
     ),
     "ohio_ohiobuys": IvaluaSite(
         key="ohio_ohiobuys", state="OH", name="OhioBuys",
         base_url="https://ohiobuys.ohio.gov",
-        bids_path="/",
+        bids_path="/page.aspx/en/rfp/request_browse_public",
         place_default="Ohio",
     ),
 }

@@ -32,7 +32,7 @@ SITES: dict[str, JaggaerSite] = {
     "iowa_impacs": JaggaerSite(
         key="iowa_impacs", state="IA", name="IMPACS Iowa",
         base_url="https://bids.sciquest.com",
-        customer_org="StateOfIowa",
+        customer_org="DASIowa",  # Changed from StateOfIowa (400 error)
         place_default="Iowa",
     ),
     "montana_emacs": JaggaerSite(
@@ -49,138 +49,126 @@ SITES: dict[str, JaggaerSite] = {
     ),
     # NOTE: Pennsylvania removed — uses custom ASP.NET site, not JAGGAER.
     # See pa_emarketplace.py for the PA scraper.
-    "utah_u3p": JaggaerSite(
-        key="utah_u3p", state="UT", name="Utah U3P",
-        base_url="https://bids.sciquest.com",
-        customer_org="StateOfUtah",
-        place_default="Utah",
-    ),
+    # NOTE: Utah removed — migrated from JAGGAER to Bonfire (April 2025).
+    # New URL: https://utah.bonfirehub.com/portal/?tab=openOpportunities
 }
-
-
-class _EventListParser(HTMLParser):
-    """Parse JAGGAER public event listing pages."""
-
-    def __init__(self):
-        super().__init__()
-        self._in_table = False
-        self._in_row = False
-        self._in_cell = False
-        self._current_row: list[str] = []
-        self._rows: list[list[str]] = []
-        self._row_links: list[str] = []
-        self._all_links: list[list[str]] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attr_dict = dict(attrs)
-        if tag == "table":
-            table_id = attr_dict.get("id", "")
-            cls = attr_dict.get("class", "") or ""
-            if "event" in table_id.lower() or "event" in cls.lower() or "list" in cls.lower():
-                self._in_table = True
-        if self._in_table and tag == "tr":
-            self._in_row = True
-            self._current_row = []
-            self._row_links = []
-        if self._in_row and tag == "td":
-            self._in_cell = True
-        if self._in_row and tag == "a":
-            href = attr_dict.get("href", "")
-            if href and ("EventDetail" in href or "eventId" in href or "PublicEvent" in href):
-                self._row_links.append(href)
-
-    def handle_endtag(self, tag: str) -> None:
-        if self._in_cell and tag == "td":
-            self._in_cell = False
-        if self._in_row and tag == "tr":
-            self._in_row = False
-            if self._current_row:
-                self._rows.append(self._current_row)
-                self._all_links.append(self._row_links)
-        if tag == "table" and self._in_table:
-            self._in_table = False
-
-    def handle_data(self, data: str) -> None:
-        if self._in_cell:
-            text = data.strip()
-            if text:
-                self._current_row.append(text)
-
-
-class _EventDetailParser(HTMLParser):
-    """Parse JAGGAER event detail page for key fields."""
-
-    def __init__(self):
-        super().__init__()
-        self._fields: dict[str, str] = {}
-        self._capture_key: str | None = None
-        self._in_label = False
-        self._in_value = False
-        self._current_label = ""
-        self._current_value_parts: list[str] = []
-        self._in_description = False
-        self._description_parts: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attr_dict = dict(attrs)
-        cls = attr_dict.get("class", "") or ""
-        tag_id = attr_dict.get("id", "") or ""
-        if tag in ("th", "label", "span") and ("label" in cls or "header" in cls):
-            self._in_label = True
-            self._current_label = ""
-        if tag in ("td", "span", "div") and ("value" in cls or "data" in cls or "detail" in cls):
-            self._in_value = True
-            self._current_value_parts = []
-        if "description" in tag_id.lower() or "description" in cls.lower():
-            self._in_description = True
-
-    def handle_endtag(self, tag: str) -> None:
-        if self._in_label and tag in ("th", "label", "span"):
-            self._in_label = False
-            self._capture_key = self._current_label.strip().rstrip(":")
-        if self._in_value and tag in ("td", "span", "div"):
-            self._in_value = False
-            if self._capture_key:
-                self._fields[self._capture_key] = " ".join(self._current_value_parts).strip()
-                self._capture_key = None
-        if self._in_description and tag in ("div", "td", "p"):
-            self._in_description = False
-            if self._description_parts:
-                self._fields["Description"] = " ".join(self._description_parts).strip()
-
-    def handle_data(self, data: str) -> None:
-        if self._in_label:
-            self._current_label += data
-        if self._in_value:
-            self._current_value_parts.append(data.strip())
-        if self._in_description:
-            self._description_parts.append(data.strip())
 
 
 def _parse_date(date_str: str | None) -> str | None:
     if not date_str:
         return None
-    for fmt in ("%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y", "%Y-%m-%d"):
+    date_str = date_str.strip()
+    for fmt in ("%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y", "%Y-%m-%d",
+                "%m/%d/%Y %I:%M %p %Z"):
         try:
-            return datetime.strptime(date_str.strip(), fmt).isoformat()
+            return datetime.strptime(date_str, fmt).isoformat()
+        except ValueError:
+            continue
+    # Try stripping timezone abbreviation (e.g. "6/1/2026 12:00 AM CDT")
+    stripped = re.sub(r"\s+[A-Z]{2,4}$", "", date_str)
+    for fmt in ("%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M:%S"):
+        try:
+            return datetime.strptime(stripped, fmt).isoformat()
         except ValueError:
             continue
     return None
 
 
-def _extract_event_id(href: str) -> str | None:
-    match = re.search(r"eventId=(\d+)", href)
-    return match.group(1) if match else None
+def _parse_list_page(html: str, site: JaggaerSite) -> list[dict[str, Any]]:
+    """Parse the new JAGGAER PHX list page format.
+
+    The 2025+ JAGGAER UI embeds all event data (title, description, dates,
+    type, number, contact) directly in each ``<tr>`` row instead of requiring
+    separate detail-page fetches.  Detail links now use AuthToken instead of
+    eventId.
+    """
+    results: list[dict[str, Any]] = []
+
+    # Split HTML into rows from the phx table
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL)
+
+    for row in rows:
+        # Must have a detail link to be a real event row
+        link_match = re.search(
+            r'href="(https://app01\.jaggaer\.com/apps/Router/ViewSourcingEvent\?[^"]+)"',
+            row,
+        )
+        if not link_match:
+            # Also try old-style links
+            link_match = re.search(r'href="([^"]*(?:EventDetail|eventId)[^"]*)"', row)
+        if not link_match:
+            continue
+
+        detail_url = link_match.group(1).replace("&amp;", "&")
+
+        # Strip HTML to get raw text, then extract structured fields
+        text = re.sub(r"<[^>]+>", " ", row)
+        text = re.sub(r"\s+", " ", text).strip()
+
+        # Title is the first substantial text chunk (after status like "Open")
+        # Find all text between tags for more precise extraction
+        chunks = [c.strip() for c in re.sub(r"<[^>]+>", "\n", row).split("\n") if c.strip()]
+
+        title = ""
+        description = ""
+        for chunk in chunks:
+            if chunk in ("Open", "Closed", "Awarded", "Respond Now", "Details", "View as PDF"):
+                continue
+            if len(chunk) > 10 and not title:
+                title = chunk
+                continue
+            if len(chunk) > 20 and not description and chunk != title:
+                description = chunk
+                break
+
+        # Extract structured fields using label patterns
+        open_match = re.search(r"Open\s*([\d/]+\s+[\d:]+\s+\w+(?:\s+\w+)?)", text)
+        close_match = re.search(r"Close\s*([\d/]+\s+[\d:]+\s+\w+(?:\s+\w+)?)", text)
+        type_match = re.search(r"Type\s*(\w+)", text)
+        num_match = re.search(r"Number\s*([\w\-]+)", text)
+        contact_match = re.search(r"Contact\s+([\w\s.]+?)\s+([\w.+-]+@[\w.-]+)", text)
+
+        sol_number = num_match.group(1) if num_match else ""
+        source_id = f"{site.state.lower()}-jag-{sol_number}" if sol_number else f"{site.state.lower()}-jag-{hash(detail_url) & 0xFFFFFF:06x}"
+
+        opp: dict[str, Any] = {
+            "source": site.key,
+            "source_id": source_id,
+            "title": (title or "Untitled")[:500],
+            "solicitation_number": sol_number,
+            "notice_type": type_match.group(1) if type_match else "",
+            "posted_date": _parse_date(open_match.group(1) if open_match else None),
+            "response_deadline": _parse_date(close_match.group(1) if close_match else None),
+            "agency": "",
+            "office": "",
+            "naics_code": "",
+            "set_aside": "",
+            "classification_code": "",
+            "url": detail_url,
+            "description": description or title,
+            "resource_links": [],
+            "point_of_contact": {
+                "name": contact_match.group(1).strip() if contact_match else "",
+                "email": contact_match.group(2) if contact_match else "",
+                "phone": "",
+            },
+            "place_of_performance": site.place_default,
+            "raw": {"row_text": text[:500]},
+        }
+        results.append(opp)
+
+    return results
 
 
 def fetch_opportunities(site: JaggaerSite, limit: int = 200) -> list[dict[str, Any]]:
-    """Scrape open events from a JAGGAER/SciQuest portal."""
+    """Scrape open events from a JAGGAER/SciQuest portal.
+
+    Supports both the legacy (pre-2025) and new PHX table formats.
+    """
     if site.customer_org:
         list_url = f"{site.base_url}/apps/Router/PublicEvent?CustomerOrg={site.customer_org}"
     else:
         list_url = f"{site.base_url}/apps/Router/PublicEvent"
-
-    results: list[dict[str, Any]] = []
 
     with httpx.Client(timeout=30.0, follow_redirects=True) as client:
         logger.info("Fetching %s (%s) public events…", site.name, site.state)
@@ -191,66 +179,7 @@ def fetch_opportunities(site: JaggaerSite, limit: int = 200) -> list[dict[str, A
             logger.error("%s listing failed: %s", site.name, e)
             return []
 
-        parser = _EventListParser()
-        parser.feed(resp.text)
-
-        seen_ids: set[str] = set()
-        event_links: list[tuple[str, str]] = []
-        for row_links in parser._all_links:
-            for href in row_links:
-                eid = _extract_event_id(href)
-                if eid and eid not in seen_ids:
-                    seen_ids.add(eid)
-                    full_href = href if href.startswith("http") else f"{site.base_url}{href}"
-                    event_links.append((eid, full_href))
-
-        logger.info("%s: found %d events", site.name, len(event_links))
-
-        for event_id, detail_url in event_links[:limit]:
-            try:
-                resp = client.get(detail_url)
-                resp.raise_for_status()
-            except httpx.HTTPError as e:
-                logger.warning("%s: failed to fetch event %s: %s", site.name, event_id, e)
-                continue
-
-            dp = _EventDetailParser()
-            dp.feed(resp.text)
-            fields = dp._fields
-
-            title = fields.get("Event Name", fields.get("Title", fields.get("Description", "Untitled")))
-            deadline = _parse_date(
-                fields.get("Close Date", fields.get("Response Deadline", fields.get("End Date")))
-            )
-            posted = _parse_date(
-                fields.get("Open Date", fields.get("Start Date", fields.get("Published Date")))
-            )
-
-            opp = {
-                "source": site.key,
-                "source_id": f"{site.state.lower()}-jag-{event_id}",
-                "title": title[:500],
-                "solicitation_number": fields.get("Event ID", fields.get("Solicitation Number", event_id)),
-                "notice_type": fields.get("Event Type", fields.get("Type", "")),
-                "posted_date": posted,
-                "response_deadline": deadline,
-                "agency": fields.get("Organization", fields.get("Agency", fields.get("Department", ""))),
-                "office": fields.get("Department", fields.get("Division", "")),
-                "naics_code": fields.get("NAICS", ""),
-                "set_aside": "",
-                "classification_code": fields.get("Commodity Code", fields.get("NIGP Code", "")),
-                "url": detail_url,
-                "description": fields.get("Description", fields.get("Scope", "")),
-                "resource_links": [],
-                "point_of_contact": {
-                    "name": fields.get("Contact", fields.get("Buyer", "")),
-                    "email": fields.get("Contact Email", fields.get("Email", "")),
-                    "phone": "",
-                },
-                "place_of_performance": fields.get("Location", site.place_default),
-                "raw": fields,
-            }
-            results.append(opp)
+        results = _parse_list_page(resp.text, site)
 
     logger.info("%s: %d opportunities scraped", site.name, len(results))
-    return results
+    return results[:limit]

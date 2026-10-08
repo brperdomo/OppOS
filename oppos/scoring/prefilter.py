@@ -8,12 +8,14 @@ Design principles:
   • Software + services (training, support, staffing augmentation alongside software)
     are allowed through — Stage 1 / Stage 2 will score them appropriately.
   • NAICS codes in the 5112xx range (software) always pass regardless of keywords.
+  • Opportunities past their response deadline are rejected immediately.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -254,6 +256,24 @@ def prefilter(opp: dict[str, Any]) -> dict[str, Any]:
     description = opp.get("description") or ""
     naics = opp.get("naics_code") or ""
     combined = _combine_text(opp)
+
+    # ── Deadline already passed → reject ───────────────────────
+    deadline_str = opp.get("response_deadline") or ""
+    if deadline_str:
+        try:
+            dl = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
+            if dl.tzinfo is None:
+                dl = dl.replace(tzinfo=timezone.utc)
+            if dl < datetime.now(timezone.utc):
+                opp["prefilter"] = {
+                    "passed": False,
+                    "reason": f"Deadline passed: {deadline_str}",
+                    "rule": "deadline_reject",
+                }
+                logger.debug("Pre-filter REJECT (expired): %s deadline=%s", title[:80], deadline_str)
+                return opp
+        except (ValueError, TypeError):
+            pass  # Unparseable deadline — let it through
 
     # ── Empty / broken scrape → reject ─────────────────────────
     # If title is missing/generic AND description is empty, there's nothing
