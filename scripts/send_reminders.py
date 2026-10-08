@@ -63,18 +63,25 @@ def _pick(pursuit: dict, opp: dict) -> tuple[str, str] | None:
     # Steps are ordered most-urgent first; pick the ONE that applies today and send it only
     # if it has not been sent. Never fall back to a less urgent step (e.g. "due in 3 days"
     # must not fire after the deadline has passed).
-    d = days_until(pursuit.get("submission_deadline") or opp.get("response_deadline"))
+    # Reminder keys include the deadline they were sent for, so extending a deadline
+    # re-arms the T-x reminders for the new date.
+    due_raw = pursuit.get("submission_deadline") or str(opp.get("response_deadline") or "")[:10]
+    d = days_until(due_raw)
     if d is not None:
         step = next(((kind, label) for threshold, kind, label in _DEADLINE_STEPS if d <= threshold), None)
-        if step and not reminder_sent(sid, step[0]):
-            when = f" ({pursuit.get('submission_deadline') or str(opp.get('response_deadline'))[:10]})"
-            return step[0], f"{step[1]}{when} — {link}\n{who}"
+        if step:
+            key = f"{step[0]}@{due_raw}"
+            if not reminder_sent(sid, key):
+                return key, f"{step[1]} ({due_raw}) — {link}\n{who}"
 
-    q = days_until(pursuit.get("qa_deadline"))
+    qa_raw = pursuit.get("qa_deadline")
+    q = days_until(qa_raw)
     if q is not None:
         step = next(((kind, label) for threshold, kind, label in _QA_STEPS if q <= threshold), None)
-        if step and not reminder_sent(sid, step[0]):
-            return step[0], f"{step[1]} ({pursuit.get('qa_deadline')}) — {link}\n{who}"
+        if step:
+            key = f"{step[0]}@{qa_raw}"
+            if not reminder_sent(sid, key):
+                return key, f"{step[1]} ({qa_raw}) — {link}\n{who}"
 
     last = last_pursuit_activity(sid)
     if last:

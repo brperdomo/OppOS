@@ -1074,11 +1074,17 @@ def _ensure_files_exist(opp: dict, selected_paths: list) -> list:
 def _pursue_opportunity(opp: dict, reason: str = "") -> None:
     """Full Pursue flow: Notion push → pursuit record (owner = you) → Slack channel or alert."""
     from oppos.outputs.notion_sync import push_opportunity
-    from oppos.pursuits import start_pursuit
-    from oppos.storage.db import set_notion_page_id
+    from oppos.pursuits import owned_by_other, start_pursuit
+    from oppos.storage.db import get_pursuit, set_notion_page_id
 
     sid = opp.get("source_id", "")
     title = opp.get("title", "Untitled")
+
+    _existing = get_pursuit(sid)
+    if owned_by_other(_existing, CURRENT_USER):
+        st.error(f"**{title[:60]}** is owned by {_existing.get('owner_name') or _existing.get('owner_email')} "
+                 f"({_existing.get('status')}). Ask them to release it before pursuing.")
+        return
 
     with st.status(f"Pursuing: {title[:50]}…", expanded=True) as status:
         notion_url, page_id = "", None

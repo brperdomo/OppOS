@@ -49,6 +49,21 @@ REGISTRATION_LABELS = {
 }
 CLOSED_STATUSES = ("submitted", "won", "lost", "abandoned")
 
+
+class PursuitOwnedError(PermissionError):
+    """Raised when a user tries to take over a pursuit that someone else holds."""
+
+    def __init__(self, pursuit: dict[str, Any]):
+        self.pursuit = pursuit
+        owner = pursuit.get("owner_name") or pursuit.get("owner_email") or "someone else"
+        super().__init__(f"Owned by {owner} ({stage_label(pursuit.get('status'))}) — ask them to release it first.")
+
+
+def owned_by_other(pursuit: dict[str, Any] | None, user: dict[str, Any]) -> bool:
+    if not pursuit or pursuit.get("status") not in OPEN_STAGES:
+        return False
+    return (pursuit.get("owner_email") or "").lower() != (user.get("email") or "").lower()
+
 # Canonical stage model. Everything after "new" has an owner.
 #   new → evaluating (claimed) → active (pursuing) → submitted → won | lost ; exits: abandoned, released
 STAGES: dict[str, str] = {
@@ -209,26 +224,47 @@ def start_pursuit(opp: dict[str, Any], reason: str, user: dict[str, Any],
     owner_email = (user.get("email") or "").lower()
     owner_name = user.get("name") or owner_email
 
+    existing = get_pursuit(sid)
+    if owned_by_other(existing, user):
+        raise PursuitOwnedError(existing)
+
     set_pipeline_status(sid, "in_progress", notes=reason, assigned_to=owner_name)
 
-    reg = registration_for_source(opp.get("source"))
-    existing = get_pursuit(sid)
-    fields = {
-        "owner_email": owner_email,
-        "owner_name": owner_name,
-        "lob": opp.get("lob"),
-        "reason": reason,
-        "status": "active",
-        "submission_deadline": (opp.get("response_deadline") or "")[:10] or None,
-        "registration_status": (reg or {}).get("status") or "unknown",
-        "portal": opp.get("source"),
-        "notion_page_id": notion_page_id or opp.get("notion_page_id"),
-        "created_by": owner_email,
-    }
-    if existing:
-        update_pursuit(sid, **{k: v for k, v in fields.items() if k != "created_by"})
+    if existing and existing.get("status") in OPEN_STAGES:
+        # Promote an existing claim: keep everything the owner already filled in
+        # (deadlines, registration, method, checklist, next action); only fill gaps.
+        promote: dict[str, Any] = {"status": "active", "reason": reason, "closed_at": None}
+        if notion_page_id:
+            promote["notion_page_id"] = notion_page_id
+        for key, value in (
+            ("lob", opp.get("lob")),
+            ("portal", opp.get("source")),
+            ("submission_deadline", (opp.get("response_deadline") or "")[:10] or None),
+            ("owner_email", owner_email),
+            ("owner_name", owner_name),
+        ):
+            if not existing.get(key) and value:
+                promote[key] = value
+        update_pursuit(sid, **promote)
     else:
-        create_pursuit(sid, **fields)
+        reg = registration_for_source(opp.get("source"))
+        fields = {
+            "owner_email": owner_email,
+            "owner_name": owner_name,
+            "lob": opp.get("lob"),
+            "reason": reason,
+            "status": "active",
+            "submission_deadline": (opp.get("response_deadline") or "")[:10] or None,
+            "registration_status": (reg or {}).get("status") or "unknown",
+            "portal": opp.get("source"),
+            "notion_page_id": notion_page_id or opp.get("notion_page_id"),
+            "created_by": owner_email,
+            "closed_at": None,
+        }
+        if existing:  # a closed/released record — reuse the row
+            update_pursuit(sid, **{k: v for k, v in fields.items() if k != "created_by"})
+        else:
+            create_pursuit(sid, **fields)
     add_pursuit_event(sid, owner_email, "started", reason)
 
     result: dict[str, Any] = {"slack_channel_name": "", "slack_url": "", "slack_alert_sent": False}
