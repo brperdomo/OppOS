@@ -47,7 +47,8 @@ LOW_CODE = make_lob(
     router_blurb=_BLURB,
     thin_profile=_PROFILE,
     extras_schema=(
+        '"pattern_match": "<closest pattern: infopath_sharepoint_migration | sharepoint_watermark_security | power_automate_document_pipeline | repository_ocr_searchability | onprem_batch_document_automation | pii_redaction_compliance | other>",',
         '"platform_context": "<sharepoint | power_automate | nintex | salesforce | server | unknown>",',
     ),
-    extras_defaults={"platform_context": "unknown"},
+    extras_defaults={"pattern_match": "other", "platform_context": "unknown"},
 )

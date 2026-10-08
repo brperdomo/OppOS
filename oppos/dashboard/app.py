@@ -668,11 +668,12 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-if auth_configured():
-    _uc1, _uc2 = st.columns([6, 1])
-    _uc1.caption(f"Signed in as {CURRENT_USER['name']} ({CURRENT_USER['email']})")
-    with _uc2:
-        logout_button()
+_uc1, _uc2 = st.columns([6, 1])
+_role = "Admin" if CURRENT_USER.get("is_admin") else "SDR"
+_mode = "" if CURRENT_USER.get("authenticated") else " · local dev mode — set up Google sign-in for real identities"
+_uc1.caption(f"👤 {CURRENT_USER['name']} · {CURRENT_USER['email']} · {_role}{_mode}")
+with _uc2:
+    logout_button()
 
 with st.spinner("Loading pipeline..."):
     init_db()
@@ -2193,6 +2194,23 @@ with tab_in_progress:
         _view = st.radio("View", ["Mine", "Team"], horizontal=True, label_visibility="collapsed",
                          index=0 if _mine else 1, key="pursuit_view")
     _rows_p = _mine if _view == "Mine" else _active
+    if _view == "Mine":
+        from oppos.pursuits import days_until as _du
+        _all_mine = list_pursuits(status=None, owner_email=CURRENT_USER["email"])
+        _cnt = lambda *sts: sum(1 for p in _all_mine if p.get("status") in sts)
+        _next = sorted(((_du(p.get("submission_deadline")), p) for p in _mine if _du(p.get("submission_deadline")) is not None),
+                       key=lambda t: t[0])
+        _next_txt = (f"next due in {_next[0][0]}d" if _next and _next[0][0] >= 0 else "overdue item" if _next else "no deadlines set")
+        st.markdown(
+            f'<div class="pp-strip" style="margin-bottom:12px;"><span class="pp-owner">My desk</span>'
+            f'<span class="pp-pill">Claimed {_cnt("evaluating")}</span>'
+            f'<span class="pp-pill pp-ok">Pursuing {_cnt("active")}</span>'
+            f'<span class="pp-pill">Submitted {_cnt("submitted")}</span>'
+            f'<span class="pp-pill">Won {_cnt("won")}</span>'
+            f'<span class="pp-pill">Lost / abandoned {_cnt("lost", "abandoned")}</span>'
+            f'<span class="pp-pill {"pp-warn" if _next and _next[0][0] <= 7 else ""}">{_next_txt}</span></div>',
+            unsafe_allow_html=True,
+        )
     with _vc2:
         st.markdown(
             f'<div style="color: var(--text-tertiary); font-size: 14px; padding-top: 6px;">'

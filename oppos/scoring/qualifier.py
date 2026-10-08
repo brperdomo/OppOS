@@ -65,6 +65,7 @@ def _track(resp: Any) -> None:
     if usage is not None:
         USAGE["input_tokens"] += int(getattr(usage, "input_tokens", 0) or 0)
         USAGE["output_tokens"] += int(getattr(usage, "output_tokens", 0) or 0)
+        USAGE["cache_read_input_tokens"] = USAGE.get("cache_read_input_tokens", 0) + int(getattr(usage, "cache_read_input_tokens", 0) or 0)
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +104,7 @@ For fit_score (0-100):
 - Every strength and every risk MUST carry `evidence`: a short verbatim quote (25 words or fewer) from the RFP text that supports it. If nothing in the RFP supports it directly, write exactly "inferred" — never paraphrase and present it as a quote.
 - Put anything that matters but is not stated in the RFP into `knowledge_gaps` (e.g. "hosting requirements not stated", "incumbent vendor unknown", "user counts not given"). Never fill a gap with a guess.
 - Never invent certifications, customers, pricing, or capabilities that are not in the profile above. If the RFP asks for something the profile does not cover, that is a risk, not a strength.
+- Never state prices, list prices, or dollar figures in your output, even if the profile mentions them — pricing is handled by sales. Describe pricing posture qualitatively (e.g. "quote-based on-prem licensing", "usage-metered cloud tier") only when it affects fit.
 """
 
 
@@ -188,7 +190,7 @@ def _create_grounded(client: anthropic.Anthropic, system: str, user_text: str) -
     kwargs = dict(
         model=SCORING_MODEL_STAGE2,
         max_tokens=2000,
-        system=system,
+        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         betas=[_MCP_BETA],
         mcp_servers=[{"type": "url", "url": KAPA_MCP_URL, "name": _KAPA_SERVER_NAME,
                       "authorization_token": KAPA_API_KEY}],
@@ -340,7 +342,7 @@ def stage1_filter(opportunity: dict[str, Any], attachment_text: str = "") -> dic
         resp = client.messages.create(
             model=SCORING_MODEL_STAGE1,
             max_tokens=400,
-            system=STAGE1_SYSTEM,
+            system=[{"type": "text", "text": STAGE1_SYSTEM, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": opp_text}],
         )
         _track(resp)
@@ -441,7 +443,7 @@ def stage2_score(
             resp = client.messages.create(
                 model=SCORING_MODEL_STAGE2,
                 max_tokens=1400,
-                system=stage2_system_for(lob.key),
+                system=[{"type": "text", "text": stage2_system_for(lob.key), "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user_text}],
             )
             _track(resp)
