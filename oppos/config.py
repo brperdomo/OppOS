@@ -46,7 +46,7 @@ LOB_OWNERS: dict[str, str] = {
 
 ENABLED_SOURCES: list[str] = [
     s.strip()
-    for s in os.environ.get("ENABLED_SOURCES", "sam_gov").split(",")
+    for s in (os.environ.get("ENABLED_SOURCES") or "sam_gov").split(",")
     if s.strip()
 ]
 

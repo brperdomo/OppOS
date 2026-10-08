@@ -1135,6 +1135,11 @@ def _change_status(opp: dict, new_status: str, notes: str, current_status: str) 
     p_status = (pursuit or {}).get("status")
     live = p_status in ("evaluating", "active", "submitted")
 
+    if live and not CURRENT_USER.get("is_admin") and (pursuit.get("owner_email") or "").lower() != CURRENT_USER["email"]:
+        st.error(f"Owned by {pursuit.get('owner_name') or pursuit.get('owner_email')} ({p_status}) — "
+                 "only the owner or an admin can change its status.")
+        return
+
     if new_status == "in_progress" and current_status != "in_progress":
         _pursue_opportunity(opp, reason=notes or "")
         return
@@ -1838,6 +1843,7 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
     from oppos.pursuits import stage_label as _stage_lbl, release_claim as _release_claim
     owner = pursuit.get("owner_name") or pursuit.get("owner_email") or "Unassigned"
     _stage = pursuit.get("status") or "active"
+    can_edit = bool(CURRENT_USER.get("is_admin")) or (pursuit.get("owner_email") or "").lower() == CURRENT_USER["email"]
     st.markdown(
         f'<div class="pp-strip"><span class="pp-owner">👤 {_esc(owner)}</span>'
         f'<span class="pp-pill {"pp-ok" if _stage == "active" else ""}">{_esc(_stage_lbl(_stage))}</span>'
@@ -1849,33 +1855,44 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
         unsafe_allow_html=True,
     )
 
-    # ── Details ─────────────────────────────────────────────────
-    with st.expander("Pursuit details"):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            owner_email = st.text_input("Owner email", value=pursuit.get("owner_email") or "", key=f"{k}_owner")
-            owner_name = st.text_input("Owner name", value=pursuit.get("owner_name") or "", key=f"{k}_owner_name")
-        with c2:
-            sub_dl = st.date_input("Submission deadline", value=deadline_date(due_raw), key=f"{k}_sub", format="YYYY-MM-DD")
-            qa_dl = st.date_input("Questions deadline", value=deadline_date(pursuit.get("qa_deadline")), key=f"{k}_qa", format="YYYY-MM-DD")
-        with c3:
-            _m = pursuit.get("submission_method") or "unknown"
-            method = st.selectbox("Submission method", SUBMISSION_METHODS,
-                                  index=SUBMISSION_METHODS.index(_m) if _m in SUBMISSION_METHODS else 0, key=f"{k}_method")
-            reg = st.selectbox("Vendor registration", REGISTRATION_STATUSES,
-                               index=REGISTRATION_STATUSES.index(reg_status) if reg_status in REGISTRATION_STATUSES else 0,
-                               format_func=lambda v: REGISTRATION_LABELS.get(v, v), key=f"{k}_reg")
-        next_action = st.text_input("Next action", value=pursuit.get("next_action") or "", key=f"{k}_next",
-                                    placeholder="e.g. Submit questions by Friday; confirm vendor registration with ops")
-        if st.button("Save details", key=f"{k}_save", use_container_width=True):
-            save_pursuit_fields(
-                sid, CURRENT_USER,
-                owner_email=owner_email.strip().lower() or None, owner_name=owner_name.strip() or None,
-                submission_deadline=sub_dl.isoformat() if sub_dl else None,
-                qa_deadline=qa_dl.isoformat() if qa_dl else None,
-                submission_method=method, registration_status=reg, next_action=next_action.strip() or None,
-            )
-            st.rerun()
+    if can_edit:
+        # ── Details ─────────────────────────────────────────────────
+        with st.expander("Pursuit details"):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                owner_email = st.text_input("Owner email", value=pursuit.get("owner_email") or "", key=f"{k}_owner")
+                owner_name = st.text_input("Owner name", value=pursuit.get("owner_name") or "", key=f"{k}_owner_name")
+            with c2:
+                sub_dl = st.date_input("Submission deadline", value=deadline_date(due_raw), key=f"{k}_sub", format="YYYY-MM-DD")
+                qa_dl = st.date_input("Questions deadline", value=deadline_date(pursuit.get("qa_deadline")), key=f"{k}_qa", format="YYYY-MM-DD")
+            with c3:
+                _m = pursuit.get("submission_method") or "unknown"
+                method = st.selectbox("Submission method", SUBMISSION_METHODS,
+                                      index=SUBMISSION_METHODS.index(_m) if _m in SUBMISSION_METHODS else 0, key=f"{k}_method")
+                reg = st.selectbox("Vendor registration", REGISTRATION_STATUSES,
+                                   index=REGISTRATION_STATUSES.index(reg_status) if reg_status in REGISTRATION_STATUSES else 0,
+                                   format_func=lambda v: REGISTRATION_LABELS.get(v, v), key=f"{k}_reg")
+            next_action = st.text_input("Next action", value=pursuit.get("next_action") or "", key=f"{k}_next",
+                                        placeholder="e.g. Submit questions by Friday; confirm vendor registration with ops")
+            if st.button("Save details", key=f"{k}_save", use_container_width=True):
+                save_pursuit_fields(
+                    sid, CURRENT_USER,
+                    owner_email=owner_email.strip().lower() or None, owner_name=owner_name.strip() or None,
+                    submission_deadline=sub_dl.isoformat() if sub_dl else None,
+                    qa_deadline=qa_dl.isoformat() if qa_dl else None,
+                    submission_method=method, registration_status=reg, next_action=next_action.strip() or None,
+                )
+                st.rerun()
+
+    else:
+        with st.expander("Pursuit details"):
+            st.caption(f"Read-only — owned by {owner}. Ask them (or an admin) to make changes.")
+            d1, d2, d3 = st.columns(3)
+            d1.markdown(f"**Owner**  \n{_esc(owner)}")
+            d2.markdown(f"**Submission deadline**  \n{_esc(str(due_raw or '—'))[:10]}  \n**Questions deadline**  \n{_esc(str(pursuit.get('qa_deadline') or '—'))}")
+            d3.markdown(f"**Method**  \n{_esc(pursuit.get('submission_method') or 'unknown')}  \n**Registration**  \n{_esc(REGISTRATION_LABELS.get(reg_status, reg_status))}")
+            if pursuit.get("next_action"):
+                st.markdown(f"**Next action**  \n{_esc(pursuit['next_action'])}")
 
     # ── Checklist (write-through) ──────────────────────────────
     with st.expander(f"Checklist  ·  {done}/{total}", expanded=done < total):
@@ -1884,55 +1901,59 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
         new_state = {}
         for i, (key, label) in enumerate(CHECKLIST):
             with cols[i % 3]:
-                new_state[key] = st.checkbox(label, value=state[key], key=f"{k}_ck_{key}")
-        if new_state != state:
+                new_state[key] = st.checkbox(label, value=state[key], key=f"{k}_ck_{key}", disabled=not can_edit)
+        if can_edit and new_state != state:
             save_pursuit_fields(sid, CURRENT_USER, checklist_json=_json.dumps(new_state))
             st.rerun()
 
-    # ── Actions ────────────────────────────────────────────────
-    if _stage == "evaluating":
-        e1, e2, e3 = st.columns([1, 1, 3])
-        with e1:
-            if st.button("🎯 Start pursuing", key=f"{k}_start", use_container_width=True, type="primary"):
-                _pursue_opportunity(opp, reason=pursuit.get("reason") or "")
-                st.rerun()
-        with e2:
-            if st.button("Release", key=f"{k}_release", use_container_width=True):
-                _release_claim(opp, CURRENT_USER)
-                st.rerun()
-        with e3:
-            st.caption("Claimed for evaluation. Start pursuing to create the Notion page and Slack channel and begin reminders.")
-    a1, a2, a3, a4, a5 = st.columns(5)
-    with a1:
-        if npid:
-            if st.button("🔄 Re-push Notion", key=f"{k}_repush", use_container_width=True):
-                _push_to_notion(opp)
-        else:
-            if st.button("📝 Push to Notion", key=f"{k}_push", use_container_width=True):
-                _push_to_notion(opp)
-    with a2:
-        with st.popover("📋 Salesforce Opp", use_container_width=True):
-            st.code(build_sdr_message(opp), language=None)
-            st.caption("Copy and paste to the SDR channel to get the Salesforce opportunity created.")
-    with a3:
-        with st.popover("📨 Submitted", use_container_width=True):
-            sub_note = st.text_input("Submission note", key=f"{k}_sub_note", placeholder="Submitted via portal, confirmation #…")
-            if st.button("Confirm submitted", key=f"{k}_sub_go", use_container_width=True):
-                transition_pursuit(opp, "submitted", CURRENT_USER, sub_note)
-                st.rerun()
-    with a4:
-        with st.popover("🏁 Won / Lost", use_container_width=True):
-            outcome = st.radio("Outcome", ["won", "lost"], horizontal=True, key=f"{k}_outcome")
-            out_note = st.text_input("Notes", key=f"{k}_out_note", placeholder="Award details, competitor, debrief…")
-            if st.button("Record outcome", key=f"{k}_out_go", use_container_width=True):
-                transition_pursuit(opp, outcome, CURRENT_USER, out_note)
-                st.rerun()
-    with a5:
-        with st.popover("Abandon", use_container_width=True):
-            ab_reason = st.text_input("Why?", key=f"{k}_ab_reason", placeholder="Timeline too tight, requirements changed…")
-            if st.button("Confirm abandon", key=f"{k}_ab_go", type="primary", use_container_width=True):
-                transition_pursuit(opp, "abandoned", CURRENT_USER, ab_reason)
-                st.rerun()
+    if can_edit:
+        # ── Actions ────────────────────────────────────────────────
+        if _stage == "evaluating":
+            e1, e2, e3 = st.columns([1, 1, 3])
+            with e1:
+                if st.button("🎯 Start pursuing", key=f"{k}_start", use_container_width=True, type="primary"):
+                    _pursue_opportunity(opp, reason=pursuit.get("reason") or "")
+                    st.rerun()
+            with e2:
+                if st.button("Release", key=f"{k}_release", use_container_width=True):
+                    _release_claim(opp, CURRENT_USER)
+                    st.rerun()
+            with e3:
+                st.caption("Claimed for evaluation. Start pursuing to create the Notion page and Slack channel and begin reminders.")
+        a1, a2, a3, a4, a5 = st.columns(5)
+        with a1:
+            if npid:
+                if st.button("🔄 Re-push Notion", key=f"{k}_repush", use_container_width=True):
+                    _push_to_notion(opp)
+            else:
+                if st.button("📝 Push to Notion", key=f"{k}_push", use_container_width=True):
+                    _push_to_notion(opp)
+        with a2:
+            with st.popover("📋 Salesforce Opp", use_container_width=True):
+                st.code(build_sdr_message(opp), language=None)
+                st.caption("Copy and paste to the SDR channel to get the Salesforce opportunity created.")
+        with a3:
+            with st.popover("📨 Submitted", use_container_width=True):
+                sub_note = st.text_input("Submission note", key=f"{k}_sub_note", placeholder="Submitted via portal, confirmation #…")
+                if st.button("Confirm submitted", key=f"{k}_sub_go", use_container_width=True):
+                    transition_pursuit(opp, "submitted", CURRENT_USER, sub_note)
+                    st.rerun()
+        with a4:
+            with st.popover("🏁 Won / Lost", use_container_width=True):
+                outcome = st.radio("Outcome", ["won", "lost"], horizontal=True, key=f"{k}_outcome")
+                out_note = st.text_input("Notes", key=f"{k}_out_note", placeholder="Award details, competitor, debrief…")
+                if st.button("Record outcome", key=f"{k}_out_go", use_container_width=True):
+                    transition_pursuit(opp, outcome, CURRENT_USER, out_note)
+                    st.rerun()
+        with a5:
+            with st.popover("Abandon", use_container_width=True):
+                ab_reason = st.text_input("Why?", key=f"{k}_ab_reason", placeholder="Timeline too tight, requirements changed…")
+                if st.button("Confirm abandon", key=f"{k}_ab_go", type="primary", use_container_width=True):
+                    transition_pursuit(opp, "abandoned", CURRENT_USER, ab_reason)
+                    st.rerun()
+
+    else:
+        st.caption(f"Actions are available to the owner ({owner}) and admins.")
 
     # ── Activity ───────────────────────────────────────────────
     with st.expander("Activity"):

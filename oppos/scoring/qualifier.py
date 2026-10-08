@@ -314,10 +314,7 @@ def _normalize_stage2(result: dict[str, Any], lob: LOB) -> dict[str, Any]:
     out["fit_score"] = score
     out["recommended_action"] = action
     out["profile_depth"] = lob.depth
-    try:
-        out["fit_tier"] = int(out.get("fit_tier") or _tier_for(score))
-    except (TypeError, ValueError):
-        out["fit_tier"] = _tier_for(score)
+    out["fit_tier"] = _tier_for(score)  # always from the final score — the thin cap may have lowered it
     out["summary"] = str(out.get("summary", "") or "")
     out["industry"] = str(out.get("industry", "") or "")
     out["competitive_notes"] = str(out.get("competitive_notes", "") or "")

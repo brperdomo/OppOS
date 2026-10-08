@@ -47,8 +47,9 @@ def current_user() -> dict[str, Any]:
     else:
         user = {**_dev_user(), "authenticated": False}
     admins = _admin_emails()
-    # Without configured auth everyone is admin (single-user dev mode); with auth, only listed emails.
-    user["is_admin"] = (not auth_configured()) or (user["email"] in admins) or not admins
+    # OPPOS_ADMINS, when set, is authoritative (with or without sign-in configured).
+    # When it is empty, everyone is an admin — fine for single-user dev, set it before SDR rollout.
+    user["is_admin"] = (user["email"] in admins) if admins else True
     return user
 
 
