@@ -5,3 +5,6 @@ __pycache__/
 .venv/
 oppos.db*
 .DS_Store
+eval/results/
+.streamlit/secrets.toml
+.env.local

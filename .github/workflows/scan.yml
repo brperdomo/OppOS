@@ -1,0 +1,67 @@
+name: Scheduled RFP scan
+
+on:
+  schedule:
+    # 11:00 UTC Mon–Fri (07:00 ET) — before SDRs start the day
+    - cron: "0 11 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "SAM.gov look-back window (days)"
+        default: "3"
+        required: false
+      sources:
+        description: "Comma-separated source keys (blank = ENABLED_SOURCES)"
+        default: ""
+        required: false
+      dry_run:
+        description: "Score only — skip Notion and Slack"
+        type: boolean
+        default: false
+
+concurrency:
+  group: rfp-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      SAM_GOV_API_KEY: ${{ secrets.SAM_GOV_API_KEY }}
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_DIGEST_CHANNEL: ${{ vars.SLACK_DIGEST_CHANNEL }}
+      SLACK_ALERT_MODE: ${{ vars.SLACK_ALERT_MODE }}
+      NUTRIENT_API_KEY: ${{ secrets.NUTRIENT_API_KEY }}
+      ENABLED_SOURCES: ${{ vars.ENABLED_SOURCES || 'sam_gov' }}
+      LOB_OWNER_WORKFLOW: ${{ vars.LOB_OWNER_WORKFLOW }}
+      LOB_OWNER_LOW_CODE: ${{ vars.LOB_OWNER_LOW_CODE }}
+      LOB_OWNER_SDK: ${{ vars.LOB_OWNER_SDK }}
+      LOB_OWNER_DWS: ${{ vars.LOB_OWNER_DWS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scan
+        run: |
+          ARGS="--days ${{ github.event.inputs.days || '3' }}"
+          if [ -n "${{ github.event.inputs.sources }}" ]; then ARGS="$ARGS --sources ${{ github.event.inputs.sources }}"; fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          python scripts/run_pipeline.py $ARGS
+
+      - name: Source yield (for the job summary)
+        if: always()
+        run: python scripts/source_yield.py --markdown >> "$GITHUB_STEP_SUMMARY" || true

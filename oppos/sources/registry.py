@@ -74,10 +74,6 @@ def _load_registry() -> dict[str, tuple[str, FetchFn]]:
     from oppos.sources.platforms.pa_emarketplace import fetch_opportunities as pa_fetch
     _REGISTRY["pennsylvania_emarketplace"] = ("PA eMarketplace (PA)", pa_fetch)
 
-    # --- Starbridge RFP aggregator ---
-    from oppos.sources.starbridge import fetch_opportunities as sb_fetch
-    _REGISTRY["starbridge"] = ("Starbridge (RFP Aggregator)", sb_fetch)
-
     # --- Private sector sources ---
     from oppos.sources.google_cse import fetch_opportunities as gcse_fetch
     _REGISTRY["google_cse"] = ("Google CSE (Private Sector)", gcse_fetch)
@@ -90,7 +86,7 @@ def _load_registry() -> dict[str, tuple[str, FetchFn]]:
 
 # Sources that are NOT state portals — excluded from "all_states" shortcut
 _NON_STATE_SOURCES = frozenset({
-    "sam_gov", "starbridge", "google_cse", "target_accounts",
+    "sam_gov", "google_cse", "target_accounts",
 })
 
 

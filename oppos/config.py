@@ -3,7 +3,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
+_ROOT = Path(__file__).resolve().parent.parent
+# OPPOS_ENV_FILE lets a second instance run against a different env (e.g. .env.local → SQLite demo DB).
+load_dotenv(_ROOT / os.environ.get("OPPOS_ENV_FILE", ".env"), override=True)
 
 SAM_GOV_API_KEY = os.environ.get("SAM_GOV_API_KEY", "")
 SAM_GOV_BASE_URL = "https://api.sam.gov/opportunities/v2/search"
@@ -24,7 +26,9 @@ GOOGLE_CSE_DAILY_LIMIT = int(os.environ.get("GOOGLE_CSE_DAILY_LIMIT", "100"))
 
 NUTRIENT_API_KEY = os.environ.get("NUTRIENT_API_KEY", "")
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "oppos.db"
+DB_PATH = Path(os.environ["OPPOS_DB_PATH"]) if os.environ.get("OPPOS_DB_PATH") else _ROOT / "data" / "oppos.db"
+if not DB_PATH.is_absolute():
+    DB_PATH = _ROOT / DB_PATH
 
 TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "")
 TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
@@ -33,9 +37,16 @@ STAGE1_FIT_THRESHOLD = 0.5
 STAGE2_MIN_SCORE = 40
 SLACK_ALERT_MIN_SCORE = 65
 
+# Line-of-business routing — optional owner per LOB (name or Slack handle), env-only.
+# Nothing is hardcoded: unset means "no designated owner" and messages omit the owner line.
+LOB_OWNERS: dict[str, str] = {
+    key: os.environ.get(f"LOB_OWNER_{key.upper()}", "").strip()
+    for key in ("workflow", "low_code", "sdk", "dws")
+}
+
 ENABLED_SOURCES: list[str] = [
     s.strip()
-    for s in os.environ.get("ENABLED_SOURCES", "sam_gov").split(",")
+    for s in (os.environ.get("ENABLED_SOURCES") or "sam_gov").split(",")
     if s.strip()
 ]
 
@@ -90,7 +101,6 @@ SOURCE_STATE_MAP: dict[str, str] = {
     "missouri_missouribuys": "Missouri",
     "rhode_island_osp": "Rhode Island",
     # Aggregators & private sector sources
-    "starbridge": "",
     "google_cse": "",
     "target_accounts": "",
 }
