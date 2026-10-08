@@ -40,7 +40,8 @@ DWS = make_lob(
     router_blurb=_BLURB,
     thin_profile=_PROFILE,
     extras_schema=(
+        '"pattern_match": "<closest pattern: hosted_conversion_and_pdfa_archival | ocr_and_structured_extraction_intake | automated_redaction_for_public_release | document_generation_from_templates | pdf_accessibility_remediation | hosted_viewer_without_infrastructure | other>",',
         '"processing_operations": ["<convert | ocr | extract | redact | sign | merge | generate | other>"],',
     ),
-    extras_defaults={"processing_operations": []},
+    extras_defaults={"pattern_match": "other", "processing_operations": []},
 )

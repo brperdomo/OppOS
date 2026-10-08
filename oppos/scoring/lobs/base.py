@@ -78,9 +78,10 @@ def make_lob(
     loaded = load_profile(key)
     if loaded:
         profile, meta = loaded
-        depth = str(meta.get("depth", "full")).lower()
+        depth = str(meta.get("depth", "full")).split("#")[0].strip().lower()
         if depth not in ("full", "thin"):
-            depth = "full"
+            logger.warning("profiles/%s.md has unknown depth %r — treating as thin", key, meta.get("depth"))
+            depth = "thin"
     else:
         profile, depth = thin_profile, "thin"
     return LOB(

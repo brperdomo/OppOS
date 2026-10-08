@@ -52,8 +52,9 @@ SDK = make_lob(
     router_blurb=_BLURB,
     thin_profile=_PROFILE,
     extras_schema=(
+        '"pattern_match": "<closest pattern: embedded_viewer_annotation_in_custom_app | citizen_forms_and_esign_portal | records_redaction_and_public_release | self_hosted_document_server_data_residency | realtime_collaboration_review | ai_document_assistant_in_regulated_app | other>",',
         '"play": "<direct | partner_si | oem | unknown>",',
         '"platforms": ["<web | ios | android | flutter | react_native | dotnet | server>"],',
     ),
-    extras_defaults={"play": "unknown", "platforms": []},
+    extras_defaults={"pattern_match": "other", "play": "unknown", "platforms": []},
 )
