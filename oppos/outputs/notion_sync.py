@@ -103,7 +103,6 @@ _SOURCE_DISPLAY: dict[str, str] = {
     "missouri_missouribuys": "PROACTIS — MissouriBUYS",
     "rhode_island_osp": "PROACTIS — Ocean State",
     # Aggregators
-    "starbridge": "Starbridge",
     # Private sector
     "google_cse": "Google CSE — Private Sector",
     "target_accounts": "Target Account Monitor",

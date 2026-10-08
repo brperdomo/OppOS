@@ -90,7 +90,6 @@ SOURCE_STATE_MAP: dict[str, str] = {
     "missouri_missouribuys": "Missouri",
     "rhode_island_osp": "Rhode Island",
     # Aggregators & private sector sources
-    "starbridge": "",
     "google_cse": "",
     "target_accounts": "",
 }
