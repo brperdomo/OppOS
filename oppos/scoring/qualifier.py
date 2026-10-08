@@ -38,6 +38,9 @@ SECONDARY_LOB_MIN_CONFIDENCE = 0.5
 
 _ACTIONS = {"pursue", "investigate", "monitor", "skip"}
 
+# Full profiles produce longer assessments; a truncated JSON loses the summary and tail fields.
+STAGE2_MAX_TOKENS = 3000
+
 # Optional documentation grounding via Kapa's hosted MCP server (Messages API MCP connector).
 # Set KAPA_MCP_URL (https://<subdomain>.mcp.kapa.ai) and KAPA_API_KEY to enable.
 import os as _os
@@ -66,6 +69,7 @@ def _track(resp: Any) -> None:
         USAGE["input_tokens"] += int(getattr(usage, "input_tokens", 0) or 0)
         USAGE["output_tokens"] += int(getattr(usage, "output_tokens", 0) or 0)
         USAGE["cache_read_input_tokens"] = USAGE.get("cache_read_input_tokens", 0) + int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+        USAGE["cache_creation_input_tokens"] = USAGE.get("cache_creation_input_tokens", 0) + int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +193,7 @@ def _create_grounded(client: anthropic.Anthropic, system: str, user_text: str) -
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_text}]
     kwargs = dict(
         model=SCORING_MODEL_STAGE2,
-        max_tokens=2000,
+        max_tokens=STAGE2_MAX_TOKENS + 1000,  # room for tool-use blocks
         system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         betas=[_MCP_BETA],
         mcp_servers=[{"type": "url", "url": KAPA_MCP_URL, "name": _KAPA_SERVER_NAME,
@@ -442,13 +446,19 @@ def stage2_score(
         if resp is None:
             resp = client.messages.create(
                 model=SCORING_MODEL_STAGE2,
-                max_tokens=1400,
+                max_tokens=STAGE2_MAX_TOKENS,
                 system=[{"type": "text", "text": stage2_system_for(lob.key), "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user_text}],
             )
             _track(resp)
         result = _repair_and_parse_json(_final_text(resp))
         out = _normalize_stage2(result, lob)
+        if getattr(resp, "stop_reason", "") == "max_tokens":
+            logger.warning("Stage 2 output truncated at %d tokens for '%s' — raise STAGE2_MAX_TOKENS",
+                           STAGE2_MAX_TOKENS, opportunity.get("title", "?"))
+            out["truncated"] = True
+            if not out.get("summary"):
+                out["summary"] = "(assessment truncated — summary unavailable; see strengths and risks)"
         if grounding:
             out["grounding"] = grounding
         return out
