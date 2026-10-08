@@ -40,6 +40,10 @@ _ACTIONS = {"pursue", "investigate", "monitor", "skip"}
 
 # Full profiles produce longer assessments; a truncated JSON loses the summary and tail fields.
 STAGE2_MAX_TOKENS = 3000
+# A truncated, unparseable assessment is retried once (ungrounded) at this multiple of the ceiling.
+STAGE2_TRUNCATION_RETRY_MULTIPLIER = 2
+# Server-side MCP loops can pause more than once; give up and score ungrounded after this many continuations.
+KAPA_MAX_CONTINUATIONS = 5
 
 # Optional documentation grounding via Kapa's hosted MCP server (Messages API MCP connector).
 # Set KAPA_MCP_URL (https://<subdomain>.mcp.kapa.ai) and KAPA_API_KEY to enable.
@@ -188,8 +192,21 @@ def _grounding_summary(resp: Any) -> dict[str, Any]:
     return {"provider": "kapa", "queries": queries, "results": results}
 
 
-def _create_grounded(client: anthropic.Anthropic, system: str, user_text: str) -> Any:
-    """Stage 2 with the Kapa MCP server attached. Handles a single pause_turn continuation."""
+class _Collected:
+    """All content blocks across a paused/continued MCP turn, plus the final stop reason."""
+
+    def __init__(self, content: list[Any], stop_reason: str):
+        self.content = content
+        self.stop_reason = stop_reason
+
+
+def _create_grounded(client: anthropic.Anthropic, system: str, user_text: str) -> _Collected | None:
+    """Stage 2 with the Kapa MCP server attached.
+
+    The server-side tool loop may return `pause_turn` repeatedly; keep continuing
+    (bounded) until it stops. Returns None when the budget is exhausted or no text
+    block was produced, so the caller falls back to ungrounded scoring.
+    """
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_text}]
     kwargs = dict(
         model=SCORING_MODEL_STAGE2,
@@ -200,17 +217,23 @@ def _create_grounded(client: anthropic.Anthropic, system: str, user_text: str) -
                       "authorization_token": KAPA_API_KEY}],
         tools=[{"type": "mcp_toolset", "mcp_server_name": _KAPA_SERVER_NAME}],
     )
-    resp = client.beta.messages.create(messages=messages, **kwargs)
-    _track(resp)
-    if getattr(resp, "stop_reason", "") == "pause_turn":
+    collected: list[Any] = []
+    stop_reason = ""
+    for _ in range(KAPA_MAX_CONTINUATIONS + 1):
+        resp = client.beta.messages.create(messages=messages, **kwargs)
+        _track(resp)
+        collected.extend(resp.content)
+        stop_reason = getattr(resp, "stop_reason", "") or ""
+        if stop_reason != "pause_turn":
+            break
         messages.append({"role": "assistant", "content": resp.content})
-        resp2 = client.beta.messages.create(messages=messages, **kwargs)
-        _track(resp2)
-        # Merge for grounding bookkeeping; the final text comes from the continuation.
-        merged = list(resp.content) + list(resp2.content)
-        resp2.content = merged  # type: ignore[attr-defined]
-        return resp2
-    return resp
+    else:
+        logger.warning("Kapa grounding still paused after %d continuations — scoring ungrounded", KAPA_MAX_CONTINUATIONS)
+        return None
+    if not any(getattr(b, "type", "") == "text" and getattr(b, "text", "") for b in collected):
+        logger.warning("Kapa-grounded response produced no text — scoring ungrounded")
+        return None
+    return _Collected(collected, stop_reason)
 
 
 # Backward-compatible alias (Workflow was the only LOB before the router existed).
@@ -431,37 +454,56 @@ def stage2_score(
     opp_text = _build_opportunity_text(opportunity, attachment_text)
 
     user_text = f"Score this RFP opportunity:\n\n{opp_text}"
+    title = opportunity.get("title", "?")
     try:
         grounding: dict[str, Any] | None = None
+        resp: Any = None
         if kapa_enabled():
             try:
                 resp = _create_grounded(client, stage2_system_for(lob.key, grounded=True), user_text)
-                grounding = _grounding_summary(resp)
             except anthropic.APIError as e:
                 # Grounding is an enhancement — fall back to the plain scorer rather than fail the opp.
                 logger.warning("Kapa-grounded scoring failed (%s); retrying without grounding", e)
                 resp = None
-        else:
-            resp = None
-        if resp is None:
-            resp = client.messages.create(
-                model=SCORING_MODEL_STAGE2,
-                max_tokens=STAGE2_MAX_TOKENS,
-                system=[{"type": "text", "text": stage2_system_for(lob.key), "cache_control": {"type": "ephemeral"}}],
-                messages=[{"role": "user", "content": user_text}],
-            )
-            _track(resp)
-        result = _repair_and_parse_json(_final_text(resp))
-        out = _normalize_stage2(result, lob)
-        if getattr(resp, "stop_reason", "") == "max_tokens":
-            logger.warning("Stage 2 output truncated at %d tokens for '%s' — raise STAGE2_MAX_TOKENS",
-                           STAGE2_MAX_TOKENS, opportunity.get("title", "?"))
-            out["truncated"] = True
-            if not out.get("summary"):
-                out["summary"] = "(assessment truncated — summary unavailable; see strengths and risks)"
-        if grounding:
-            out["grounding"] = grounding
-        return out
+            if resp is not None:
+                grounding = _grounding_summary(resp)
+
+        max_tokens = STAGE2_MAX_TOKENS
+        for attempt in range(2):
+            if resp is None:
+                resp = client.messages.create(
+                    model=SCORING_MODEL_STAGE2,
+                    max_tokens=max_tokens,
+                    system=[{"type": "text", "text": stage2_system_for(lob.key), "cache_control": {"type": "ephemeral"}}],
+                    messages=[{"role": "user", "content": user_text}],
+                )
+                _track(resp)
+            # Decide truncation BEFORE parsing — a cutoff inside a nested value is often unrepairable.
+            truncated = getattr(resp, "stop_reason", "") == "max_tokens"
+            try:
+                result = _repair_and_parse_json(_final_text(resp))
+            except (json.JSONDecodeError, IndexError, KeyError, AttributeError) as e:
+                if truncated and attempt == 0:
+                    max_tokens = STAGE2_MAX_TOKENS * STAGE2_TRUNCATION_RETRY_MULTIPLIER
+                    logger.warning("Stage 2 output for '%s' truncated and unparseable — retrying at %d tokens", title, max_tokens)
+                    resp, grounding = None, None  # retry ungrounded with more room
+                    continue
+                if truncated:
+                    out = _stage2_failure(lob, f"Assessment truncated at {max_tokens} output tokens and could not be parsed "
+                                               f"— raise STAGE2_MAX_TOKENS or shorten the profile: {e}")
+                    out["truncated"] = True
+                    return out
+                raise
+            out = _normalize_stage2(result, lob)
+            if truncated:
+                logger.warning("Stage 2 output truncated at %d tokens for '%s' — raise STAGE2_MAX_TOKENS", max_tokens, title)
+                out["truncated"] = True
+                if not out.get("summary"):
+                    out["summary"] = "(assessment truncated — summary unavailable; see strengths and risks)"
+            if grounding:
+                out["grounding"] = grounding
+            return out
+        raise RuntimeError("unreachable")  # loop always returns or raises
     except (json.JSONDecodeError, IndexError, KeyError, AttributeError) as e:
         logger.warning("Stage 2 parse error for '%s': %s", opportunity.get("title", "?"), e)
         return _stage2_failure(lob, f"Automated scoring failed: {e}")
