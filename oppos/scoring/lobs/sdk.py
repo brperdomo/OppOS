@@ -1,12 +1,13 @@
 """Nutrient SDK — THIN profile.
 
-TODO: replace with a vetted positioning profile built from nutrient.io customer
+Falls back to this THIN description when profiles/sdk.md is absent.
+Regenerate the real profile with /build-lob-profile built from nutrient.io customer
 stories (Customer Stories blog category), G2 reviews, public repo READMEs and
 HubSpot closed-won data. Until then scores are capped and actions limited to
 investigate/skip.
 """
 
-from oppos.scoring.lobs.base import LOB
+from oppos.scoring.lobs.base import make_lob
 
 _BLURB = (
     "Nutrient SDK (fka PSPDFKit): developer SDKs for embedding PDF and document viewing, annotation, "
@@ -45,15 +46,15 @@ vendor would prime and embed Nutrient), `oem` (a software vendor would license a
 `unknown`.
 """
 
-SDK = LOB(
+SDK = make_lob(
     key="sdk",
     label="SDK",
     router_blurb=_BLURB,
-    profile=_PROFILE,
-    depth="thin",
+    thin_profile=_PROFILE,
     extras_schema=(
+        '"pattern_match": "<closest pattern: embedded_viewer_annotation_in_custom_app | citizen_forms_and_esign_portal | records_redaction_and_public_release | self_hosted_document_server_data_residency | realtime_collaboration_review | ai_document_assistant_in_regulated_app | other>",',
         '"play": "<direct | partner_si | oem | unknown>",',
         '"platforms": ["<web | ios | android | flutter | react_native | dotnet | server>"],',
     ),
-    extras_defaults={"play": "unknown", "platforms": []},
+    extras_defaults={"pattern_match": "other", "play": "unknown", "platforms": []},
 )

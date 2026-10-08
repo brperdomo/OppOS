@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "oppos-dashboard",
+      "runtimeExecutable": "streamlit",
+      "runtimeArgs": [
+        "run",
+        "oppos/dashboard/app.py",
+        "--server.port",
+        "8501"
+      ],
+      "port": 8501
+    },
+    {
+      "name": "oppos-dashboard-local",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "OPPOS_ENV_FILE=.env.local",
+        "streamlit",
+        "run",
+        "oppos/dashboard/app.py",
+        "--server.port",
+        "8502"
+      ],
+      "port": 8502
+    }
+  ]
+}

@@ -1,12 +1,13 @@
 """Nutrient Low-Code / Integrations — THIN profile.
 
-TODO: replace with a vetted positioning profile generated from the Catalyst
+Falls back to this THIN description when profiles/low_code.md is absent.
+Regenerate the real profile with /build-lob-profile generated from the Catalyst
 knowledge base (~/.claude/catalyst-data: internal-knowledge.md win/loss and
 competitors, field-knowledge.md personas and objections) plus customer stories.
 Until then scores are capped and actions limited to investigate/skip.
 """
 
-from oppos.scoring.lobs.base import LOB
+from oppos.scoring.lobs.base import make_lob
 
 _BLURB = (
     "Nutrient Low-Code / Integrations (fka Muhimbi and Aquaforest): Document Converter for "
@@ -40,14 +41,14 @@ verticals and competitive evidence. Score conservatively and name what must be v
 - Large systems-integration program where documents are a minor line item
 """
 
-LOW_CODE = LOB(
+LOW_CODE = make_lob(
     key="low_code",
     label="Low-Code",
     router_blurb=_BLURB,
-    profile=_PROFILE,
-    depth="thin",
+    thin_profile=_PROFILE,
     extras_schema=(
+        '"pattern_match": "<closest pattern: infopath_sharepoint_migration | sharepoint_watermark_security | power_automate_document_pipeline | repository_ocr_searchability | onprem_batch_document_automation | pii_redaction_compliance | other>",',
         '"platform_context": "<sharepoint | power_automate | nintex | salesforce | server | unknown>",',
     ),
-    extras_defaults={"platform_context": "unknown"},
+    extras_defaults={"pattern_match": "other", "platform_context": "unknown"},
 )

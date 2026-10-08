@@ -39,6 +39,8 @@ jobs:
       SLACK_DIGEST_CHANNEL: ${{ vars.SLACK_DIGEST_CHANNEL }}
       SLACK_ALERT_MODE: ${{ vars.SLACK_ALERT_MODE }}
       NUTRIENT_API_KEY: ${{ secrets.NUTRIENT_API_KEY }}
+      KAPA_MCP_URL: ${{ vars.KAPA_MCP_URL }}
+      KAPA_API_KEY: ${{ secrets.KAPA_API_KEY }}
       ENABLED_SOURCES: ${{ vars.ENABLED_SOURCES || 'sam_gov' }}
       LOB_OWNER_WORKFLOW: ${{ vars.LOB_OWNER_WORKFLOW }}
       LOB_OWNER_LOW_CODE: ${{ vars.LOB_OWNER_LOW_CODE }}

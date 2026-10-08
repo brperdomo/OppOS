@@ -38,6 +38,26 @@ SECONDARY_LOB_MIN_CONFIDENCE = 0.5
 
 _ACTIONS = {"pursue", "investigate", "monitor", "skip"}
 
+# Full profiles produce longer assessments; a truncated JSON loses the summary and tail fields.
+STAGE2_MAX_TOKENS = 3000
+# A truncated, unparseable assessment is retried once (ungrounded) at this multiple of the ceiling.
+STAGE2_TRUNCATION_RETRY_MULTIPLIER = 2
+# Server-side MCP loops can pause more than once; give up and score ungrounded after this many continuations.
+KAPA_MAX_CONTINUATIONS = 5
+
+# Optional documentation grounding via Kapa's hosted MCP server (Messages API MCP connector).
+# Set KAPA_MCP_URL (https://<subdomain>.mcp.kapa.ai) and KAPA_API_KEY to enable.
+import os as _os
+KAPA_MCP_URL = (_os.environ.get("KAPA_MCP_URL") or "").strip()
+KAPA_API_KEY = (_os.environ.get("KAPA_API_KEY") or "").strip()
+KAPA_MAX_SEARCHES = int((_os.environ.get("KAPA_MAX_SEARCHES") or "4").strip() or 4)
+_MCP_BETA = "mcp-client-2025-11-20"
+_KAPA_SERVER_NAME = "nutrient-docs"
+
+
+def kapa_enabled() -> bool:
+    return bool(KAPA_MCP_URL and KAPA_API_KEY)
+
 
 def _get_client() -> anthropic.Anthropic:
     global _client
@@ -52,6 +72,8 @@ def _track(resp: Any) -> None:
     if usage is not None:
         USAGE["input_tokens"] += int(getattr(usage, "input_tokens", 0) or 0)
         USAGE["output_tokens"] += int(getattr(usage, "output_tokens", 0) or 0)
+        USAGE["cache_read_input_tokens"] = USAGE.get("cache_read_input_tokens", 0) + int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+        USAGE["cache_creation_input_tokens"] = USAGE.get("cache_creation_input_tokens", 0) + int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +112,7 @@ For fit_score (0-100):
 - Every strength and every risk MUST carry `evidence`: a short verbatim quote (25 words or fewer) from the RFP text that supports it. If nothing in the RFP supports it directly, write exactly "inferred" — never paraphrase and present it as a quote.
 - Put anything that matters but is not stated in the RFP into `knowledge_gaps` (e.g. "hosting requirements not stated", "incumbent vendor unknown", "user counts not given"). Never fill a gap with a guess.
 - Never invent certifications, customers, pricing, or capabilities that are not in the profile above. If the RFP asks for something the profile does not cover, that is a risk, not a strength.
+- Never state prices, list prices, or dollar figures in your output, even if the profile mentions them — pricing is handled by sales. Describe pricing posture qualitatively (e.g. "quote-based on-prem licensing", "usage-metered cloud tier") only when it affects fit.
 """
 
 
@@ -122,14 +145,95 @@ Respond with ONLY valid JSON matching this schema:
 }}"""
 
 
+_KAPA_GROUNDING = f"""
+## Documentation grounding
+You have a documentation search tool connected to Nutrient's product docs. Use it (at most {KAPA_MAX_SEARCHES} searches) when:
+- the RFP requires a specific technical capability that the profile above does not clearly cover (file formats, standards such as PDF/UA or PAdES, platform/version support, API limits), or
+- you are about to cite a capability as a strength and want to confirm it exists.
+When a search confirms a claim, put the documentation URL in that point's `evidence` as `doc: <url>` (RFP quotes still take precedence when both exist). When the docs do not confirm it, record it as a risk or knowledge gap — never assert it. Do not search for pricing, customers, or compliance certifications; those are not in the docs.
+"""
+
 _STAGE2_SYSTEM_CACHE: dict[str, str] = {}
 
 
-def stage2_system_for(lob_key: str) -> str:
+def stage2_system_for(lob_key: str, grounded: bool = False) -> str:
     lob = get_lob(lob_key) or LOBS[DEFAULT_LOB]
-    if lob.key not in _STAGE2_SYSTEM_CACHE:
-        _STAGE2_SYSTEM_CACHE[lob.key] = _stage2_system(lob)
-    return _STAGE2_SYSTEM_CACHE[lob.key]
+    cache_key = f"{lob.key}:{'g' if grounded else 'p'}"
+    if cache_key not in _STAGE2_SYSTEM_CACHE:
+        system = _stage2_system(lob)
+        if grounded:
+            # Insert grounding guidance before the schema so the JSON contract stays last.
+            marker = "Respond with ONLY valid JSON matching this schema:"
+            system = system.replace(marker, _KAPA_GROUNDING + "\n" + marker, 1)
+        _STAGE2_SYSTEM_CACHE[cache_key] = system
+    return _STAGE2_SYSTEM_CACHE[cache_key]
+
+
+def _final_text(resp: Any) -> str:
+    """Last text block of a response — MCP tool_use/tool_result blocks may precede it."""
+    texts = [b.text for b in getattr(resp, "content", []) if getattr(b, "type", "") == "text" and getattr(b, "text", "")]
+    if not texts:
+        raise IndexError("response contained no text block")
+    return texts[-1]
+
+
+def _grounding_summary(resp: Any) -> dict[str, Any]:
+    """What the model asked the docs — stored on the result for transparency."""
+    queries: list[str] = []
+    results = 0
+    for b in getattr(resp, "content", []):
+        btype = getattr(b, "type", "")
+        if btype == "mcp_tool_use":
+            inp = getattr(b, "input", {}) or {}
+            q = inp.get("query") or inp.get("question") or inp.get("q") or json.dumps(inp)[:200]
+            queries.append(str(q)[:200])
+        elif btype == "mcp_tool_result":
+            results += 1
+    return {"provider": "kapa", "queries": queries, "results": results}
+
+
+class _Collected:
+    """All content blocks across a paused/continued MCP turn, plus the final stop reason."""
+
+    def __init__(self, content: list[Any], stop_reason: str):
+        self.content = content
+        self.stop_reason = stop_reason
+
+
+def _create_grounded(client: anthropic.Anthropic, system: str, user_text: str) -> _Collected | None:
+    """Stage 2 with the Kapa MCP server attached.
+
+    The server-side tool loop may return `pause_turn` repeatedly; keep continuing
+    (bounded) until it stops. Returns None when the budget is exhausted or no text
+    block was produced, so the caller falls back to ungrounded scoring.
+    """
+    messages: list[dict[str, Any]] = [{"role": "user", "content": user_text}]
+    kwargs = dict(
+        model=SCORING_MODEL_STAGE2,
+        max_tokens=STAGE2_MAX_TOKENS + 1000,  # room for tool-use blocks
+        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+        betas=[_MCP_BETA],
+        mcp_servers=[{"type": "url", "url": KAPA_MCP_URL, "name": _KAPA_SERVER_NAME,
+                      "authorization_token": KAPA_API_KEY}],
+        tools=[{"type": "mcp_toolset", "mcp_server_name": _KAPA_SERVER_NAME}],
+    )
+    collected: list[Any] = []
+    stop_reason = ""
+    for _ in range(KAPA_MAX_CONTINUATIONS + 1):
+        resp = client.beta.messages.create(messages=messages, **kwargs)
+        _track(resp)
+        collected.extend(resp.content)
+        stop_reason = getattr(resp, "stop_reason", "") or ""
+        if stop_reason != "pause_turn":
+            break
+        messages.append({"role": "assistant", "content": resp.content})
+    else:
+        logger.warning("Kapa grounding still paused after %d continuations — scoring ungrounded", KAPA_MAX_CONTINUATIONS)
+        return None
+    if not any(getattr(b, "type", "") == "text" and getattr(b, "text", "") for b in collected):
+        logger.warning("Kapa-grounded response produced no text — scoring ungrounded")
+        return None
+    return _Collected(collected, stop_reason)
 
 
 # Backward-compatible alias (Workflow was the only LOB before the router existed).
@@ -265,7 +369,7 @@ def stage1_filter(opportunity: dict[str, Any], attachment_text: str = "") -> dic
         resp = client.messages.create(
             model=SCORING_MODEL_STAGE1,
             max_tokens=400,
-            system=STAGE1_SYSTEM,
+            system=[{"type": "text", "text": STAGE1_SYSTEM, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": opp_text}],
         )
         _track(resp)
@@ -349,16 +453,57 @@ def stage2_score(
     client = _get_client()
     opp_text = _build_opportunity_text(opportunity, attachment_text)
 
+    user_text = f"Score this RFP opportunity:\n\n{opp_text}"
+    title = opportunity.get("title", "?")
     try:
-        resp = client.messages.create(
-            model=SCORING_MODEL_STAGE2,
-            max_tokens=1400,
-            system=stage2_system_for(lob.key),
-            messages=[{"role": "user", "content": f"Score this RFP opportunity:\n\n{opp_text}"}],
-        )
-        _track(resp)
-        result = _repair_and_parse_json(resp.content[0].text)
-        return _normalize_stage2(result, lob)
+        grounding: dict[str, Any] | None = None
+        resp: Any = None
+        if kapa_enabled():
+            try:
+                resp = _create_grounded(client, stage2_system_for(lob.key, grounded=True), user_text)
+            except anthropic.APIError as e:
+                # Grounding is an enhancement — fall back to the plain scorer rather than fail the opp.
+                logger.warning("Kapa-grounded scoring failed (%s); retrying without grounding", e)
+                resp = None
+            if resp is not None:
+                grounding = _grounding_summary(resp)
+
+        max_tokens = STAGE2_MAX_TOKENS
+        for attempt in range(2):
+            if resp is None:
+                resp = client.messages.create(
+                    model=SCORING_MODEL_STAGE2,
+                    max_tokens=max_tokens,
+                    system=[{"type": "text", "text": stage2_system_for(lob.key), "cache_control": {"type": "ephemeral"}}],
+                    messages=[{"role": "user", "content": user_text}],
+                )
+                _track(resp)
+            # Decide truncation BEFORE parsing — a cutoff inside a nested value is often unrepairable.
+            truncated = getattr(resp, "stop_reason", "") == "max_tokens"
+            try:
+                result = _repair_and_parse_json(_final_text(resp))
+            except (json.JSONDecodeError, IndexError, KeyError, AttributeError) as e:
+                if truncated and attempt == 0:
+                    max_tokens = STAGE2_MAX_TOKENS * STAGE2_TRUNCATION_RETRY_MULTIPLIER
+                    logger.warning("Stage 2 output for '%s' truncated and unparseable — retrying at %d tokens", title, max_tokens)
+                    resp, grounding = None, None  # retry ungrounded with more room
+                    continue
+                if truncated:
+                    out = _stage2_failure(lob, f"Assessment truncated at {max_tokens} output tokens and could not be parsed "
+                                               f"— raise STAGE2_MAX_TOKENS or shorten the profile: {e}")
+                    out["truncated"] = True
+                    return out
+                raise
+            out = _normalize_stage2(result, lob)
+            if truncated:
+                logger.warning("Stage 2 output truncated at %d tokens for '%s' — raise STAGE2_MAX_TOKENS", max_tokens, title)
+                out["truncated"] = True
+                if not out.get("summary"):
+                    out["summary"] = "(assessment truncated — summary unavailable; see strengths and risks)"
+            if grounding:
+                out["grounding"] = grounding
+            return out
+        raise RuntimeError("unreachable")  # loop always returns or raises
     except (json.JSONDecodeError, IndexError, KeyError, AttributeError) as e:
         logger.warning("Stage 2 parse error for '%s': %s", opportunity.get("title", "?"), e)
         return _stage2_failure(lob, f"Automated scoring failed: {e}")

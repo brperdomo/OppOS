@@ -1,7 +1,10 @@
 """Nutrient Workflow Automation — full positioning profile (vetted)."""
 
-from oppos.scoring.capability_profile import CAPABILITY_PROFILE
-from oppos.scoring.lobs.base import LOB
+from oppos.scoring.lobs.base import LOB, load_profile
+
+_loaded = load_profile("workflow")
+assert _loaded, "oppos/scoring/lobs/profiles/workflow.md is required"
+CAPABILITY_PROFILE, _META = _loaded
 
 WORKFLOW = LOB(
     key="workflow",
@@ -15,7 +18,7 @@ WORKFLOW = LOB(
         "IT requests)."
     ),
     profile=CAPABILITY_PROFILE,
-    depth="full",
+    depth=str(_META.get("depth", "full")),
     extras_schema=(
         '"pattern_match": "<closest pattern: case_management | hr_compliance | guided_decision_support | financial_approvals | it_request_management | ap_invoice | other>",',
         '"similar_win": "<closest past win or customer example, or null>",',
