@@ -1002,7 +1002,7 @@ tab_pipeline, tab_qualified, tab_expiring, tab_in_progress, tab_submitted, tab_a
     f"Pipeline ({status_counts.get('new', 0)})",
     f"Qualified ({status_counts.get('qualified', 0)})",
     f"Expiring Soon ({_expiring_count})" if _expiring_count else "Expiring Soon",
-    f"Pursuits ({status_counts.get('in_progress', 0)})",
+    f"Pursuits ({len(OPEN_PURSUITS)})",
     f"Submitted ({status_counts.get('submitted', 0)})",
     f"Archive ({_archive_count})",
     f"Expired ({_expired_count})" if _expired_count else "Expired",
@@ -1534,33 +1534,34 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
 
     st.markdown("\n".join(card_parts), unsafe_allow_html=True)
 
-    if show_status_controls:
-        # --- Claim / ownership controls (standard across Pipeline, Qualified, Expiring) ---
-        if pipeline_status in ("new", "qualified", "expiring_soon"):
-            from oppos.pursuits import claim_opportunity as _claim, release_claim as _release
-            _mine_p = _open_p and (_open_p.get("owner_email") or "").lower() == CURRENT_USER["email"]
-            gc1, gc2, gc3 = st.columns([1, 1, 2])
-            if not _open_p:
-                with gc1:
-                    if st.button("✋ Grab", key=f"grab_{tab_key}_{sid}", use_container_width=True,
-                                 help="Claim this RFP: you become the owner and it appears on the team board as Claimed."):
-                        _claim(opp, CURRENT_USER)
-                        st.rerun()
-            elif _mine_p and _open_p.get("status") == "evaluating":
-                with gc1:
-                    if st.button("🎯 Start pursuing", key=f"startp_{tab_key}_{sid}", use_container_width=True,
-                                 help="Commit: creates the Notion page and Slack channel, starts reminders."):
-                        _pursue_opportunity(opp, reason=pipeline_notes or "")
-                        st.rerun()
-                with gc2:
-                    if st.button("Release", key=f"release_{tab_key}_{sid}", use_container_width=True):
-                        _release(opp, CURRENT_USER)
-                        st.rerun()
-            elif _open_p and not _mine_p:
-                with gc3:
-                    st.caption(f"Owned by {_open_p.get('owner_name') or _open_p.get('owner_email')} "
-                               f"({_stage_label(_open_p.get('status'))}) — ask them to release it if you want to take it.")
+    # --- Claim / ownership controls (standard across Pipeline, Qualified, Expiring) ---
+    if pipeline_status in ("new", "qualified", "expiring_soon"):
+        from oppos.pursuits import claim_opportunity as _claim, release_claim as _release
+        _mine_p = _open_p and (_open_p.get("owner_email") or "").lower() == CURRENT_USER["email"]
+        gc1, gc2, gc3 = st.columns([1, 1, 2])
+        if not _open_p:
+            with gc1:
+                if st.button("✋ Grab", key=f"grab_{tab_key}_{sid}", use_container_width=True,
+                             help="Claim this RFP: you become the owner and it appears on the team board as Claimed."):
+                    _claim(opp, CURRENT_USER)
+                    st.rerun()
+        elif _mine_p and _open_p.get("status") == "evaluating":
+            with gc1:
+                if st.button("🎯 Start pursuing", key=f"startp_{tab_key}_{sid}", use_container_width=True,
+                             help="Commit: creates the Notion page and Slack channel, starts reminders."):
+                    _pursue_opportunity(opp, reason=pipeline_notes or "")
+                    st.rerun()
+            with gc2:
+                if st.button("Release", key=f"release_{tab_key}_{sid}", use_container_width=True):
+                    _release(opp, CURRENT_USER)
+                    st.rerun()
+        elif _open_p and not _mine_p:
+            with gc3:
+                st.caption(f"Owned by {_open_p.get('owner_name') or _open_p.get('owner_email')} "
+                           f"({_stage_label(_open_p.get('status'))}) — ask them to release it if you want to take it.")
 
+
+    if show_status_controls:
         with st.expander("Update Status"):
             sc1, sc2, sc3 = st.columns([2, 2, 1])
             with sc1:
