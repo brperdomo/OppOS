@@ -116,3 +116,48 @@ def run_scan(
     set_meta("last_scan", datetime.utcnow().isoformat())
     logger.info("Scan complete: %s", {k: v for k, v in stats.items() if k != "per_source"})
     return stats
+
+
+# ---------------------------------------------------------------------------
+# Slack notification after a scan
+# ---------------------------------------------------------------------------
+
+_DIGEST_ACTIVE_STATUSES = ("new", "qualified", "expiring_soon")
+DIGEST_MAX_ITEMS = 25
+
+
+def notify_after_scan(stats: dict[str, Any], min_score: int) -> int:
+    """Send Slack notifications for every stored, still-unnotified opportunity.
+
+    Digest mode: one message listing pending high-fit rows (persisted, so a
+    failed send is retried on the next scan) plus the in-flight board.
+    Individual mode: one webhook alert per row. Returns rows marked notified.
+    """
+    from oppos.outputs import slack_pursuits as sp
+    from oppos.outputs.slack_alerts import send_alert
+    from oppos.pursuits import OPEN_STAGES, board_rows
+    from oppos.storage.db import get_opps_by_ids, get_unnotified, list_pursuits, set_slack_notified
+
+    pending = [o for o in get_unnotified(min_score=min_score)
+               if (o.get("pipeline_status") or "new") in _DIGEST_ACTIVE_STATUSES]
+    notified = 0
+
+    if sp.SLACK_ALERT_MODE == "digest":
+        batch = pending[:DIGEST_MAX_ITEMS]
+        open_pursuits = list_pursuits(status=OPEN_STAGES)
+        in_flight = board_rows(open_pursuits, get_opps_by_ids([p["source_id"] for p in open_pursuits]))
+        if not batch and not in_flight:
+            return 0
+        if sp.send_digest(batch, stats.get("sources", 0), stats.get("fetched", 0), in_flight):
+            for o in batch:
+                set_slack_notified(o["source_id"])
+            notified = len(batch)
+        else:
+            logger.warning("Digest send failed — %d opportunities stay unnotified for the next run", len(batch))
+        return notified
+
+    for row in pending:
+        if send_alert(row):
+            set_slack_notified(row["source_id"])
+            notified += 1
+    return notified

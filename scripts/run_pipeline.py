@@ -23,13 +23,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from oppos.config import SLACK_ALERT_MIN_SCORE
 from oppos.outputs.notion_sync import push_opportunity
-from oppos.outputs import slack_pursuits as sp
-from oppos.outputs.slack_alerts import send_alert
-from oppos.pipeline import resolve_sources, run_scan
+from oppos.pipeline import notify_after_scan, resolve_sources, run_scan
 from oppos.scoring.qualifier import USAGE
 from oppos.sources.attachments import download_attachments
 from oppos.sources.registry import list_available
-from oppos.storage.db import get_unnotified, set_notion_page_id, set_slack_notified
+from oppos.storage.db import set_notion_page_id
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,11 +39,9 @@ logger = logging.getLogger("oppos.pipeline.cli")
 
 def run(days: int = 30, dry_run: bool = False, source_override: list[str] | None = None) -> dict:
     notion_synced = 0
-    newly_scored: list[dict] = []
 
     def _push(opp: dict) -> None:
         nonlocal notion_synced
-        newly_scored.append(opp)
         if dry_run:
             logger.info("[DRY RUN] [%s/%s] %s — score=%d action=%s",
                         opp.get("source", "?"), opp.get("lob", "?"), opp.get("title", "?")[:80],
@@ -70,21 +66,7 @@ def run(days: int = 30, dry_run: bool = False, source_override: list[str] | None
     stats["slack_alerted"] = 0
 
     if not dry_run:
-        if sp.SLACK_ALERT_MODE == "digest":
-            high = [o for o in newly_scored if int(o.get("fit_score") or 0) >= SLACK_ALERT_MIN_SCORE]
-            from oppos.pursuits import OPEN_STAGES, board_rows
-            from oppos.storage.db import get_opps_by_ids, list_pursuits
-            open_pursuits = list_pursuits(status=OPEN_STAGES)
-            in_flight = board_rows(open_pursuits, get_opps_by_ids([p["source_id"] for p in open_pursuits]))
-            if (high or in_flight) and sp.send_digest(high, stats["sources"], stats["fetched"], in_flight):
-                for o in high:
-                    set_slack_notified(o["source_id"])
-                stats["slack_alerted"] = len(high)
-        else:
-            for row in get_unnotified(min_score=SLACK_ALERT_MIN_SCORE):
-                if send_alert(row):
-                    set_slack_notified(row["source_id"])
-                    stats["slack_alerted"] += 1
+        stats["slack_alerted"] = notify_after_scan(stats, SLACK_ALERT_MIN_SCORE)
 
     for key, ps in stats["per_source"].items():
         status = "FAIL" if ps["error"] else "ok"

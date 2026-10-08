@@ -634,6 +634,25 @@ NUTRIENT_DOTS_SVG = '<svg viewBox="0 0 50 36" fill="none" xmlns="http://www.w3.o
 
 NUTRIENT_WORDMARK_SVG = '<svg viewBox="60 0 148 36" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M83.25 4h3.56v28.09h-4.1L73.1 15.2c-.52-.94-1.6-3.04-3.25-6.3h-.04c.05 1.2.1 2.51.14 3.93.04 1.42.06 2.48.06 3.18v16.08h-3.56V4h4l9.64 16.69c.48.84 1.36 2.47 2.63 4.92l.7 1.35h.04c-.05-1.07-.1-2.3-.14-3.7-.04-1.4-.06-2.52-.06-3.37V4zm21.01 19.3c0 4.18-1.72 6.27-5.17 6.27-.77 0-1.44-.07-2.02-.21-.57-.14-1.12-.45-1.63-.95-.38-.36-.65-.78-.82-1.24-.17-.46-.27-.93-.3-1.39-.03-.46-.05-1.11-.05-1.95V12.04h-3.72v11.99c0 .94.03 1.76.09 2.45.06.69.21 1.38.44 2.07.23.69.59 1.28 1.08 1.79.72.77 1.56 1.34 2.52 1.7.97.36 2.1.55 3.41.55 1.44 0 2.69-.3 3.76-.9s1.87-1.5 2.41-2.63v3h3.6V12.04h-3.6v11.26zm14.42-16.85h-3.56v5.58h-4.21v3.02h4.21v12.1c0 1.82.49 3.13 1.47 3.93s2.56 1.2 4.74 1.2c.55 0 1.1-.03 1.64-.09.54-.06.99-.13 1.34-.22l-.08-3.29c-1.01.24-1.88.35-2.6.35-.73 0-1.35-.06-1.76-.17-.41-.11-.71-.31-.9-.6-.19-.29-.28-.7-.28-1.23V15.06h5.7v-3.02h-5.7V6.45zm16.05 6.52c-1.27.76-2.1 1.7-2.48 2.82V12.04h-3.6v20.06h3.6v-9.19c0-2.1.31-3.74.94-4.92.63-1.17 1.48-1.98 2.55-2.42 1.07-.44 2.37-.66 3.9-.66.61 0 1.03.02 1.25.06l.08-3.43c-.86 0-1.41.01-1.64.04-1.79.17-3.32.63-4.6 1.39zm35.56 5.62c.3 1.19.45 2.43.45 3.7 0 .38 0 .66-.02.84h-15.22c.04 2.21.53 3.85 1.47 4.93.94 1.08 2.35 1.62 4.23 1.62 1.7 0 3.02-.37 3.96-1.1.94-.74 1.53-1.87 1.78-3.38l3.49.27c-.45 2.34-1.45 4.11-3.01 5.31-1.56 1.2-3.62 1.8-6.18 1.8-3.08 0-5.48-.98-7.21-2.94-1.63-1.83-2.45-4.37-2.45-7.62 0-1.5.21-2.89.64-4.16.42-1.27 1.05-2.37 1.89-3.3.87-.99 1.91-1.74 3.12-2.25 1.2-.51 2.53-.76 3.97-.76 1.62 0 3.13.34 4.52 1.03 1.4.69 2.5 1.67 3.31 2.95.54.86.96 1.89 1.26 3.07zm-3.27 1.62c-.01-.57-.12-1.2-.31-1.87-.2-.67-.45-1.24-.77-1.7-.51-.76-1.15-1.31-1.91-1.66-.76-.35-1.69-.52-2.79-.52-1.1 0-2.06.19-2.88.58-.82.38-1.44.92-1.84 1.59-.34.55-.58 1.14-.73 1.76-.15.63-.24 1.23-.25 1.82h11.48zm23.66-4.61c-.23-.7-.58-1.3-1.05-1.81-.73-.77-1.58-1.34-2.55-1.7-.97-.36-2.11-.55-3.43-.55-3.07 0-5.13 1.19-6.19 3.56v-3.07h-3.6v20.06h3.6V21.03c0-2.52.54-4.23 1.63-5.12 1.08-.9 2.28-1.34 3.6-1.34.74 0 1.4.07 1.96.21.56.14 1.1.45 1.61.95.38.36.66.78.83 1.25.18.47.28.94.31 1.42.03.48.05 1.14.05 1.99v11.71h3.74v-11.9c0-.95-.03-1.78-.09-2.48-.06-.7-.2-1.4-.43-2.1zm16.67-.56v-3.02h-5.7V6.45h-3.56v5.58h-4.21v3.02h4.21v12.1c0 1.82.49 3.13 1.47 3.93s2.56 1.2 4.74 1.2c.55 0 1.1-.03 1.64-.09.54-.06.99-.13 1.34-.22l-.08-3.29c-1.01.24-1.88.35-2.6.35-.73 0-1.35-.06-1.76-.17-.41-.11-.71-.31-.9-.6-.19-.29-.28-.7-.28-1.23V15.06h5.7zm-62.78 17.07h3.6V12.06h-3.6v20.06zm1.8-28.71c-1.45 0-2.63 1.18-2.63 2.63s1.18 2.63 2.63 2.63 2.63-1.18 2.63-2.63-1.18-2.63-2.63-2.63z" fill="currentColor"/></svg>'
 
+def _score_class(score: int) -> str:
+    if score >= 65:
+        return "score-high"
+    if score >= 40:
+        return "score-mid"
+    return "score-low"
+
+
+def _esc(text: str) -> str:
+    return (text
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("{", "&#123;")
+            .replace("}", "&#125;")
+            )
+
+
 CURRENT_USER = require_login()
 
 st.markdown(f"""
@@ -1009,24 +1028,6 @@ tab_pipeline, tab_qualified, tab_expiring, tab_in_progress, tab_submitted, tab_a
 ])
 
 
-def _score_class(score: int) -> str:
-    if score >= 65:
-        return "score-high"
-    if score >= 40:
-        return "score-mid"
-    return "score-low"
-
-
-def _esc(text: str) -> str:
-    return (text
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace('"', "&quot;")
-            .replace("{", "&#123;")
-            .replace("}", "&#125;")
-            )
-
 
 def _ensure_files_exist(opp: dict, selected_paths: list) -> list:
     """Verify selected files exist on disk; re-download if missing."""
@@ -1109,6 +1110,47 @@ def _pursue_opportunity(opp: dict, reason: str = "") -> None:
         status.update(label="Pursuing ✓", state="complete")
         st.success(f"**{title[:60]}** is now in Pursuits, owned by {CURRENT_USER['name']}"
                    + (f" — [Notion]({notion_url})" if notion_url else ""))
+
+
+def _change_status(opp: dict, new_status: str, notes: str, current_status: str) -> None:
+    """Apply a status change from the card's status controls.
+
+    Routes through the pursuit lifecycle whenever a claimed/active/submitted
+    pursuit exists, so the board, reminders, Slack, and the activity log stay
+    consistent with the pipeline status. Falls back to the plain status update
+    (plus the legacy abandon alert) for opportunities without a pursuit.
+    """
+    from oppos.outputs.slack_alerts import send_abandon_alert
+    from oppos.pursuits import release_claim, transition_pursuit
+    from oppos.storage.db import get_pursuit
+
+    sid = opp.get("source_id", "")
+    pursuit = get_pursuit(sid)
+    p_status = (pursuit or {}).get("status")
+    live = p_status in ("evaluating", "active", "submitted")
+
+    if new_status == "in_progress" and current_status != "in_progress":
+        _pursue_opportunity(opp, reason=notes or "")
+        return
+
+    if live and new_status in ("submitted", "won", "lost"):
+        if new_status == "submitted" and p_status == "submitted":
+            set_pipeline_status(sid, new_status, notes=notes or None)   # already submitted — notes only
+        else:
+            transition_pursuit(opp, new_status, CURRENT_USER, notes or "")
+        return
+
+    if live and new_status == "skipped":
+        if p_status == "evaluating":
+            release_claim(opp, CURRENT_USER, notes or "Skipped")
+        else:
+            transition_pursuit(opp, "abandoned", CURRENT_USER, notes or "Skipped")
+        set_pipeline_status(sid, "skipped", notes=notes or None)
+        return
+
+    set_pipeline_status(sid, new_status, notes=notes or None)
+    if not live and new_status in ("skipped", "lost") and current_status in ("qualified", "expiring_soon", "in_progress"):
+        send_abandon_alert(opp, reason=notes or "", label="Abandoned" if new_status == "lost" else "Skipped")
 
 
 def _push_to_notion(opp: dict) -> None:
@@ -1582,16 +1624,7 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
             with sc3:
                 st.markdown("<br>", unsafe_allow_html=True)
                 if st.button("Save", key=f"save_{tab_key}_{sid}", use_container_width=True):
-                    # If moving to in_progress, trigger full Pursue flow (Notion + Slack)
-                    if new_status == "in_progress" and pipeline_status != "in_progress":
-                        _pursue_opportunity(opp, reason=new_notes or "")
-                    else:
-                        set_pipeline_status(sid, new_status, notes=new_notes)
-                        # Send Slack abandon alert when skipping/losing an in-progress item
-                        if pipeline_status == "in_progress" and new_status in ("skipped", "lost"):
-                            from oppos.outputs.slack_alerts import send_abandon_alert
-                            _label = "Abandoned" if new_status == "lost" else "Skipped"
-                            send_abandon_alert(opp, reason=new_notes or "", label=_label)
+                    _change_status(opp, new_status, new_notes or "", pipeline_status)
                     st.rerun()
 
     with st.expander("Details & Contact"):
@@ -1982,9 +2015,7 @@ with tab_qualified:
                     placeholder="Not a workflow fit — pure staffing RFP",
                 )
                 if st.button("Confirm Skip", key=f"confirm_skip_{qsid}", use_container_width=True):
-                    from oppos.outputs.slack_alerts import send_abandon_alert
-                    set_pipeline_status(qsid, "skipped", notes=skip_reason or "Skipped after qualification review")
-                    send_abandon_alert(opp, reason=skip_reason or "Skipped after qualification review", label="Skipped")
+                    _change_status(opp, "skipped", skip_reason or "Skipped after qualification review", "qualified")
                     st.rerun()
         st.markdown("---")
 
@@ -2119,9 +2150,7 @@ with tab_expiring:
                     placeholder="Won't make the deadline, not worth rushing",
                 )
                 if st.button("Confirm Skip", key=f"exp_confirm_skip_{esid}", use_container_width=True):
-                    from oppos.outputs.slack_alerts import send_abandon_alert
-                    set_pipeline_status(esid, "skipped", notes=exp_skip_reason or "Skipped — deadline too close")
-                    send_abandon_alert(opp, reason=exp_skip_reason or "Skipped — deadline too close", label="Skipped")
+                    _change_status(opp, "skipped", exp_skip_reason or "Skipped — deadline too close", "expiring_soon")
                     st.rerun()
         st.markdown("---")
 
