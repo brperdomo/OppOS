@@ -38,6 +38,19 @@ SECONDARY_LOB_MIN_CONFIDENCE = 0.5
 
 _ACTIONS = {"pursue", "investigate", "monitor", "skip"}
 
+# Optional documentation grounding via Kapa's hosted MCP server (Messages API MCP connector).
+# Set KAPA_MCP_URL (https://<subdomain>.mcp.kapa.ai) and KAPA_API_KEY to enable.
+import os as _os
+KAPA_MCP_URL = (_os.environ.get("KAPA_MCP_URL") or "").strip()
+KAPA_API_KEY = (_os.environ.get("KAPA_API_KEY") or "").strip()
+KAPA_MAX_SEARCHES = int((_os.environ.get("KAPA_MAX_SEARCHES") or "4").strip() or 4)
+_MCP_BETA = "mcp-client-2025-11-20"
+_KAPA_SERVER_NAME = "nutrient-docs"
+
+
+def kapa_enabled() -> bool:
+    return bool(KAPA_MCP_URL and KAPA_API_KEY)
+
 
 def _get_client() -> anthropic.Anthropic:
     global _client
@@ -122,14 +135,76 @@ Respond with ONLY valid JSON matching this schema:
 }}"""
 
 
+_KAPA_GROUNDING = f"""
+## Documentation grounding
+You have a documentation search tool connected to Nutrient's product docs. Use it (at most {KAPA_MAX_SEARCHES} searches) when:
+- the RFP requires a specific technical capability that the profile above does not clearly cover (file formats, standards such as PDF/UA or PAdES, platform/version support, API limits), or
+- you are about to cite a capability as a strength and want to confirm it exists.
+When a search confirms a claim, put the documentation URL in that point's `evidence` as `doc: <url>` (RFP quotes still take precedence when both exist). When the docs do not confirm it, record it as a risk or knowledge gap — never assert it. Do not search for pricing, customers, or compliance certifications; those are not in the docs.
+"""
+
 _STAGE2_SYSTEM_CACHE: dict[str, str] = {}
 
 
-def stage2_system_for(lob_key: str) -> str:
+def stage2_system_for(lob_key: str, grounded: bool = False) -> str:
     lob = get_lob(lob_key) or LOBS[DEFAULT_LOB]
-    if lob.key not in _STAGE2_SYSTEM_CACHE:
-        _STAGE2_SYSTEM_CACHE[lob.key] = _stage2_system(lob)
-    return _STAGE2_SYSTEM_CACHE[lob.key]
+    cache_key = f"{lob.key}:{'g' if grounded else 'p'}"
+    if cache_key not in _STAGE2_SYSTEM_CACHE:
+        system = _stage2_system(lob)
+        if grounded:
+            # Insert grounding guidance before the schema so the JSON contract stays last.
+            marker = "Respond with ONLY valid JSON matching this schema:"
+            system = system.replace(marker, _KAPA_GROUNDING + "\n" + marker, 1)
+        _STAGE2_SYSTEM_CACHE[cache_key] = system
+    return _STAGE2_SYSTEM_CACHE[cache_key]
+
+
+def _final_text(resp: Any) -> str:
+    """Last text block of a response — MCP tool_use/tool_result blocks may precede it."""
+    texts = [b.text for b in getattr(resp, "content", []) if getattr(b, "type", "") == "text" and getattr(b, "text", "")]
+    if not texts:
+        raise IndexError("response contained no text block")
+    return texts[-1]
+
+
+def _grounding_summary(resp: Any) -> dict[str, Any]:
+    """What the model asked the docs — stored on the result for transparency."""
+    queries: list[str] = []
+    results = 0
+    for b in getattr(resp, "content", []):
+        btype = getattr(b, "type", "")
+        if btype == "mcp_tool_use":
+            inp = getattr(b, "input", {}) or {}
+            q = inp.get("query") or inp.get("question") or inp.get("q") or json.dumps(inp)[:200]
+            queries.append(str(q)[:200])
+        elif btype == "mcp_tool_result":
+            results += 1
+    return {"provider": "kapa", "queries": queries, "results": results}
+
+
+def _create_grounded(client: anthropic.Anthropic, system: str, user_text: str) -> Any:
+    """Stage 2 with the Kapa MCP server attached. Handles a single pause_turn continuation."""
+    messages: list[dict[str, Any]] = [{"role": "user", "content": user_text}]
+    kwargs = dict(
+        model=SCORING_MODEL_STAGE2,
+        max_tokens=2000,
+        system=system,
+        betas=[_MCP_BETA],
+        mcp_servers=[{"type": "url", "url": KAPA_MCP_URL, "name": _KAPA_SERVER_NAME,
+                      "authorization_token": KAPA_API_KEY}],
+        tools=[{"type": "mcp_toolset", "mcp_server_name": _KAPA_SERVER_NAME}],
+    )
+    resp = client.beta.messages.create(messages=messages, **kwargs)
+    _track(resp)
+    if getattr(resp, "stop_reason", "") == "pause_turn":
+        messages.append({"role": "assistant", "content": resp.content})
+        resp2 = client.beta.messages.create(messages=messages, **kwargs)
+        _track(resp2)
+        # Merge for grounding bookkeeping; the final text comes from the continuation.
+        merged = list(resp.content) + list(resp2.content)
+        resp2.content = merged  # type: ignore[attr-defined]
+        return resp2
+    return resp
 
 
 # Backward-compatible alias (Workflow was the only LOB before the router existed).
@@ -349,16 +424,32 @@ def stage2_score(
     client = _get_client()
     opp_text = _build_opportunity_text(opportunity, attachment_text)
 
+    user_text = f"Score this RFP opportunity:\n\n{opp_text}"
     try:
-        resp = client.messages.create(
-            model=SCORING_MODEL_STAGE2,
-            max_tokens=1400,
-            system=stage2_system_for(lob.key),
-            messages=[{"role": "user", "content": f"Score this RFP opportunity:\n\n{opp_text}"}],
-        )
-        _track(resp)
-        result = _repair_and_parse_json(resp.content[0].text)
-        return _normalize_stage2(result, lob)
+        grounding: dict[str, Any] | None = None
+        if kapa_enabled():
+            try:
+                resp = _create_grounded(client, stage2_system_for(lob.key, grounded=True), user_text)
+                grounding = _grounding_summary(resp)
+            except anthropic.APIError as e:
+                # Grounding is an enhancement — fall back to the plain scorer rather than fail the opp.
+                logger.warning("Kapa-grounded scoring failed (%s); retrying without grounding", e)
+                resp = None
+        else:
+            resp = None
+        if resp is None:
+            resp = client.messages.create(
+                model=SCORING_MODEL_STAGE2,
+                max_tokens=1400,
+                system=stage2_system_for(lob.key),
+                messages=[{"role": "user", "content": user_text}],
+            )
+            _track(resp)
+        result = _repair_and_parse_json(_final_text(resp))
+        out = _normalize_stage2(result, lob)
+        if grounding:
+            out["grounding"] = grounding
+        return out
     except (json.JSONDecodeError, IndexError, KeyError, AttributeError) as e:
         logger.warning("Stage 2 parse error for '%s': %s", opportunity.get("title", "?"), e)
         return _stage2_failure(lob, f"Automated scoring failed: {e}")

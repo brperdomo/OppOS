@@ -1,10 +1,11 @@
 """Nutrient Document Web Services (DWS) — THIN profile.
 
-TODO: replace with a vetted positioning profile. Until then scores are capped
+Falls back to this THIN description when profiles/dws.md is absent.
+Regenerate the real profile with /build-lob-profile. Until then scores are capped
 and actions limited to investigate/skip.
 """
 
-from oppos.scoring.lobs.base import LOB
+from oppos.scoring.lobs.base import make_lob
 
 _BLURB = (
     "Nutrient Document Web Services (DWS): hosted, pay-per-use REST API for document processing — "
@@ -33,12 +34,11 @@ verticals and competitive evidence. Score conservatively and name what must be v
 - A full business process or case-management application is required (route to Workflow)
 """
 
-DWS = LOB(
+DWS = make_lob(
     key="dws",
     label="DWS",
     router_blurb=_BLURB,
-    profile=_PROFILE,
-    depth="thin",
+    thin_profile=_PROFILE,
     extras_schema=(
         '"processing_operations": ["<convert | ocr | extract | redact | sign | merge | generate | other>"],',
     ),

@@ -37,6 +37,7 @@ to pursue RFPs under your own identity while developing.
 | `SLACK_WEBHOOK_URL` | Fallback alerts when no bot token |
 | `SLACK_BOT_TOKEN` | Enables channel-per-pursuit, invites, pins, digest, reminders (see Slack app below) |
 | `NUTRIENT_API_KEY` | OCR / document processing for attachments |
+| `KAPA_MCP_URL`, `KAPA_API_KEY` | Optional. Kapa hosted MCP server (`https://<subdomain>.mcp.kapa.ai`) + project API key: Stage 2 can search Nutrient docs to confirm capability claims and cites `doc: <url>` in evidence. Falls back to ungrounded scoring on error |
 
 ### GitHub repository variables (`vars`)
 
@@ -77,6 +78,8 @@ when a pursuit is won/lost/abandoned (`SLACK_ARCHIVE_ON_CLOSE=false` to keep the
 5. **Portal registrations** (admins) — keep status / vendor ID / who holds the login / lead time per portal. Never store passwords.
 
 ## Scoring model
+
+- **LOB profiles** live in `oppos/scoring/lobs/profiles/<lob>.md` (frontmatter `depth: full|thin`, `sources`). Regenerate with `/build-lob-profile <lob>` in Claude Code; the scorer caps scores for `thin` profiles.
 
 - **Prefilter** (`oppos/scoring/prefilter.py`) — rules: expired, non-software NAICS, no software signal.
 - **Stage 1 router** (Haiku) — which LOBs could address it, inclusive; `none` only for clearly unrelated work.
