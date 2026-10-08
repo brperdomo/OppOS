@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""OppOS pipeline runner.
+"""OppOS pipeline runner — used by the scheduled GitHub Action and for manual runs.
 
-Fetches opportunities from all enabled sources, scores them through the
-two-stage AI qualifier, stores results, syncs to Notion, and sends Slack alerts.
+Fetches opportunities from all enabled sources, routes and scores them through
+the two-stage AI qualifier, stores results, syncs to Notion, and sends Slack alerts.
 
 Usage:
     python scripts/run_pipeline.py                          # all enabled sources
@@ -17,139 +17,67 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from oppos.config import SLACK_ALERT_MIN_SCORE, STAGE2_MIN_SCORE
+from oppos.config import SLACK_ALERT_MIN_SCORE
 from oppos.outputs.notion_sync import push_opportunity
 from oppos.outputs.slack_alerts import send_alert
-from oppos.scoring.prefilter import prefilter
-from oppos.scoring.qualifier import qualify
+from oppos.pipeline import resolve_sources, run_scan
+from oppos.scoring.qualifier import USAGE
 from oppos.sources.attachments import download_attachments
-from oppos.sources.registry import get_enabled_sources, list_available
-from oppos.storage.db import (
-    get_unnotified,
-    init_db,
-    is_seen,
-    set_notion_page_id,
-    set_slack_notified,
-    upsert_opportunity,
-)
+from oppos.sources.registry import list_available
+from oppos.storage.db import get_unnotified, set_notion_page_id, set_slack_notified
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger("oppos.pipeline")
+logger = logging.getLogger("oppos.pipeline.cli")
 
 
-def _fetch_all_sources(days: int, source_override: list[str] | None = None) -> list[dict]:
-    from oppos.sources.registry import _load_registry
+def run(days: int = 30, dry_run: bool = False, source_override: list[str] | None = None) -> dict:
+    notion_synced = 0
 
-    if source_override:
-        registry = _load_registry()
-        sources = [
-            (k, registry[k][0], registry[k][1])
-            for k in source_override
-            if k in registry
-        ]
-    else:
-        sources = get_enabled_sources()
-
-    all_opportunities: list[dict] = []
-    posted_from = datetime.now() - timedelta(days=days)
-
-    for key, name, fetch_fn in sources:
-        logger.info("Fetching from %s…", name)
-        try:
-            if key == "sam_gov":
-                opps = fetch_fn(posted_from=posted_from)
-            else:
-                opps = fetch_fn()
-            logger.info("%s: %d opportunities", name, len(opps))
-            all_opportunities.extend(opps)
-        except Exception as e:
-            logger.error("%s fetch failed: %s", name, e)
-
-    return all_opportunities
-
-
-def run(
-    days: int = 30,
-    dry_run: bool = False,
-    source_override: list[str] | None = None,
-) -> dict[str, int]:
-    stats = {
-        "fetched": 0,
-        "new": 0,
-        "prefilter_rejected": 0,
-        "relevant_stage1": 0,
-        "scored": 0,
-        "notion_synced": 0,
-        "slack_alerted": 0,
-    }
-
-    init_db()
-
-    opportunities = _fetch_all_sources(days, source_override)
-    stats["fetched"] = len(opportunities)
-    logger.info("Fetched %d total opportunities across all sources", len(opportunities))
-
-    for opp in opportunities:
-        sid = opp["source_id"]
-        if is_seen(sid):
-            continue
-        stats["new"] += 1
-
-        # Rules-based pre-filter — reject obvious non-software (free, instant)
-        prefilter(opp)
-        if not opp["prefilter"]["passed"]:
-            stats["prefilter_rejected"] += 1
-            logger.info(
-                "Pre-filtered out: '%s' — %s",
-                opp.get("title", "?")[:80],
-                opp["prefilter"]["reason"],
-            )
-            continue
-
-        scored = qualify(opp)
-
-        if scored.get("stage1", {}).get("relevant", False) or scored.get("fit_score", 0) > 0:
-            stats["relevant_stage1"] += 1
-
-        if scored.get("fit_score", 0) >= STAGE2_MIN_SCORE:
-            stats["scored"] += 1
-
-        upsert_opportunity(scored)
-
+    def _push(opp: dict) -> None:
+        nonlocal notion_synced
         if dry_run:
-            logger.info(
-                "[DRY RUN] [%s] %s — score=%d action=%s",
-                scored.get("source", "?"),
-                scored.get("title", "?")[:80],
-                scored.get("fit_score", 0),
-                scored.get("recommended_action", "?"),
-            )
-            continue
+            logger.info("[DRY RUN] [%s/%s] %s — score=%d action=%s",
+                        opp.get("source", "?"), opp.get("lob", "?"), opp.get("title", "?")[:80],
+                        opp.get("fit_score", 0), opp.get("recommended_action", "?"))
+            return
+        attachments = download_attachments(opp)
+        page_id = push_opportunity(opp, attachment_paths=attachments)
+        if page_id:
+            set_notion_page_id(opp["source_id"], page_id)
+            notion_synced += 1
 
-        if scored.get("fit_score", 0) >= STAGE2_MIN_SCORE:
-            attachments = download_attachments(scored)
-            page_id = push_opportunity(scored, attachment_paths=attachments)
-            if page_id:
-                set_notion_page_id(sid, page_id)
-                stats["notion_synced"] += 1
+    def _progress(idx: int, total: int, name: str) -> None:
+        logger.info("[%d/%d] Fetching from %s…", idx + 1, total, name)
+
+    stats = run_scan(
+        sources=resolve_sources(source_override),
+        days=days,
+        on_progress=_progress,
+        on_scored=_push,
+    )
+    stats["notion_synced"] = notion_synced
+    stats["slack_alerted"] = 0
 
     if not dry_run:
-        unnotified = get_unnotified(min_score=SLACK_ALERT_MIN_SCORE)
-        for row in unnotified:
+        for row in get_unnotified(min_score=SLACK_ALERT_MIN_SCORE):
             if send_alert(row):
                 set_slack_notified(row["source_id"])
                 stats["slack_alerted"] += 1
 
-    logger.info("Pipeline complete: %s", stats)
+    for key, ps in stats["per_source"].items():
+        status = "FAIL" if ps["error"] else "ok"
+        logger.info("  %-32s %-4s listings=%-4d new=%-4d scored=%-3d %5.1fs %s",
+                    key, status, ps["count"], ps["new"], ps["scored"], ps["duration_s"], ps["error"] or "")
+    logger.info("Token usage: %s", USAGE)
+    logger.info("Pipeline complete: %s", {k: v for k, v in stats.items() if k != "per_source"})
     return stats
 
 
@@ -157,23 +85,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="OppOS pipeline runner")
     parser.add_argument("--days", type=int, default=30, help="Look back N days for SAM.gov (default: 30)")
     parser.add_argument("--dry-run", action="store_true", help="Score only — skip Notion and Slack")
-    parser.add_argument(
-        "--sources",
-        type=str,
-        default=None,
-        help="Comma-separated source keys (e.g., sam_gov,nevada_epro). Default: use ENABLED_SOURCES from .env",
-    )
+    parser.add_argument("--sources", type=str, default=None,
+                        help="Comma-separated source keys. Default: ENABLED_SOURCES from the environment")
     parser.add_argument("--list-sources", action="store_true", help="List all available sources and exit")
     args = parser.parse_args()
 
     if args.list_sources:
         print("Available sources:")
         for key, name in list_available():
-            print(f"  {key:20s} {name}")
+            print(f"  {key:32s} {name}")
         return
 
-    source_override = [s.strip() for s in args.sources.split(",")] if args.sources else None
-    run(days=args.days, dry_run=args.dry_run, source_override=source_override)
+    override = [s.strip() for s in args.sources.split(",")] if args.sources else None
+    stats = run(days=args.days, dry_run=args.dry_run, source_override=override)
+    if stats["errors"] and stats["sources"] and len(stats["errors"]) == stats["sources"]:
+        sys.exit(1)  # every source failed — make the scheduled job red
 
 
 if __name__ == "__main__":

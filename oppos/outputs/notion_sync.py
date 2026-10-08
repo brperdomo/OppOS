@@ -213,7 +213,14 @@ def _build_page_body(
     4. Nutrient Workflow Capabilities — what we sell (for Notion AI context)
     5. Response Draft — empty section for Notion AI to fill
     """
-    from oppos.scoring.capability_profile import CAPABILITY_PROFILE
+    from oppos.scoring.lobs import DEFAULT_LOB, LOBS, get_lob
+    from oppos.scoring.schema import point_claim, point_evidence
+
+    lob = get_lob(opp.get("lob") or s2.get("lob")) or LOBS[DEFAULT_LOB]
+
+    def _point_line(point) -> str:
+        claim, ev = point_claim(point), point_evidence(point)
+        return f'{claim} — "{ev}"' if ev else claim
 
     children: list[dict] = []
 
@@ -221,19 +228,26 @@ def _build_page_body(
     summary = s2.get("summary", "")
     if summary:
         children.append(_heading(2, "AI Assessment"))
+        children.append(_paragraph(f"Line of business: Nutrient {lob.label}"))
         children.append(_paragraph(summary))
 
         strengths = s2.get("strengths", [])
         if strengths:
             children.append(_heading(3, "Strengths"))
             for s in strengths[:8]:
-                children.append(_bullet(s))
+                children.append(_bullet(_point_line(s)))
 
         risks = s2.get("risks", [])
         if risks:
             children.append(_heading(3, "Risks"))
             for r in risks[:5]:
-                children.append(_bullet(r))
+                children.append(_bullet(_point_line(r)))
+
+        gaps = s2.get("knowledge_gaps") or []
+        if gaps:
+            children.append(_heading(3, "Unknowns to verify"))
+            for g in gaps[:8]:
+                children.append(_bullet(str(g)))
 
         dep = s2.get("deployment_recommendation", "")
         comp = s2.get("competitive_notes", "")
@@ -264,14 +278,15 @@ def _build_page_body(
         children.extend(_text_to_blocks(attachment_text, max_chars=80_000))
         children.append(_divider())
 
-    # ── Section 4: Nutrient Workflow Capabilities ─────────────
-    children.append(_heading(2, "Nutrient Workflow — Capability Reference"))
+    # ── Section 4: LOB capability reference ───────────────────
+    children.append(_heading(2, f"Nutrient {lob.label} — Capability Reference"))
     children.append(_paragraph(
         "Use this section as context when drafting the RFP response. "
-        "It describes what Nutrient Workflow does, proven verticals, "
+        f"It describes what Nutrient {lob.label} does, proven verticals, "
         "past wins, deployment options, and competitive positioning."
+        + (" (Thin profile — verify capability claims before relying on them.)" if lob.depth != "full" else "")
     ))
-    children.extend(_text_to_blocks(CAPABILITY_PROFILE, max_chars=40_000))
+    children.extend(_text_to_blocks(lob.profile, max_chars=40_000))
     children.append(_divider())
 
     # ── Section 5: Response Draft ─────────────────────────────
@@ -279,7 +294,7 @@ def _build_page_body(
     children.append(_paragraph(
         "Use Notion AI to draft the RFP response. Select all content above "
         "as context, then ask Notion AI to generate a point-by-point response "
-        "mapping Nutrient Workflow capabilities to the RFP requirements."
+        f"mapping Nutrient {lob.label} capabilities to the RFP requirements."
     ))
 
     # ── Attachments placeholder ───────────────────────────────

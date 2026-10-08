@@ -54,6 +54,9 @@ def _turso_execute(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
     data = resp.json()
 
     result = data.get("results", [{}])[0]
+    if result.get("type") == "error":
+        err = result.get("error") or {}
+        raise RuntimeError(f"Turso error: {err.get('message') or err} — SQL: {sql[:200]}")
     response = result.get("response", {})
     res = response.get("result", {})
     cols = [c["name"] for c in res.get("cols", [])]
@@ -150,14 +153,30 @@ _CREATE_META_SQL = """
     )
 """
 
+_CREATE_HEALTH_SQL = """
+    CREATE TABLE IF NOT EXISTS source_health (
+        source TEXT PRIMARY KEY,
+        display_name TEXT,
+        last_run TEXT,
+        last_success TEXT,
+        last_error TEXT,
+        last_count INTEGER DEFAULT 0,
+        last_new INTEGER DEFAULT 0,
+        duration_s REAL DEFAULT 0,
+        consecutive_failures INTEGER DEFAULT 0
+    )
+"""
+
 _MIGRATIONS = [
     "ALTER TABLE opportunities ADD COLUMN attachment_text TEXT",
+    "ALTER TABLE opportunities ADD COLUMN lob TEXT",
 ]
 
 
 def init_db() -> None:
     _execute(_CREATE_TABLE_SQL)
     _execute(_CREATE_META_SQL)
+    _execute(_CREATE_HEALTH_SQL)
     for migration in _MIGRATIONS:
         try:
             _execute(migration)
@@ -194,14 +213,15 @@ def upsert_opportunity(opp: dict[str, Any]) -> None:
             description, contact_name, contact_email, contact_phone,
             place_of_performance, office, naics_code, set_aside,
             fit_score, recommended_action, stage1_json, stage2_json, raw_json,
-            attachment_text, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            attachment_text, lob, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_id) DO UPDATE SET
             fit_score = excluded.fit_score,
             recommended_action = excluded.recommended_action,
             stage1_json = excluded.stage1_json,
             stage2_json = excluded.stage2_json,
             attachment_text = COALESCE(excluded.attachment_text, attachment_text),
+            lob = COALESCE(excluded.lob, lob),
             updated_at = excluded.updated_at
         """,
         (
@@ -228,6 +248,7 @@ def upsert_opportunity(opp: dict[str, Any]) -> None:
             json.dumps(opp.get("stage2")) if opp.get("stage2") else None,
             json.dumps(opp.get("raw")) if opp.get("raw") else None,
             opp.get("attachment_text"),
+            opp.get("lob"),
             datetime.utcnow().isoformat(),
         ),
     )
@@ -385,3 +406,62 @@ def check_deadlines(warn_days: int = 7) -> dict[str, int]:
                     counts["expiring_soon"] += 1
 
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Source health — one row per source, updated on every scan
+# ---------------------------------------------------------------------------
+
+def record_source_health(
+    source: str,
+    display_name: str,
+    ok: bool,
+    count: int = 0,
+    new: int = 0,
+    error: str | None = None,
+    duration_s: float = 0.0,
+) -> None:
+    now = datetime.utcnow().isoformat()
+    err = (error or "")[:500] if not ok else None
+    _execute(
+        """
+        INSERT INTO source_health (
+            source, display_name, last_run, last_success, last_error,
+            last_count, last_new, duration_s, consecutive_failures
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source) DO UPDATE SET
+            display_name = excluded.display_name,
+            last_run = excluded.last_run,
+            last_success = COALESCE(excluded.last_success, last_success),
+            last_error = excluded.last_error,
+            last_count = excluded.last_count,
+            last_new = excluded.last_new,
+            duration_s = excluded.duration_s,
+            consecutive_failures = CASE WHEN excluded.last_error IS NULL THEN 0
+                                        ELSE consecutive_failures + 1 END
+        """,
+        (
+            source, display_name, now, now if ok else None, err,
+            int(count), int(new), round(float(duration_s), 1), 0 if ok else 1,
+        ),
+    )
+
+
+def get_source_health() -> list[dict[str, Any]]:
+    """All sources with health rows, failing first, then by display name."""
+    return _query(
+        """SELECT * FROM source_health
+           ORDER BY (last_error IS NOT NULL) DESC, display_name ASC"""
+    )
+
+
+def get_lob_counts(statuses: tuple[str, ...] = ("new", "qualified", "expiring_soon")) -> dict[str, int]:
+    """Count of active opportunities per LOB (NULL lob reported as 'unrouted')."""
+    placeholders = ", ".join("?" for _ in statuses)
+    rows = _query(
+        f"""SELECT COALESCE(lob, 'unrouted') AS lob, COUNT(*) AS n
+            FROM opportunities WHERE pipeline_status IN ({placeholders})
+            GROUP BY COALESCE(lob, 'unrouted')""",
+        tuple(statuses),
+    )
+    return {r["lob"]: int(r["n"]) for r in rows}

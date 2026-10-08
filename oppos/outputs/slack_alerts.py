@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from oppos.config import SLACK_WEBHOOK_URL, SOURCE_STATE_MAP
+from oppos.scoring.schema import lob_label, points_text
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,10 @@ def _build_message(opp: dict[str, Any]) -> dict:
     similar = s2.get("similar_win", "")
     strengths = s2.get("strengths", [])
     risks = s2.get("risks", [])
+    gaps = s2.get("knowledge_gaps") or []
     deployment = s2.get("deployment_recommendation", "")
+    lob = lob_label(opp.get("lob") or s2.get("lob") or "workflow")
+    thin = " (thin profile — verify)" if s2.get("profile_depth") == "thin" else ""
 
     score_emoji = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
 
@@ -99,9 +103,10 @@ def _build_message(opp: dict[str, Any]) -> dict:
                     f"*Agency:* {agency}\n"
                     + (f"*State:* {state}\n" if state else "")
                     + f"*Deadline:* {deadline}\n"
-                    f"*Pattern:* {pattern}\n"
-                    f"*Similar Win:* {similar or 'None'}\n"
-                    f"*Deployment:* {deployment}"
+                    + f"*LOB:* {lob}{thin}\n"
+                    + (f"*Pattern:* {pattern}\n" if pattern and pattern != "other" else "")
+                    + (f"*Similar Win:* {similar}\n" if similar else "")
+                    + (f"*Deployment:* {deployment}" if deployment else "")
                 ),
             },
         },
@@ -116,13 +121,19 @@ def _build_message(opp: dict[str, Any]) -> dict:
     if strengths:
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*Strengths:* {', '.join(strengths[:5])}"},
+            "text": {"type": "mrkdwn", "text": f"*Strengths:* {points_text(strengths, 5, ', ')}"},
         })
 
     if risks:
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*Risks:* {', '.join(risks[:3])}"},
+            "text": {"type": "mrkdwn", "text": f"*Risks:* {points_text(risks, 3, ', ')}"},
+        })
+
+    if gaps:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Unknowns to verify:* {' · '.join(str(g) for g in gaps[:4])}"},
         })
 
     return {"blocks": blocks}
@@ -191,10 +202,16 @@ def build_sdr_message(opp: dict[str, Any]) -> str:
         ref_parts.append(f"Deadline: {deadline}")
     ref_line = " | ".join(ref_parts) if ref_parts else ""
 
+    from oppos.config import LOB_OWNERS
+    lob_key = opp.get("lob") or "workflow"
+    lob_name = lob_label(lob_key) or "Workflow"
+    owner = LOB_OWNERS.get(lob_key) or ""
+    owner_note = f" (please make {owner} opportunity owner)" if owner else ""
+
     msg = (
         f"Hi team... may I have an opp created for the following: "
         f"{agency_full}. {contact_line} "
-        f"LOB is Workflow (please make Richard opportunity owner).\n\n"
+        f"LOB is {lob_name}{owner_note}.\n\n"
         f"No Hiver at the moment, this is an open RFP sourced through an outbound effort."
     )
 

@@ -36,6 +36,7 @@ for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHRO
     except Exception as e:
         _secrets_errors.append(f"{key}: {e}")
 
+from oppos.scoring.schema import lob_label, point_claim, point_evidence, points_text
 from oppos.config import DB_PATH, SOURCE_STATE_MAP
 from oppos.sources.registry import list_available
 from oppos.storage.db import check_deadlines, get_all_scored, get_by_pipeline_status, get_meta, init_db, set_meta, set_pipeline_status
@@ -418,6 +419,18 @@ hr {
     margin: 8px 0 !important;
 }
 
+/* Source health */
+.health-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.health-table th { text-align: left; color: var(--text-tertiary); font-weight: 500; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .04em; padding: 6px 8px; border-bottom: 1px solid var(--border-subtle); }
+.health-table td { padding: 6px 8px; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); vertical-align: top; }
+.health-note { color: var(--text-tertiary); font-size: 12px; }
+
+/* LOB chip, evidence, unknowns */
+.opp-tag.lob-tag { border: 1px solid var(--accent-gold); color: var(--accent-gold); background: transparent; }
+.evidence-quote { color: var(--text-tertiary); font-size: 12px; font-style: italic; margin: 2px 0 6px 14px; }
+.gap-item { color: var(--text-secondary); font-size: 13px; padding: 2px 0; }
+
 /* Empty state */
 .empty-state {
     text-align: center;
@@ -635,46 +648,18 @@ STATUS_DISPLAY = list(PIPELINE_LABELS.values())
 
 
 def _run_scan() -> dict:
-    """Run the pipeline in-process and return stats."""
+    """Run the shared scan loop in-process with a progress bar; return stats."""
     import logging
-    from oppos.config import STAGE2_MIN_SCORE
-    from oppos.scoring.prefilter import prefilter
-    from oppos.scoring.qualifier import qualify
-    from oppos.sources.registry import get_enabled_sources
-    from oppos.storage.db import is_seen, set_meta as _set_meta, upsert_opportunity
+    from oppos.pipeline import run_scan
 
     logging.basicConfig(level=logging.INFO)
-    sources = get_enabled_sources()
-    total_sources = len(sources)
-    stats = {"fetched": 0, "new": 0, "filtered_out": 0, "scored": 0, "errors": []}
-    posted_from = datetime.now() - timedelta(days=14)
-
     progress = st.progress(0, text="Starting scan...")
 
-    for idx, (key, name, fetch_fn) in enumerate(sources):
-        pct = idx / total_sources
-        progress.progress(pct, text=f"Scanning {name}  ({idx + 1}/{total_sources})")
-        try:
-            opps = fetch_fn(posted_from=posted_from) if key == "sam_gov" else fetch_fn()
-            stats["fetched"] += len(opps)
-            for opp in opps:
-                if is_seen(opp["source_id"]):
-                    continue
-                stats["new"] += 1
-                prefilter(opp)
-                if not opp["prefilter"]["passed"]:
-                    stats["filtered_out"] += 1
-                    continue
-                scored = qualify(opp)
-                if scored.get("fit_score", 0) >= STAGE2_MIN_SCORE:
-                    stats["scored"] += 1
-                upsert_opportunity(scored)
-        except Exception as e:
-            stats["errors"].append(f"{name}: {e}")
+    def _on_progress(idx: int, total: int, name: str) -> None:
+        progress.progress(idx / max(total, 1), text=f"Scanning {name}  ({idx + 1}/{total})")
 
-    progress.progress(1.0, text=f"Done -- scanned {total_sources} sources, {stats['fetched']} listings")
-    _set_meta("last_scan", datetime.utcnow().isoformat())
-
+    stats = run_scan(on_progress=_on_progress)
+    progress.progress(1.0, text=f"Done -- scanned {stats['sources']} sources, {stats['fetched']} listings")
     return stats
 
 
@@ -709,6 +694,46 @@ with manual_col:
 
 if manual_open:
     st.session_state["show_manual_form"] = True
+
+
+def _render_source_health(rows: list[dict]) -> str:
+    import html as _html
+    now = datetime.now(timezone.utc)
+    out = ['<table class="health-table"><tr><th></th><th>Source</th><th>Last run</th>'
+           '<th>Listings</th><th>New</th><th>Note</th></tr>']
+    for r in rows:
+        err = r.get("last_error") or ""
+        try:
+            age = now - datetime.fromisoformat(str(r.get("last_run"))).replace(tzinfo=timezone.utc)
+            secs = age.total_seconds()
+            ago = ("just now" if secs < 60 else f"{int(secs // 60)}m ago" if secs < 3600
+                   else f"{int(secs // 3600)}h ago" if secs < 86400 else f"{age.days}d ago")
+            stale = age.days >= 3
+        except (ValueError, TypeError):
+            ago, stale = "never", True
+        count = int(r.get("last_count") or 0)
+        if err:
+            dot, note = "🔴", _html.escape(err[:90])
+        elif stale:
+            dot, note = "🟡", "No run in 3+ days"
+        elif count == 0:
+            dot, note = "🟡", "Returned 0 listings"
+        else:
+            dot, note = "🟢", ""
+        name = _html.escape(str(r.get("display_name") or r.get("source") or ""))
+        out.append(f"<tr><td>{dot}</td><td>{name}</td><td>{ago}</td><td>{count}</td>"
+                   f"<td>{int(r.get('last_new') or 0)}</td><td class=\"health-note\">{note}</td></tr>")
+    out.append("</table>")
+    return "".join(out)
+
+
+from oppos.storage.db import get_source_health as _get_source_health
+_health_rows = _get_source_health()
+if _health_rows:
+    _n_fail = sum(1 for r in _health_rows if r.get("last_error"))
+    _health_label = "Source health" + (f"  ·  {_n_fail} failing" if _n_fail else "  ·  all OK")
+    with st.expander(_health_label):
+        st.markdown(_render_source_health(_health_rows), unsafe_allow_html=True)
 
 if scan_clicked:
     scan_stats = _run_scan()
@@ -851,9 +876,9 @@ if st.session_state.get("show_manual_form"):
                     if s2.get("summary"):
                         st.write(f"_{s2['summary']}_")
                     if s2.get("strengths"):
-                        st.write("**Strengths:** " + " · ".join(s2["strengths"][:3]))
+                        st.write("**Strengths:** " + points_text(s2["strengths"], 3))
                     if s2.get("risks"):
-                        st.write("**Risks:** " + " · ".join(s2["risks"][:3]))
+                        st.write("**Risks:** " + points_text(s2["risks"], 3))
 
         # Close / clear
         if st.button("Close", key="manual_cancel"):
@@ -1163,9 +1188,9 @@ def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
             st.write("📋 **Post-Scan Analysis**")
             st.write(s2["summary"])
         if s2.get("strengths"):
-            st.write("**Strengths:** " + " · ".join(s2["strengths"]))
+            st.write("**Strengths:** " + points_text(s2["strengths"]))
         if s2.get("risks"):
-            st.write("**Risks:** " + " · ".join(s2["risks"]))
+            st.write("**Risks:** " + points_text(s2["risks"]))
         if s2.get("recommended_action"):
             st.write(f"**Recommendation:** {s2['recommended_action']}")
 
@@ -1332,6 +1357,11 @@ def _render_deep_scan(opp: dict, tab_key: str) -> None:
                 )
 
 
+def _evidence_html(point) -> str:
+    ev = point_evidence(point)
+    return f'<div class="evidence-quote">“{_esc(ev)}”</div>' if ev else ""
+
+
 def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> None:
     s2_raw = opp.get("stage2_json")
     s2 = {}
@@ -1392,6 +1422,10 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
     score_card_class = "score-high-card" if score >= 65 else ("score-mid-card" if score >= 40 else "score-low-card")
     pattern = _esc(s2.get("pattern_match", "") or "")
     pattern_tag = f'<span class="opp-tag">{pattern}</span>' if pattern and pattern != "other" else ""
+    _lob_key = opp.get("lob") or s2.get("lob") or ""
+    if _lob_key:
+        _thin = " · thin" if s2.get("profile_depth") == "thin" else ""
+        pattern_tag = f'<span class="opp-tag lob-tag">{_esc(lob_label(_lob_key))}{_thin}</span>' + pattern_tag
     sol_tag = f'<span class="opp-tag">{sol_num}</span>' if sol_num else ""
 
     card_parts = [
@@ -1565,13 +1599,19 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
             if strengths:
                 st.markdown('<div class="detail-label" style="margin-bottom:8px;margin-top:12px;">Strengths</div>', unsafe_allow_html=True)
                 for s in strengths:
-                    st.markdown(f'<div class="strength-item">+ {_esc(s)}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="strength-item">+ {_esc(point_claim(s))}</div>{_evidence_html(s)}', unsafe_allow_html=True)
         with col_r:
             risks = s2.get("risks", [])
             if risks:
                 st.markdown('<div class="detail-label" style="margin-bottom:8px;margin-top:12px;">Risks</div>', unsafe_allow_html=True)
                 for r in risks:
-                    st.markdown(f'<div class="risk-item">- {_esc(r)}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="risk-item">- {_esc(point_claim(r))}</div>{_evidence_html(r)}', unsafe_allow_html=True)
+
+        gaps = s2.get("knowledge_gaps") or []
+        if gaps:
+            st.markdown('<div class="detail-label" style="margin-bottom:8px;margin-top:12px;">Unknowns to verify</div>', unsafe_allow_html=True)
+            for g in gaps:
+                st.markdown(f'<div class="gap-item">? {_esc(str(g))}</div>', unsafe_allow_html=True)
 
         if s2.get("deployment_recommendation"):
             st.markdown(f"""

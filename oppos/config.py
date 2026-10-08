@@ -33,6 +33,13 @@ STAGE1_FIT_THRESHOLD = 0.5
 STAGE2_MIN_SCORE = 40
 SLACK_ALERT_MIN_SCORE = 65
 
+# Line-of-business routing — optional owner per LOB (name or Slack handle), env-only.
+# Nothing is hardcoded: unset means "no designated owner" and messages omit the owner line.
+LOB_OWNERS: dict[str, str] = {
+    key: os.environ.get(f"LOB_OWNER_{key.upper()}", "").strip()
+    for key in ("workflow", "low_code", "sdk", "dws")
+}
+
 ENABLED_SOURCES: list[str] = [
     s.strip()
     for s in os.environ.get("ENABLED_SOURCES", "sam_gov").split(",")
