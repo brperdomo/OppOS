@@ -3,7 +3,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
+_ROOT = Path(__file__).resolve().parent.parent
+# OPPOS_ENV_FILE lets a second instance run against a different env (e.g. .env.local → SQLite demo DB).
+load_dotenv(_ROOT / os.environ.get("OPPOS_ENV_FILE", ".env"), override=True)
 
 SAM_GOV_API_KEY = os.environ.get("SAM_GOV_API_KEY", "")
 SAM_GOV_BASE_URL = "https://api.sam.gov/opportunities/v2/search"
@@ -24,7 +26,9 @@ GOOGLE_CSE_DAILY_LIMIT = int(os.environ.get("GOOGLE_CSE_DAILY_LIMIT", "100"))
 
 NUTRIENT_API_KEY = os.environ.get("NUTRIENT_API_KEY", "")
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "oppos.db"
+DB_PATH = Path(os.environ["OPPOS_DB_PATH"]) if os.environ.get("OPPOS_DB_PATH") else _ROOT / "data" / "oppos.db"
+if not DB_PATH.is_absolute():
+    DB_PATH = _ROOT / DB_PATH
 
 TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "")
 TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")

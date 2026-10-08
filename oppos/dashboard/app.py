@@ -36,6 +36,7 @@ for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHRO
     except Exception as e:
         _secrets_errors.append(f"{key}: {e}")
 
+from oppos.auth import auth_configured, logout_button, require_login
 from oppos.scoring.schema import lob_label, point_claim, point_evidence, points_text
 from oppos.config import DB_PATH, SOURCE_STATE_MAP
 from oppos.sources.registry import list_available
@@ -431,6 +432,27 @@ hr {
 .evidence-quote { color: var(--text-tertiary); font-size: 12px; font-style: italic; margin: 2px 0 6px 14px; }
 .gap-item { color: var(--text-secondary); font-size: 13px; padding: 2px 0; }
 
+/* Registration badge + pursuit panel */
+.reg-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 6px; border: 1px solid currentColor; }
+.reg-ok { color: #7fc29b; }
+.reg-warn { color: var(--accent-orange); }
+.reg-bad { color: var(--accent-red); }
+.pp-strip { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 2px 0 10px; font-size: 13px; color: var(--text-secondary); }
+.pp-owner { font-weight: 500; color: var(--text-primary, #efebe7); }
+.pp-pill { padding: 2px 10px; border-radius: 10px; border: 1px solid var(--border-subtle); color: var(--text-secondary); font-size: 12px; }
+.pp-ok { border-color: #7fc29b; color: #7fc29b; }
+.pp-warn { border-color: var(--accent-orange); color: var(--accent-orange); }
+.pp-bad { border-color: var(--accent-red); color: var(--accent-red); }
+.pp-links { margin-left: auto; font-size: 12px; }
+.pp-links a { color: var(--accent-gold); text-decoration: none; margin-left: 8px; }
+.pp-event { font-size: 12px; color: var(--text-tertiary); padding: 2px 0; }
+.pp-event b { color: var(--text-secondary); font-weight: 500; }
+
+/* Owner chip */
+.opp-tag.owner-tag { background: rgba(240, 201, 102, 0.12); color: var(--accent-gold); }
+.board-link a { color: var(--text-primary, #efebe7); text-decoration: none; }
+.board-link a:hover { color: var(--accent-gold); }
+
 /* Empty state */
 .empty-state {
     text-align: center;
@@ -612,6 +634,8 @@ NUTRIENT_DOTS_SVG = '<svg viewBox="0 0 50 36" fill="none" xmlns="http://www.w3.o
 
 NUTRIENT_WORDMARK_SVG = '<svg viewBox="60 0 148 36" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M83.25 4h3.56v28.09h-4.1L73.1 15.2c-.52-.94-1.6-3.04-3.25-6.3h-.04c.05 1.2.1 2.51.14 3.93.04 1.42.06 2.48.06 3.18v16.08h-3.56V4h4l9.64 16.69c.48.84 1.36 2.47 2.63 4.92l.7 1.35h.04c-.05-1.07-.1-2.3-.14-3.7-.04-1.4-.06-2.52-.06-3.37V4zm21.01 19.3c0 4.18-1.72 6.27-5.17 6.27-.77 0-1.44-.07-2.02-.21-.57-.14-1.12-.45-1.63-.95-.38-.36-.65-.78-.82-1.24-.17-.46-.27-.93-.3-1.39-.03-.46-.05-1.11-.05-1.95V12.04h-3.72v11.99c0 .94.03 1.76.09 2.45.06.69.21 1.38.44 2.07.23.69.59 1.28 1.08 1.79.72.77 1.56 1.34 2.52 1.7.97.36 2.1.55 3.41.55 1.44 0 2.69-.3 3.76-.9s1.87-1.5 2.41-2.63v3h3.6V12.04h-3.6v11.26zm14.42-16.85h-3.56v5.58h-4.21v3.02h4.21v12.1c0 1.82.49 3.13 1.47 3.93s2.56 1.2 4.74 1.2c.55 0 1.1-.03 1.64-.09.54-.06.99-.13 1.34-.22l-.08-3.29c-1.01.24-1.88.35-2.6.35-.73 0-1.35-.06-1.76-.17-.41-.11-.71-.31-.9-.6-.19-.29-.28-.7-.28-1.23V15.06h5.7v-3.02h-5.7V6.45zm16.05 6.52c-1.27.76-2.1 1.7-2.48 2.82V12.04h-3.6v20.06h3.6v-9.19c0-2.1.31-3.74.94-4.92.63-1.17 1.48-1.98 2.55-2.42 1.07-.44 2.37-.66 3.9-.66.61 0 1.03.02 1.25.06l.08-3.43c-.86 0-1.41.01-1.64.04-1.79.17-3.32.63-4.6 1.39zm35.56 5.62c.3 1.19.45 2.43.45 3.7 0 .38 0 .66-.02.84h-15.22c.04 2.21.53 3.85 1.47 4.93.94 1.08 2.35 1.62 4.23 1.62 1.7 0 3.02-.37 3.96-1.1.94-.74 1.53-1.87 1.78-3.38l3.49.27c-.45 2.34-1.45 4.11-3.01 5.31-1.56 1.2-3.62 1.8-6.18 1.8-3.08 0-5.48-.98-7.21-2.94-1.63-1.83-2.45-4.37-2.45-7.62 0-1.5.21-2.89.64-4.16.42-1.27 1.05-2.37 1.89-3.3.87-.99 1.91-1.74 3.12-2.25 1.2-.51 2.53-.76 3.97-.76 1.62 0 3.13.34 4.52 1.03 1.4.69 2.5 1.67 3.31 2.95.54.86.96 1.89 1.26 3.07zm-3.27 1.62c-.01-.57-.12-1.2-.31-1.87-.2-.67-.45-1.24-.77-1.7-.51-.76-1.15-1.31-1.91-1.66-.76-.35-1.69-.52-2.79-.52-1.1 0-2.06.19-2.88.58-.82.38-1.44.92-1.84 1.59-.34.55-.58 1.14-.73 1.76-.15.63-.24 1.23-.25 1.82h11.48zm23.66-4.61c-.23-.7-.58-1.3-1.05-1.81-.73-.77-1.58-1.34-2.55-1.7-.97-.36-2.11-.55-3.43-.55-3.07 0-5.13 1.19-6.19 3.56v-3.07h-3.6v20.06h3.6V21.03c0-2.52.54-4.23 1.63-5.12 1.08-.9 2.28-1.34 3.6-1.34.74 0 1.4.07 1.96.21.56.14 1.1.45 1.61.95.38.36.66.78.83 1.25.18.47.28.94.31 1.42.03.48.05 1.14.05 1.99v11.71h3.74v-11.9c0-.95-.03-1.78-.09-2.48-.06-.7-.2-1.4-.43-2.1zm16.67-.56v-3.02h-5.7V6.45h-3.56v5.58h-4.21v3.02h4.21v12.1c0 1.82.49 3.13 1.47 3.93s2.56 1.2 4.74 1.2c.55 0 1.1-.03 1.64-.09.54-.06.99-.13 1.34-.22l-.08-3.29c-1.01.24-1.88.35-2.6.35-.73 0-1.35-.06-1.76-.17-.41-.11-.71-.31-.9-.6-.19-.29-.28-.7-.28-1.23V15.06h5.7zm-62.78 17.07h3.6V12.06h-3.6v20.06zm1.8-28.71c-1.45 0-2.63 1.18-2.63 2.63s1.18 2.63 2.63 2.63 2.63-1.18 2.63-2.63-1.18-2.63-2.63-2.63z" fill="currentColor"/></svg>'
 
+CURRENT_USER = require_login()
+
 st.markdown(f"""
 <div class="oppos-header">
     <div class="oppos-header-left">
@@ -625,17 +649,31 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+if auth_configured():
+    _uc1, _uc2 = st.columns([6, 1])
+    _uc1.caption(f"Signed in as {CURRENT_USER['name']} ({CURRENT_USER['email']})")
+    with _uc2:
+        logout_button()
+
 with st.spinner("Loading pipeline..."):
     init_db()
     check_deadlines()
     SOURCE_LABELS = dict(list_available())
     SOURCE_LABELS["manual"] = "Manual Submission"
+    from oppos.storage.db import list_portal_registrations, seed_portal_registrations
+    if not st.session_state.get("regs_seeded"):
+        seed_portal_registrations(list(SOURCE_LABELS.items()))
+        st.session_state["regs_seeded"] = True
+    PORTAL_REGS = {r["portal"]: r for r in list_portal_registrations()}
+    from oppos.pursuits import OPEN_STAGES as _OPEN_STAGES
+    from oppos.storage.db import list_pursuits as _list_pursuits
+    OPEN_PURSUITS = {p["source_id"]: p for p in _list_pursuits(status=_OPEN_STAGES)}
 
 PIPELINE_LABELS = {
     "new": "New",
     "qualified": "Qualified",
     "expiring_soon": "Expiring Soon",
-    "in_progress": "In Progress",
+    "in_progress": "Pursuing",
     "submitted": "Submitted",
     "won": "Won",
     "lost": "Lost",
@@ -692,8 +730,6 @@ with scan_col:
 with manual_col:
     manual_open = st.button("Submit Manual RFP", use_container_width=True)
 
-if manual_open:
-    st.session_state["show_manual_form"] = True
 
 
 def _render_source_health(rows: list[dict]) -> str:
@@ -734,6 +770,51 @@ if _health_rows:
     _health_label = "Source health" + (f"  ·  {_n_fail} failing" if _n_fail else "  ·  all OK")
     with st.expander(_health_label):
         st.markdown(_render_source_health(_health_rows), unsafe_allow_html=True)
+
+if CURRENT_USER.get("is_admin"):
+    _reg_known = sum(1 for r in PORTAL_REGS.values() if (r.get("status") or "unknown") != "unknown")
+    with st.expander(f"Portal registrations  ·  {_reg_known}/{len(PORTAL_REGS)} known"):
+        import pandas as pd
+        from oppos.pursuits import REGISTRATION_LABELS, REGISTRATION_STATUSES
+        from oppos.storage.db import upsert_portal_registration
+
+        _reg_cols = ["portal", "display_name", "status", "vendor_id", "login_owner", "lead_time_days", "url", "notes"]
+        _reg_rows = [{c: r.get(c) for c in _reg_cols} for r in PORTAL_REGS.values()]
+        _reg_df = pd.DataFrame(_reg_rows, columns=_reg_cols).sort_values("display_name", na_position="last").reset_index(drop=True)
+        _reg_df["lead_time_days"] = pd.to_numeric(_reg_df["lead_time_days"], errors="coerce")
+        _reg_df["status"] = _reg_df["status"].fillna("unknown")
+        st.caption("Which procurement portals Nutrient is registered on, who holds the login, and how long registration takes. "
+                   "Shown as a badge on every card and used in the pursuit checklist. Never store passwords here.")
+        _edited = st.data_editor(
+            _reg_df, hide_index=True, use_container_width=True, disabled=["portal", "display_name"], key="reg_editor",
+            column_config={
+                "portal": st.column_config.TextColumn("Key"),
+                "display_name": st.column_config.TextColumn("Portal"),
+                "status": st.column_config.SelectboxColumn("Status", options=REGISTRATION_STATUSES, required=True),
+                "vendor_id": st.column_config.TextColumn("Vendor / supplier ID"),
+                "login_owner": st.column_config.TextColumn("Login held by"),
+                "lead_time_days": st.column_config.NumberColumn("Lead time (days)", min_value=0, step=1),
+                "url": st.column_config.LinkColumn("Registration URL"),
+                "notes": st.column_config.TextColumn("Notes"),
+            },
+        )
+        if st.button("Save registrations", key="reg_save"):
+            _changed = 0
+            for _new, _old in zip(_edited.to_dict("records"), _reg_df.to_dict("records")):
+                def _clean(v):
+                    return None if v is None or (isinstance(v, float) and pd.isna(v)) else v
+                _new_c = {k: _clean(v) for k, v in _new.items()}
+                _old_c = {k: _clean(v) for k, v in _old.items()}
+                if _new_c != _old_c:
+                    _lead = _new_c.get("lead_time_days")
+                    upsert_portal_registration(
+                        _new_c["portal"], status=_new_c.get("status") or "unknown", vendor_id=_new_c.get("vendor_id"),
+                        login_owner=_new_c.get("login_owner"), lead_time_days=int(_lead) if _lead is not None else None,
+                        url=_new_c.get("url"), notes=_new_c.get("notes"),
+                    )
+                    _changed += 1
+            st.success(f"Saved {_changed} change(s)")
+            st.rerun()
 
 if scan_clicked:
     scan_stats = _run_scan()
@@ -796,97 +877,85 @@ def _run_manual_file(file_bytes: bytes, filename: str) -> dict:
     return result
 
 
-if st.session_state.get("show_manual_form"):
-    with st.container():
-        st.markdown(
-            '<div style="border: 1px solid var(--border-subtle); border-radius: 8px; padding: 16px; margin-bottom: 16px;">',
-            unsafe_allow_html=True,
-        )
-        st.markdown("#### Submit Manual RFP")
-        st.markdown(
-            '<div style="font-size: 13px; color: var(--text-tertiary); margin-bottom: 12px;">'
-            "Paste a link to any RFP page or upload a PDF/DOCX directly. "
-            "The system will extract metadata, download attachments, and score it through the same AI pipeline.</div>",
-            unsafe_allow_html=True,
-        )
+def _after_manual_submit(result: dict) -> None:
+    """Attribute the submission to the signed-in user and claim it for them."""
+    from oppos.pursuits import claim_opportunity
+    from oppos.storage.db import get_opps_by_ids, set_submitted_by
+    sid = result.get("source_id")
+    if not sid or result.get("error"):
+        return
+    try:
+        set_submitted_by(sid, CURRENT_USER["email"])
+        opp = get_opps_by_ids([sid]).get(sid) or result
+        claim_opportunity(opp, CURRENT_USER, note="Submitted manually")
+    except Exception as e:  # attribution must never break the submission
+        st.warning(f"Submitted, but could not auto-claim: {e}")
 
-        url_tab, file_tab = st.tabs(["Paste URL", "Upload File"])
 
-        with url_tab:
-            manual_url = st.text_input(
-                "RFP URL",
-                key="manual_url_input",
-                placeholder="https://procurement.example.com/rfp/12345",
-            )
-            url_submit = st.button("Analyze URL", key="manual_url_submit", use_container_width=True)
-            if url_submit and manual_url:
-                with st.status("Analyzing RFP...", expanded=True) as status:
-                    result = _run_manual_url(manual_url)
-                    if result.get("error"):
-                        status.update(label=f"Failed: {result['error']}", state="error")
-                    else:
-                        score = result.get("fit_score", 0)
-                        title = result.get("title", "Untitled")
-                        status.update(label=f"Score: {score}/100 — {title[:50]}", state="complete")
-                # Persist result so it survives reruns
-                st.session_state["manual_result"] = result
-                if result.get("_att_files"):
-                    sid = result.get("source_id", "")
-                    st.session_state[f"att_files_{sid}"] = result["_att_files"]
+@st.dialog("Submit Manual RFP", width="large")
+def _manual_rfp_dialog() -> None:
+    st.markdown(
+        '<div style="font-size: 13px; color: var(--text-tertiary); margin-bottom: 12px;">'
+        "Paste a link to any RFP page or upload a PDF/DOCX. It is scored through the same pipeline, "
+        f"attributed to <strong>{_esc(CURRENT_USER['name'])}</strong>, and claimed for you so it shows in your Pursuits.</div>",
+        unsafe_allow_html=True,
+    )
+    url_tab, file_tab = st.tabs(["Paste URL", "Upload File"])
 
-        with file_tab:
-            uploaded = st.file_uploader(
-                "Upload PDF or DOCX",
-                type=["pdf", "docx"],
-                key="manual_file_upload",
-            )
-            file_submit = st.button("Analyze File", key="manual_file_submit", use_container_width=True)
-            if file_submit and uploaded:
-                file_bytes = uploaded.read()
-                with st.status(f"Analyzing {uploaded.name}...", expanded=True) as status:
-                    result = _run_manual_file(file_bytes, uploaded.name)
-                    if result.get("error"):
-                        status.update(label=f"Failed: {result['error']}", state="error")
-                    else:
-                        score = result.get("fit_score", 0)
-                        title = result.get("title", "Untitled")
-                        status.update(label=f"Score: {score}/100 — {title[:50]}", state="complete")
-                st.session_state["manual_result"] = result
-                if result.get("_att_files"):
-                    sid = result.get("source_id", "")
-                    st.session_state[f"att_files_{sid}"] = result["_att_files"]
+    with url_tab:
+        manual_url = st.text_input("RFP URL", key="manual_url_input", placeholder="https://procurement.example.com/rfp/12345")
+        if st.button("Analyze URL", key="manual_url_submit", use_container_width=True, disabled=not manual_url):
+            with st.status("Analyzing RFP...", expanded=True) as status:
+                result = _run_manual_url(manual_url)
+                if result.get("error"):
+                    status.update(label=f"Failed: {result['error']}", state="error")
+                else:
+                    status.update(label=f"Score: {result.get('fit_score', 0)}/100 — {result.get('title', 'Untitled')[:50]}", state="complete")
+            _after_manual_submit(result)
+            st.session_state["manual_result"] = result
+            if result.get("_att_files"):
+                st.session_state[f"att_files_{result.get('source_id', '')}"] = result["_att_files"]
 
-        # --- Persistent result display (survives reruns) ---
-        manual_result = st.session_state.get("manual_result")
-        if manual_result:
-            if manual_result.get("error"):
-                st.error(f"Could not process: {manual_result['error']}")
-            else:
-                score = manual_result.get("fit_score", 0)
-                title = manual_result.get("title", "Untitled")
-                agency = manual_result.get("agency", "")
-                s2 = manual_result.get("stage2") or {}
+    with file_tab:
+        uploaded = st.file_uploader("Upload PDF or DOCX", type=["pdf", "docx"], key="manual_file_upload")
+        if st.button("Analyze File", key="manual_file_submit", use_container_width=True, disabled=uploaded is None):
+            file_bytes = uploaded.read()
+            with st.status(f"Analyzing {uploaded.name}...", expanded=True) as status:
+                result = _run_manual_file(file_bytes, uploaded.name)
+                if result.get("error"):
+                    status.update(label=f"Failed: {result['error']}", state="error")
+                else:
+                    status.update(label=f"Score: {result.get('fit_score', 0)}/100 — {result.get('title', 'Untitled')[:50]}", state="complete")
+            _after_manual_submit(result)
+            st.session_state["manual_result"] = result
+            if result.get("_att_files"):
+                st.session_state[f"att_files_{result.get('source_id', '')}"] = result["_att_files"]
 
-                st.success(f"Added to Pipeline — **{title}** scored **{score}/100**")
+    manual_result = st.session_state.get("manual_result")
+    if manual_result:
+        if manual_result.get("error"):
+            st.error(f"Could not process: {manual_result['error']}")
+        else:
+            s2 = manual_result.get("stage2") or {}
+            st.success(f"Added and claimed for you — **{manual_result.get('title', 'Untitled')}** scored "
+                       f"**{manual_result.get('fit_score', 0)}/100** ({lob_label(manual_result.get('lob')) or 'unrouted'})")
+            with st.expander("Analysis details", expanded=True):
+                if manual_result.get("agency"):
+                    st.write(f"**Agency:** {manual_result['agency']}")
+                st.write(f"**Score:** {manual_result.get('fit_score', 0)}/100 — {manual_result.get('recommended_action', '?')}")
+                if s2.get("summary"):
+                    st.write(f"_{s2['summary']}_")
+                if s2.get("strengths"):
+                    st.write("**Strengths:** " + points_text(s2["strengths"], 3))
+                if s2.get("risks"):
+                    st.write("**Risks:** " + points_text(s2["risks"], 3))
+    if st.button("Done", key="manual_done", use_container_width=True):
+        st.session_state.pop("manual_result", None)
+        st.rerun()
 
-                with st.expander("Analysis Details", expanded=True):
-                    if agency:
-                        st.write(f"**Agency:** {agency}")
-                    st.write(f"**Score:** {score}/100 — {manual_result.get('recommended_action', '?')}")
-                    if s2.get("summary"):
-                        st.write(f"_{s2['summary']}_")
-                    if s2.get("strengths"):
-                        st.write("**Strengths:** " + points_text(s2["strengths"], 3))
-                    if s2.get("risks"):
-                        st.write("**Risks:** " + points_text(s2["risks"], 3))
 
-        # Close / clear
-        if st.button("Close", key="manual_cancel"):
-            st.session_state["show_manual_form"] = False
-            st.session_state.pop("manual_result", None)
-            st.rerun()
-
-        st.markdown("</div>", unsafe_allow_html=True)
+if manual_open:
+    _manual_rfp_dialog()
 
 all_rows = get_all_scored(min_score=0)
 
@@ -911,8 +980,8 @@ st.markdown(f"""
         <div class="stat-label">Expiring</div>
     </div>
     <div class="stat-item">
-        <div class="stat-value gold">{status_counts.get('in_progress', 0)}</div>
-        <div class="stat-label">In Progress</div>
+        <div class="stat-value gold">{len(OPEN_PURSUITS)}</div>
+        <div class="stat-label">Claimed / Pursuing</div>
     </div>
     <div class="stat-item">
         <div class="stat-value green">{status_counts.get('submitted', 0)}</div>
@@ -933,7 +1002,7 @@ tab_pipeline, tab_qualified, tab_expiring, tab_in_progress, tab_submitted, tab_a
     f"Pipeline ({status_counts.get('new', 0)})",
     f"Qualified ({status_counts.get('qualified', 0)})",
     f"Expiring Soon ({_expiring_count})" if _expiring_count else "Expiring Soon",
-    f"In Progress ({status_counts.get('in_progress', 0)})",
+    f"Pursuits ({status_counts.get('in_progress', 0)})",
     f"Submitted ({status_counts.get('submitted', 0)})",
     f"Archive ({_archive_count})",
     f"Expired ({_expired_count})" if _expired_count else "Expired",
@@ -1002,23 +1071,20 @@ def _ensure_files_exist(opp: dict, selected_paths: list) -> list:
 
 
 def _pursue_opportunity(opp: dict, reason: str = "") -> None:
-    """Full Pursue flow: Notion push → Slack alert (with Notion link) → status update."""
+    """Full Pursue flow: Notion push → pursuit record (owner = you) → Slack channel or alert."""
     from oppos.outputs.notion_sync import push_opportunity
-    from oppos.outputs.slack_alerts import send_pursue_alert
-    from oppos.storage.db import set_notion_page_id, upsert_opportunity
+    from oppos.pursuits import start_pursuit
+    from oppos.storage.db import set_notion_page_id
 
     sid = opp.get("source_id", "")
     title = opp.get("title", "Untitled")
 
     with st.status(f"Pursuing: {title[:50]}…", expanded=True) as status:
-        # Step 1: Push to Notion
-        notion_url = ""
+        notion_url, page_id = "", None
         st.write("📤 Pushing to Notion…")
         try:
-            # Set status before push so Notion shows "In Progress"
             opp["pipeline_status"] = "in_progress"
             opp["pipeline_notes"] = reason or "Qualified — pursuing"
-
             att_dir = ATTACHMENTS_DIR / sid
             att_paths = sorted(att_dir.glob("*")) if att_dir.exists() else []
             page_id = push_opportunity(opp, attachment_paths=att_paths or None)
@@ -1027,20 +1093,22 @@ def _pursue_opportunity(opp: dict, reason: str = "") -> None:
                 notion_url = f"https://notion.so/{page_id.replace('-', '')}"
                 st.write(f"✓ Notion page created — [Open]({notion_url})")
             else:
-                st.write("⚠️ Notion push failed — continuing with Slack…")
+                st.write("⚠️ Notion push failed — continuing…")
         except Exception as e:
-            st.write(f"⚠️ Notion error: {e} — continuing with Slack…")
+            st.write(f"⚠️ Notion error: {e} — continuing…")
 
-        # Step 2: Update pipeline status
-        st.write("📋 Updating pipeline status…")
-        set_pipeline_status(sid, "in_progress", notes=reason or "Qualified — pursuing")
-
-        # Step 3: Send Slack alert with Notion link
-        st.write("📣 Sending Slack alert…")
-        send_pursue_alert(opp, reason=reason, notion_url=notion_url)
+        st.write("📋 Creating pursuit record…")
+        result = start_pursuit(opp, reason=reason, user=CURRENT_USER, notion_url=notion_url, notion_page_id=page_id)
+        if result.get("slack_channel_name"):
+            st.write(f"✓ Slack channel [#{result['slack_channel_name']}]({result['slack_url']}) created and brief pinned")
+        elif result.get("slack_alert_sent"):
+            st.write("✓ Slack alert sent (set SLACK_BOT_TOKEN to get a channel per pursuit)")
+        else:
+            st.write("⚠️ Slack not configured — no channel or alert sent")
 
         status.update(label="Pursuing ✓", state="complete")
-        st.success(f"**{title[:60]}** moved to In Progress" + (f" — [Notion]({notion_url})" if notion_url else ""))
+        st.success(f"**{title[:60]}** is now in Pursuits, owned by {CURRENT_USER['name']}"
+                   + (f" — [Notion]({notion_url})" if notion_url else ""))
 
 
 def _push_to_notion(opp: dict) -> None:
@@ -1426,6 +1494,17 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
     if _lob_key:
         _thin = " · thin" if s2.get("profile_depth") == "thin" else ""
         pattern_tag = f'<span class="opp-tag lob-tag">{_esc(lob_label(_lob_key))}{_thin}</span>' + pattern_tag
+    from oppos.pursuits import registration_badge as _reg_badge, stage_label as _stage_label
+    _badge = _reg_badge(PORTAL_REGS.get(opp.get("source") or ""))
+    if _badge:
+        pattern_tag += f'<span class="reg-badge {_badge[1]}">{_esc(_badge[0])}</span>'
+    _open_p = OPEN_PURSUITS.get(sid)
+    if _open_p:
+        _owner_txt = _open_p.get("owner_name") or _open_p.get("owner_email") or "someone"
+        pattern_tag = (f'<span class="opp-tag owner-tag">👤 {_esc(_owner_txt)} · {_esc(_stage_label(_open_p.get("status")))}</span>'
+                       + pattern_tag)
+    elif opp.get("submitted_by"):
+        pattern_tag = f'<span class="opp-tag owner-tag">Manual · {_esc(str(opp["submitted_by"]).split("@")[0])}</span>' + pattern_tag
     sol_tag = f'<span class="opp-tag">{sol_num}</span>' if sol_num else ""
 
     card_parts = [
@@ -1456,6 +1535,32 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
     st.markdown("\n".join(card_parts), unsafe_allow_html=True)
 
     if show_status_controls:
+        # --- Claim / ownership controls (standard across Pipeline, Qualified, Expiring) ---
+        if pipeline_status in ("new", "qualified", "expiring_soon"):
+            from oppos.pursuits import claim_opportunity as _claim, release_claim as _release
+            _mine_p = _open_p and (_open_p.get("owner_email") or "").lower() == CURRENT_USER["email"]
+            gc1, gc2, gc3 = st.columns([1, 1, 2])
+            if not _open_p:
+                with gc1:
+                    if st.button("✋ Grab", key=f"grab_{tab_key}_{sid}", use_container_width=True,
+                                 help="Claim this RFP: you become the owner and it appears on the team board as Claimed."):
+                        _claim(opp, CURRENT_USER)
+                        st.rerun()
+            elif _mine_p and _open_p.get("status") == "evaluating":
+                with gc1:
+                    if st.button("🎯 Start pursuing", key=f"startp_{tab_key}_{sid}", use_container_width=True,
+                                 help="Commit: creates the Notion page and Slack channel, starts reminders."):
+                        _pursue_opportunity(opp, reason=pipeline_notes or "")
+                        st.rerun()
+                with gc2:
+                    if st.button("Release", key=f"release_{tab_key}_{sid}", use_container_width=True):
+                        _release(opp, CURRENT_USER)
+                        st.rerun()
+            elif _open_p and not _mine_p:
+                with gc3:
+                    st.caption(f"Owned by {_open_p.get('owner_name') or _open_p.get('owner_email')} "
+                               f"({_stage_label(_open_p.get('status'))}) — ask them to release it if you want to take it.")
+
         with st.expander("Update Status"):
             sc1, sc2, sc3 = st.columns([2, 2, 1])
             with sc1:
@@ -1654,6 +1759,152 @@ def render_empty(message: str) -> None:
     """, unsafe_allow_html=True)
 
 
+def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
+    """Workspace for one active pursuit: status strip, details, checklist, actions, activity."""
+    import json as _json
+    from oppos.outputs.slack_alerts import build_sdr_message
+    from oppos.outputs.slack_pursuits import channel_url
+    from oppos.pursuits import (
+        CHECKLIST, REGISTRATION_LABELS, REGISTRATION_STATUSES, SUBMISSION_METHODS,
+        checklist_progress, checklist_state, days_until, deadline_date, save_pursuit_fields, transition_pursuit,
+    )
+    from oppos.storage.db import get_pursuit_events
+
+    sid = opp.get("source_id", "")
+    k = f"pp_{sid}"
+
+    # ── Status strip ────────────────────────────────────────────
+    due_raw = pursuit.get("submission_deadline") or opp.get("response_deadline")
+    dleft = days_until(due_raw)
+    done, total = checklist_progress(pursuit)
+    if dleft is None:
+        due_txt, due_cls = "No deadline set", "pp-warn"
+    elif dleft < 0:
+        due_txt, due_cls = f"Overdue by {-dleft}d", "pp-bad"
+    elif dleft == 0:
+        due_txt, due_cls = "Due today", "pp-bad"
+    else:
+        due_txt, due_cls = f"Due in {dleft}d", "pp-bad" if dleft <= 3 else "pp-warn" if dleft <= 7 else "pp-ok"
+    reg_status = pursuit.get("registration_status") or "unknown"
+    reg_cls = {"registered": "pp-ok", "not_required": "pp-ok", "in_progress": "pp-warn", "not_registered": "pp-bad"}.get(reg_status, "")
+    links = []
+    npid = pursuit.get("notion_page_id") or opp.get("notion_page_id")
+    if npid:
+        links.append(f'<a href="https://notion.so/{str(npid).replace("-", "")}" target="_blank">Notion ↗</a>')
+    if pursuit.get("slack_channel_id"):
+        links.append(f'<a href="{channel_url(pursuit["slack_channel_id"])}" target="_blank">#{_esc(pursuit.get("slack_channel_name") or "slack")} ↗</a>')
+    if opp.get("url"):
+        links.append(f'<a href="{_esc(opp["url"])}" target="_blank">Listing ↗</a>')
+    from oppos.pursuits import stage_label as _stage_lbl, release_claim as _release_claim
+    owner = pursuit.get("owner_name") or pursuit.get("owner_email") or "Unassigned"
+    _stage = pursuit.get("status") or "active"
+    st.markdown(
+        f'<div class="pp-strip"><span class="pp-owner">👤 {_esc(owner)}</span>'
+        f'<span class="pp-pill {"pp-ok" if _stage == "active" else ""}">{_esc(_stage_lbl(_stage))}</span>'
+        f'<span class="pp-pill {due_cls}">{due_txt}</span>'
+        f'<span class="pp-pill {reg_cls}">{_esc(REGISTRATION_LABELS.get(reg_status, reg_status))}</span>'
+        f'<span class="pp-pill">Checklist {done}/{total}</span>'
+        + (f'<span class="pp-pill">Next: {_esc(pursuit["next_action"][:60])}</span>' if pursuit.get("next_action") else "")
+        + f'<span class="pp-links">{"".join(links)}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Details ─────────────────────────────────────────────────
+    with st.expander("Pursuit details"):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            owner_email = st.text_input("Owner email", value=pursuit.get("owner_email") or "", key=f"{k}_owner")
+            owner_name = st.text_input("Owner name", value=pursuit.get("owner_name") or "", key=f"{k}_owner_name")
+        with c2:
+            sub_dl = st.date_input("Submission deadline", value=deadline_date(due_raw), key=f"{k}_sub", format="YYYY-MM-DD")
+            qa_dl = st.date_input("Questions deadline", value=deadline_date(pursuit.get("qa_deadline")), key=f"{k}_qa", format="YYYY-MM-DD")
+        with c3:
+            _m = pursuit.get("submission_method") or "unknown"
+            method = st.selectbox("Submission method", SUBMISSION_METHODS,
+                                  index=SUBMISSION_METHODS.index(_m) if _m in SUBMISSION_METHODS else 0, key=f"{k}_method")
+            reg = st.selectbox("Vendor registration", REGISTRATION_STATUSES,
+                               index=REGISTRATION_STATUSES.index(reg_status) if reg_status in REGISTRATION_STATUSES else 0,
+                               format_func=lambda v: REGISTRATION_LABELS.get(v, v), key=f"{k}_reg")
+        next_action = st.text_input("Next action", value=pursuit.get("next_action") or "", key=f"{k}_next",
+                                    placeholder="e.g. Submit questions by Friday; confirm vendor registration with ops")
+        if st.button("Save details", key=f"{k}_save", use_container_width=True):
+            save_pursuit_fields(
+                sid, CURRENT_USER,
+                owner_email=owner_email.strip().lower() or None, owner_name=owner_name.strip() or None,
+                submission_deadline=sub_dl.isoformat() if sub_dl else None,
+                qa_deadline=qa_dl.isoformat() if qa_dl else None,
+                submission_method=method, registration_status=reg, next_action=next_action.strip() or None,
+            )
+            st.rerun()
+
+    # ── Checklist (write-through) ──────────────────────────────
+    with st.expander(f"Checklist  ·  {done}/{total}", expanded=done < total):
+        state = checklist_state(pursuit)
+        cols = st.columns(3)
+        new_state = {}
+        for i, (key, label) in enumerate(CHECKLIST):
+            with cols[i % 3]:
+                new_state[key] = st.checkbox(label, value=state[key], key=f"{k}_ck_{key}")
+        if new_state != state:
+            save_pursuit_fields(sid, CURRENT_USER, checklist_json=_json.dumps(new_state))
+            st.rerun()
+
+    # ── Actions ────────────────────────────────────────────────
+    if _stage == "evaluating":
+        e1, e2, e3 = st.columns([1, 1, 3])
+        with e1:
+            if st.button("🎯 Start pursuing", key=f"{k}_start", use_container_width=True, type="primary"):
+                _pursue_opportunity(opp, reason=pursuit.get("reason") or "")
+                st.rerun()
+        with e2:
+            if st.button("Release", key=f"{k}_release", use_container_width=True):
+                _release_claim(opp, CURRENT_USER)
+                st.rerun()
+        with e3:
+            st.caption("Claimed for evaluation. Start pursuing to create the Notion page and Slack channel and begin reminders.")
+    a1, a2, a3, a4, a5 = st.columns(5)
+    with a1:
+        if npid:
+            if st.button("🔄 Re-push Notion", key=f"{k}_repush", use_container_width=True):
+                _push_to_notion(opp)
+        else:
+            if st.button("📝 Push to Notion", key=f"{k}_push", use_container_width=True):
+                _push_to_notion(opp)
+    with a2:
+        with st.popover("📋 Salesforce Opp", use_container_width=True):
+            st.code(build_sdr_message(opp), language=None)
+            st.caption("Copy and paste to the SDR channel to get the Salesforce opportunity created.")
+    with a3:
+        with st.popover("📨 Submitted", use_container_width=True):
+            sub_note = st.text_input("Submission note", key=f"{k}_sub_note", placeholder="Submitted via portal, confirmation #…")
+            if st.button("Confirm submitted", key=f"{k}_sub_go", use_container_width=True):
+                transition_pursuit(opp, "submitted", CURRENT_USER, sub_note)
+                st.rerun()
+    with a4:
+        with st.popover("🏁 Won / Lost", use_container_width=True):
+            outcome = st.radio("Outcome", ["won", "lost"], horizontal=True, key=f"{k}_outcome")
+            out_note = st.text_input("Notes", key=f"{k}_out_note", placeholder="Award details, competitor, debrief…")
+            if st.button("Record outcome", key=f"{k}_out_go", use_container_width=True):
+                transition_pursuit(opp, outcome, CURRENT_USER, out_note)
+                st.rerun()
+    with a5:
+        with st.popover("Abandon", use_container_width=True):
+            ab_reason = st.text_input("Why?", key=f"{k}_ab_reason", placeholder="Timeline too tight, requirements changed…")
+            if st.button("Confirm abandon", key=f"{k}_ab_go", type="primary", use_container_width=True):
+                transition_pursuit(opp, "abandoned", CURRENT_USER, ab_reason)
+                st.rerun()
+
+    # ── Activity ───────────────────────────────────────────────
+    with st.expander("Activity"):
+        events = get_pursuit_events(sid, limit=40)
+        if not events:
+            st.caption("No activity yet.")
+        for ev in events:
+            ts = str(ev.get("ts") or "")[:16].replace("T", " ")
+            st.markdown(f'<div class="pp-event">{_esc(ts)} · <b>{_esc(str(ev.get("kind") or ""))}</b> · '
+                        f'{_esc(str(ev.get("actor") or ""))} — {_esc(str(ev.get("detail") or ""))}</div>', unsafe_allow_html=True)
+
+
 # --- Pipeline tab (new opportunities) ---
 with tab_pipeline:
     col_f1, col_f2, col_f3 = st.columns(3)
@@ -1671,6 +1922,10 @@ with tab_pipeline:
 
     rows = get_all_scored(min_score=min_score)
     rows = [r for r in rows if (r.get("pipeline_status") or "new") == "new"]
+    _hide_claimed = st.checkbox("Hide RFPs claimed by teammates", value=True, key="pipe_hide_claimed")
+    if _hide_claimed:
+        rows = [r for r in rows if r["source_id"] not in OPEN_PURSUITS
+                or (OPEN_PURSUITS[r["source_id"]].get("owner_email") or "").lower() == CURRENT_USER["email"]]
 
     if source_filter:
         rows = [r for r in rows if r.get("source") in source_filter]
@@ -1869,60 +2124,73 @@ with tab_expiring:
                     st.rerun()
         st.markdown("---")
 
-# --- In Progress tab ---
+# --- Pursuits tab (active pursuits, mine or team) ---
 with tab_in_progress:
-    ip_rows = get_by_pipeline_status("in_progress")
-    st.markdown(f'<div style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 16px;"><strong>{len(ip_rows)}</strong> in progress</div>', unsafe_allow_html=True)
+    from oppos.storage.db import add_pursuit_event, create_pursuit, get_opps_by_ids, list_pursuits
 
-    if not ip_rows:
-        render_empty("No RFPs in progress. Click 'Pursue' on a Qualified opportunity to start working it -- this pushes to Notion and alerts the team on Slack.")
-    for opp in ip_rows:
-        render_card(opp, "ip")
-        ip_sid = opp.get("source_id", "")
+    from oppos.pursuits import OPEN_STAGES, board_rows
+    _active = list_pursuits(status=OPEN_STAGES)
+    _mine = [p for p in _active if (p.get("owner_email") or "").lower() == CURRENT_USER["email"]]
+    _vc1, _vc2 = st.columns([1, 3])
+    with _vc1:
+        _view = st.radio("View", ["Mine", "Team"], horizontal=True, label_visibility="collapsed",
+                         index=0 if _mine else 1, key="pursuit_view")
+    _rows_p = _mine if _view == "Mine" else _active
+    with _vc2:
+        st.markdown(
+            f'<div style="color: var(--text-tertiary); font-size: 14px; padding-top: 6px;">'
+            f'<strong>{len(_rows_p)}</strong> active pursuit{"s" if len(_rows_p) != 1 else ""}'
+            + (f' &middot; <strong>{len(_mine)}</strong> mine' if _view == "Team" else "") + "</div>",
+            unsafe_allow_html=True,
+        )
 
-        ip_c1, ip_c2, ip_c3 = st.columns([1, 1, 1])
+    # In-progress RFPs from before pursuit tracking existed — adopt them into the new model.
+    _have = {p["source_id"] for p in _active}
+    _orphans = [o for o in get_by_pipeline_status("in_progress") if o["source_id"] not in _have]
+    if _orphans:
+        _oc1, _oc2 = st.columns([3, 1])
+        _oc1.info(f"{len(_orphans)} in-progress RFP(s) predate pursuit tracking and have no owner yet.")
+        if _oc2.button("Adopt as mine", key="adopt_orphans", use_container_width=True):
+            for o in _orphans:
+                create_pursuit(o["source_id"], owner_email=CURRENT_USER["email"], owner_name=CURRENT_USER["name"],
+                               lob=o.get("lob"), reason=o.get("pipeline_notes") or "Adopted from In Progress",
+                               status="active", submission_deadline=(o.get("response_deadline") or "")[:10] or None,
+                               portal=o.get("source"), notion_page_id=o.get("notion_page_id"), created_by=CURRENT_USER["email"])
+                add_pursuit_event(o["source_id"], CURRENT_USER["email"], "adopted", "Adopted from legacy In Progress")
+            st.rerun()
 
-        # Push to Notion
-        with ip_c1:
-            notion_page_id = opp.get("notion_page_id") or ""
-            if notion_page_id:
-                st.markdown(
-                    f'<a href="https://notion.so/{notion_page_id.replace("-", "")}" target="_blank" '
-                    f'style="color: var(--accent-gold); font-size: 13px;">📝 Open in Notion</a>',
-                    unsafe_allow_html=True,
-                )
-                if st.button("🔄 Re-push to Notion", key=f"repush_notion_{ip_sid}", use_container_width=True):
-                    _push_to_notion(opp)
-            else:
-                if st.button("📝 Push to Notion", key=f"push_notion_{ip_sid}", use_container_width=True):
-                    _push_to_notion(opp)
+    _opps_by_id = get_opps_by_ids([p["source_id"] for p in _rows_p])
 
-        # SDR message for Salesforce opp creation
-        with ip_c2:
-            from oppos.outputs.slack_alerts import build_sdr_message
-            with st.popover("📋 Salesforce Opp", use_container_width=True):
-                sdr_msg = build_sdr_message(opp)
-                st.code(sdr_msg, language=None)
-                st.markdown(
-                    '<div style="font-size: 11px; color: var(--text-tertiary);">'
-                    'Copy the message above and paste it to the SDRs for Salesforce opp creation. '
-                    'Also sent to Slack when you clicked Pursue.</div>',
-                    unsafe_allow_html=True,
-                )
+    # Team board — the shared "what is being worked on" report
+    if _rows_p:
+        import html as _html
+        _board = board_rows(_rows_p, _opps_by_id)
+        _b = ['<table class="health-table"><tr><th>Owner</th><th>Stage</th><th>LOB</th><th>RFP</th><th>Agency</th>'
+              '<th>Due</th><th>Checklist</th><th>Last activity</th></tr>']
+        for r in _board:
+            dl = r["days_left"]
+            due_cls = "" if dl is None else ("pp-bad" if dl <= 3 else "pp-warn" if dl <= 7 else "")
+            due_txt = _html.escape(r["due"]) + (f" ({dl}d)" if dl is not None and dl >= 0 else " (overdue)" if dl is not None else "")
+            title = _html.escape(r["title"][:70])
+            link = f'<span class="board-link"><a href="{_html.escape(r["url"])}" target="_blank">{title}</a></span>' if r["url"] else title
+            _b.append(f"<tr><td>{_html.escape(r['owner'])}</td><td>{_html.escape(r['stage'])}</td><td>{_html.escape(r['lob'])}</td>"
+                      f"<td>{link}</td><td>{_html.escape(r['agency'][:40])}</td><td><span class=\"{due_cls}\">{due_txt}</span></td>"
+                      f"<td>{r['checklist']}</td><td class=\"health-note\">{_html.escape(r['last_activity'])}</td></tr>")
+        _b.append("</table>")
+        with st.expander(f"Team board  ·  {len(_board)} in flight", expanded=(_view == "Team")):
+            st.markdown("".join(_b), unsafe_allow_html=True)
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-        # Abandon button
-        with ip_c3:
-            with st.popover("Abandon", use_container_width=True):
-                abandon_reason = st.text_input(
-                    "Why are we abandoning this?",
-                    key=f"abandon_reason_{ip_sid}",
-                    placeholder="Timeline too tight, requirements changed, lost to competitor",
-                )
-                if st.button("Confirm Abandon", key=f"confirm_abandon_{ip_sid}", type="primary", use_container_width=True):
-                    from oppos.outputs.slack_alerts import send_abandon_alert
-                    set_pipeline_status(ip_sid, "lost", notes=abandon_reason or "Abandoned after pursuit")
-                    send_abandon_alert(opp, reason=abandon_reason or "")
-                    st.rerun()
+    if not _rows_p:
+        render_empty("No active pursuits" + (" of yours" if _view == "Mine" else "")
+                     + ". Click 'Grab' on any card to claim it, then 'Start pursuing' to commit -- "
+                       "you become the owner, it gets a Slack channel and a Notion page, and reminders start.")
+    for _p in _rows_p:
+        _opp = _opps_by_id.get(_p["source_id"])
+        if not _opp:
+            continue
+        render_card(_opp, "ip")
+        _render_pursuit_panel(_opp, _p)
         st.markdown("---")
 
 # --- Submitted tab ---

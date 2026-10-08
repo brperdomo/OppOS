@@ -167,9 +167,69 @@ _CREATE_HEALTH_SQL = """
     )
 """
 
+_CREATE_PURSUITS_SQL = """
+    CREATE TABLE IF NOT EXISTS pursuits (
+        source_id TEXT PRIMARY KEY,
+        owner_email TEXT,
+        owner_name TEXT,
+        lob TEXT,
+        reason TEXT,
+        status TEXT DEFAULT 'active',
+        qa_deadline TEXT,
+        submission_deadline TEXT,
+        submission_method TEXT DEFAULT 'unknown',
+        portal TEXT,
+        registration_status TEXT DEFAULT 'unknown',
+        checklist_json TEXT,
+        next_action TEXT,
+        notion_page_id TEXT,
+        slack_channel_id TEXT,
+        slack_channel_name TEXT,
+        created_by TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        closed_at TEXT
+    )
+"""
+
+_CREATE_PURSUIT_EVENTS_SQL = """
+    CREATE TABLE IF NOT EXISTS pursuit_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id TEXT NOT NULL,
+        ts TEXT DEFAULT CURRENT_TIMESTAMP,
+        actor TEXT,
+        kind TEXT,
+        detail TEXT
+    )
+"""
+
+_CREATE_REGISTRATIONS_SQL = """
+    CREATE TABLE IF NOT EXISTS portal_registrations (
+        portal TEXT PRIMARY KEY,
+        display_name TEXT,
+        status TEXT DEFAULT 'unknown',
+        vendor_id TEXT,
+        login_owner TEXT,
+        lead_time_days INTEGER,
+        url TEXT,
+        notes TEXT,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+"""
+
+_CREATE_REMINDERS_SQL = """
+    CREATE TABLE IF NOT EXISTS reminders_sent (
+        source_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        sent_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (source_id, kind)
+    )
+"""
+
 _MIGRATIONS = [
     "ALTER TABLE opportunities ADD COLUMN attachment_text TEXT",
     "ALTER TABLE opportunities ADD COLUMN lob TEXT",
+    "ALTER TABLE opportunities ADD COLUMN submitted_by TEXT",
 ]
 
 
@@ -177,6 +237,10 @@ def init_db() -> None:
     _execute(_CREATE_TABLE_SQL)
     _execute(_CREATE_META_SQL)
     _execute(_CREATE_HEALTH_SQL)
+    _execute(_CREATE_PURSUITS_SQL)
+    _execute(_CREATE_PURSUIT_EVENTS_SQL)
+    _execute(_CREATE_REGISTRATIONS_SQL)
+    _execute(_CREATE_REMINDERS_SQL)
     for migration in _MIGRATIONS:
         try:
             _execute(migration)
@@ -465,3 +529,148 @@ def get_lob_counts(statuses: tuple[str, ...] = ("new", "qualified", "expiring_so
         tuple(statuses),
     )
     return {r["lob"]: int(r["n"]) for r in rows}
+
+
+# ---------------------------------------------------------------------------
+# Pursuits
+# ---------------------------------------------------------------------------
+
+_PURSUIT_FIELDS = (
+    "owner_email", "owner_name", "lob", "reason", "status", "qa_deadline", "submission_deadline",
+    "submission_method", "portal", "registration_status", "checklist_json", "next_action",
+    "notion_page_id", "slack_channel_id", "slack_channel_name", "created_by", "closed_at",
+)
+
+
+def create_pursuit(source_id: str, **fields: Any) -> None:
+    cols = ["source_id"] + [k for k in fields if k in _PURSUIT_FIELDS]
+    vals: list[Any] = [source_id] + [fields[k] for k in cols[1:]]
+    placeholders = ", ".join("?" for _ in cols)
+    _execute(
+        f"INSERT INTO pursuits ({', '.join(cols)}) VALUES ({placeholders}) "
+        f"ON CONFLICT(source_id) DO UPDATE SET " +
+        ", ".join(f"{c} = excluded.{c}" for c in cols[1:]) + ", updated_at = CURRENT_TIMESTAMP",
+        tuple(vals),
+    )
+
+
+def update_pursuit(source_id: str, **fields: Any) -> None:
+    sets = [f"{k} = ?" for k in fields if k in _PURSUIT_FIELDS]
+    if not sets:
+        return
+    params: list[Any] = [fields[k] for k in fields if k in _PURSUIT_FIELDS]
+    params.append(source_id)
+    _execute(
+        f"UPDATE pursuits SET {', '.join(sets)}, updated_at = CURRENT_TIMESTAMP WHERE source_id = ?",
+        tuple(params),
+    )
+
+
+def get_pursuit(source_id: str) -> dict[str, Any] | None:
+    rows = _query("SELECT * FROM pursuits WHERE source_id = ?", (source_id,))
+    return rows[0] if rows else None
+
+
+def list_pursuits(status: str | tuple[str, ...] | None = "active", owner_email: str | None = None) -> list[dict[str, Any]]:
+    where, params = [], []
+    if status:
+        statuses = (status,) if isinstance(status, str) else tuple(status)
+        where.append(f"status IN ({', '.join('?' for _ in statuses)})"); params.extend(statuses)
+    if owner_email:
+        where.append("LOWER(owner_email) = ?"); params.append(owner_email.lower())
+    sql = "SELECT * FROM pursuits"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY COALESCE(submission_deadline, '9999') ASC, created_at DESC"
+    return _query(sql, tuple(params))
+
+
+def add_pursuit_event(source_id: str, actor: str, kind: str, detail: str = "") -> None:
+    _execute(
+        "INSERT INTO pursuit_events (source_id, ts, actor, kind, detail) VALUES (?, ?, ?, ?, ?)",
+        (source_id, datetime.utcnow().isoformat(), actor or "", kind, (detail or "")[:1000]),
+    )
+
+
+def get_pursuit_events(source_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    return _query(
+        "SELECT * FROM pursuit_events WHERE source_id = ? ORDER BY ts DESC LIMIT ?",
+        (source_id, int(limit)),
+    )
+
+
+def last_pursuit_activity(source_id: str) -> str | None:
+    rows = _query("SELECT MAX(ts) AS ts FROM pursuit_events WHERE source_id = ?", (source_id,))
+    return rows[0]["ts"] if rows and rows[0].get("ts") else None
+
+
+def get_opps_by_ids(source_ids: list[str]) -> dict[str, dict[str, Any]]:
+    if not source_ids:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(source_ids), 100):  # keep statements small for the HTTP API
+        chunk = source_ids[i:i + 100]
+        placeholders = ", ".join("?" for _ in chunk)
+        for r in _query(f"SELECT * FROM opportunities WHERE source_id IN ({placeholders})", tuple(chunk)):
+            out[r["source_id"]] = r
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Portal registrations
+# ---------------------------------------------------------------------------
+
+_REG_FIELDS = ("display_name", "status", "vendor_id", "login_owner", "lead_time_days", "url", "notes")
+
+
+def list_portal_registrations() -> list[dict[str, Any]]:
+    return _query("SELECT * FROM portal_registrations ORDER BY display_name ASC")
+
+
+def get_portal_registration(portal: str) -> dict[str, Any] | None:
+    rows = _query("SELECT * FROM portal_registrations WHERE portal = ?", (portal,))
+    return rows[0] if rows else None
+
+
+def upsert_portal_registration(portal: str, **fields: Any) -> None:
+    cols = ["portal"] + [k for k in fields if k in _REG_FIELDS]
+    vals: list[Any] = [portal] + [fields[k] for k in cols[1:]]
+    _execute(
+        f"INSERT INTO portal_registrations ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)}) "
+        f"ON CONFLICT(portal) DO UPDATE SET " +
+        ", ".join(f"{c} = excluded.{c}" for c in cols[1:]) + ", updated_at = CURRENT_TIMESTAMP",
+        tuple(vals),
+    )
+
+
+def seed_portal_registrations(sources: list[tuple[str, str]]) -> int:
+    """Insert an 'unknown' row for every source that has none. Returns rows added."""
+    existing = {r["portal"] for r in list_portal_registrations()}
+    added = 0
+    for key, name in sources:
+        if key not in existing:
+            _execute(
+                "INSERT OR IGNORE INTO portal_registrations (portal, display_name, status) VALUES (?, ?, 'unknown')",
+                (key, name),
+            )
+            added += 1
+    return added
+
+
+# ---------------------------------------------------------------------------
+# Reminders
+# ---------------------------------------------------------------------------
+
+def reminder_sent(source_id: str, kind: str) -> bool:
+    return bool(_query("SELECT 1 FROM reminders_sent WHERE source_id = ? AND kind = ?", (source_id, kind)))
+
+
+def mark_reminder_sent(source_id: str, kind: str) -> None:
+    _execute(
+        "INSERT OR IGNORE INTO reminders_sent (source_id, kind, sent_at) VALUES (?, ?, ?)",
+        (source_id, kind, datetime.utcnow().isoformat()),
+    )
+
+
+def set_submitted_by(source_id: str, email: str) -> None:
+    _execute("UPDATE opportunities SET submitted_by = ? WHERE source_id = ?", (email, source_id))
