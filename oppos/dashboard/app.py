@@ -1943,11 +1943,11 @@ def page_pool() -> None:
     """, unsafe_allow_html=True)
 
 
-    _expiring_count = status_counts.get('expiring_soon', 0)
-    _expired_count = status_counts.get('expired', 0)
-    _archive_count = status_counts.get('won', 0) + status_counts.get('lost', 0) + status_counts.get('skipped', 0)
-    _pool_new = len(_unclaimed([r for r in all_rows if (r.get("pipeline_status") or "new") == "new"])[0])
-    _pool_qual = len(_unclaimed([r for r in all_rows if r.get("pipeline_status") == "qualified"])[0])
+    def _pool_count(*statuses: str) -> int:
+        return len(_unclaimed([r for r in all_rows if (r.get("pipeline_status") or "new") in statuses])[0])
+    _pool_new, _pool_qual = _pool_count("new"), _pool_count("qualified")
+    _expiring_count, _expired_count = _pool_count("expiring_soon"), _pool_count("expired")
+    _archive_count = _pool_count("won", "lost", "skipped")
     tab_pipeline, tab_qualified, tab_expiring, tab_archive, tab_expired = st.tabs([
         f"Pipeline ({_pool_new})",
         f"Qualified ({_pool_qual})",
@@ -2170,9 +2170,9 @@ def page_pool() -> None:
 
     # --- Archive tab (won, lost, skipped) ---
     with tab_archive:
-        won_rows = get_by_pipeline_status("won")
-        lost_rows = get_by_pipeline_status("lost")
-        skipped_rows = get_by_pipeline_status("skipped")
+        won_rows = _unclaimed(get_by_pipeline_status("won"))[0]
+        lost_rows = _unclaimed(get_by_pipeline_status("lost"))[0]
+        skipped_rows = _unclaimed(get_by_pipeline_status("skipped"))[0]
         archive_rows = won_rows + lost_rows + skipped_rows
         st.markdown(f'<div style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 16px;"><strong>{len(won_rows)}</strong> won &middot; <strong>{len(lost_rows)}</strong> lost &middot; <strong>{len(skipped_rows)}</strong> skipped</div>', unsafe_allow_html=True)
 
@@ -2189,11 +2189,11 @@ def page_pool() -> None:
 
     # --- Expired tab ---
     with tab_expired:
-        expired_rows = get_by_pipeline_status("expired")
+        expired_rows, _claimed_x = _unclaimed(get_by_pipeline_status("expired"))
         expired_rows.sort(key=lambda r: r.get("response_deadline") or "", reverse=True)
         st.markdown(
             f'<div style="color: var(--accent-red); font-size: 14px; margin-bottom: 16px;">'
-            f'<strong>{len(expired_rows)}</strong> expired — deadline passed before action was taken</div>',
+            f'<strong>{len(expired_rows)}</strong> expired — deadline passed before action was taken{_claimed_note(_claimed_x)}</div>',
             unsafe_allow_html=True,
         )
 
@@ -2254,20 +2254,29 @@ def page_desk() -> None:
             + "</div>", unsafe_allow_html=True,
         )
 
-    # Legacy in-progress RFPs with no pursuit record — adopt them into the model.
+    # Legacy in-progress / submitted RFPs with no pursuit record — surface them and let someone adopt.
     _have = {p["source_id"] for p in all_p}
-    _orphans = [o for o in _db.get_by_pipeline_status("in_progress") if o["source_id"] not in _have]
-    if _orphans and _view == "Team":
-        _oc1, _oc2 = st.columns([3, 1])
-        _oc1.info(f"{len(_orphans)} in-progress RFP(s) predate pursuit tracking and have no owner yet.")
-        if _oc2.button("Adopt as mine", key="adopt_orphans", use_container_width=True):
-            for o in _orphans:
-                create_pursuit(o["source_id"], owner_email=me, owner_name=CURRENT_USER["name"], lob=o.get("lob"),
-                               reason=o.get("pipeline_notes") or "Adopted from In Progress", status="active",
-                               submission_deadline=(o.get("response_deadline") or "")[:10] or None,
-                               portal=o.get("source"), notion_page_id=o.get("notion_page_id"), created_by=me)
-                add_pursuit_event(o["source_id"], me, "adopted", "Adopted from legacy In Progress")
-            st.rerun()
+    _orphans = {
+        "active": [o for o in _db.get_by_pipeline_status("in_progress") if o["source_id"] not in _have],
+        "submitted": [o for o in _db.get_by_pipeline_status("submitted") if o["source_id"] not in _have],
+    }
+    _n_orphans = sum(len(v) for v in _orphans.values())
+    if _n_orphans:
+        if _view == "Team":
+            _oc1, _oc2 = st.columns([3, 1])
+            _oc1.info(f"{_n_orphans} RFP(s) were marked in progress or submitted before pursuit tracking existed and have no owner. "
+                      "They are listed in their stage below; adopt them to manage them from your desk.")
+            if _oc2.button("Adopt all as mine", key="adopt_orphans", use_container_width=True):
+                for stage, items in _orphans.items():
+                    for o in items:
+                        create_pursuit(o["source_id"], owner_email=me, owner_name=CURRENT_USER["name"], lob=o.get("lob"),
+                                       reason=o.get("pipeline_notes") or f"Adopted from legacy {stage}", status=stage,
+                                       submission_deadline=(o.get("response_deadline") or "")[:10] or None,
+                                       portal=o.get("source"), notion_page_id=o.get("notion_page_id"), created_by=me)
+                        add_pursuit_event(o["source_id"], me, "adopted", f"Adopted from legacy {o.get('pipeline_status')}")
+                st.rerun()
+        else:
+            st.caption(f"{_n_orphans} unowned legacy item(s) — switch to Team to see or adopt them.")
 
     # Team board — the shared "what is being worked on" report
     if open_p:
@@ -2288,7 +2297,7 @@ def page_desk() -> None:
             st.markdown("".join(_b), unsafe_allow_html=True)
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    if not any(by_stage.values()):
+    if not any(by_stage.values()) and not (_view == "Team" and _n_orphans):
         render_empty("Nothing on your desk yet. Go to Find RFPs and click 'Grab' on anything worth evaluating -- "
                      "it lands here as Claimed; 'Start pursuing' creates the Notion page and Slack channel and starts reminders.")
         return
@@ -2300,9 +2309,10 @@ def page_desk() -> None:
     ]
     for stage, title, hint in _sections:
         items = by_stage[stage]
-        if not items:
+        legacy = _orphans.get(stage, []) if _view == "Team" else []
+        if not items and not legacy:
             continue
-        st.markdown(f'<div class="detail-label" style="margin:18px 0 4px;font-size:12px;">{title} · {len(items)}</div>'
+        st.markdown(f'<div class="detail-label" style="margin:18px 0 4px;font-size:12px;">{title} · {len(items) + len(legacy)}</div>'
                     f'<div style="color: var(--text-tertiary); font-size: 12px; margin-bottom: 10px;">{hint}</div>', unsafe_allow_html=True)
         for p_ in items:
             o = opps.get(p_["source_id"])
@@ -2310,6 +2320,10 @@ def page_desk() -> None:
                 continue
             render_card(o, "desk", show_status_controls=False)
             _render_pursuit_panel(o, p_)
+            st.markdown("---")
+        for o in legacy:
+            st.caption("Unowned legacy item — adopt above to manage it from a desk, or record its outcome with Update Status.")
+            render_card(o, "desk")  # plain status controls stay available for outcomes
             st.markdown("---")
 
     closed = by_stage["closed"]
