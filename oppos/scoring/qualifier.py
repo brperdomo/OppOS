@@ -411,6 +411,14 @@ _SPECULATIVE_RISK_RE = re.compile(
     r"|\bcannot be (confirmed|verified|determined)\b",
     re.I,
 )
+# A tight deadline is never a risk (scoring rule); the model occasionally writes one anyway.
+_DEADLINE_RISK_RE = re.compile(
+    r"\b(deadline|due date|response (window|period|time|timeline)|turnaround|time ?frame|timeline|submission window|days? (to|until) (respond|submit|the deadline))\b"
+    r".{0,80}\b(tight|short|compressed|aggressive|limited|insufficient|little time|only \d+ (business |calendar )?days|\d+ (business |calendar )?days (away|out|remaining|left)|constrain|pressure|risk)"
+    r"|\b(tight|short|compressed|aggressive|limited) (response |submission )?(deadline|window|timeline|time ?frame|turnaround)\b"
+    r"|\bonly \d+ (business |calendar )?days\b|\b\d+ (business |calendar )?days? (remain|remaining|left|until|before|away|to (respond|submit|prepare))\b",
+    re.I,
+)
 # Conditional wording is speculation when the model wrote it, but a stated condition the RFP
 # itself spells out ("cloud hosting would require FedRAMP High") is a real requirement — such a
 # claim is kept when its evidence quotes the condition.
@@ -464,17 +472,18 @@ def evidence_in_text(evidence: str, corpus: str) -> bool:
     return True
 
 
-_NON_EVIDENCE_LINES = ("title:", "url:")
+# Metadata our own prompt builder writes: a title proves the topic, a URL often carries the title as a
+# slug, an agency name proves who is buying and a deadline value proves when — none states a requirement.
+_NON_EVIDENCE_LINES = ("title:", "url:", "agency:", "response deadline:")
 # Values _build_opportunity_text writes when a field is missing; they are ours, not the RFP's.
 _PLACEHOLDER_VALUES = {"n/a", "na", "none", "null", "tbd", "unknown", "not specified", "not stated", "not provided", ""}
 _METADATA_LINE_RE = re.compile(r"^(agency|notice type|naics|set-aside|classification code|place of performance|response deadline):\s*(.*)$", re.I)
 
 
 def _body_without_title(corpus: str) -> str:
-    """The opportunity text minus its Title and URL lines and any placeholder-valued metadata line.
-
-    A title proves the topic, not a requirement, a procurement URL often carries the title as a
-    slug, and "Set-Aside: N/A" is our own filler — none of them can ground a risk.
+    """The opportunity text minus the Title / URL / Agency / Response Deadline lines and any
+    placeholder-valued metadata line — see _NON_EVIDENCE_LINES. The same words still ground a
+    risk when they occur in the description or attachments.
     """
     kept = []
     for line in (corpus or "").splitlines():
@@ -510,7 +519,7 @@ def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "",
                 ungrounded = not evidence_in_text(ev, body)
             elif title_n and (ev_n == title_n or ev_n in title_n):
                 ungrounded = True  # no text to check against: a title-only quote proves nothing
-        speculative = bool(_SPECULATIVE_RISK_RE.search(claim))
+        speculative = bool(_SPECULATIVE_RISK_RE.search(claim)) or bool(_DEADLINE_RISK_RE.search(claim))
         if not speculative and _CONDITIONAL_RISK_RE.search(claim):
             # Model-written condition → speculation; RFP-quoted condition → stated requirement.
             speculative = not _CONDITIONAL_RISK_RE.search(ev)
