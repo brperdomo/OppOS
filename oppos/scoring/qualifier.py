@@ -413,24 +413,41 @@ def _norm_text(t: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (t or "").lower()).strip()
 
 
-_SHINGLE = 6  # consecutive normalised words that must appear verbatim in the RFP
+_ELLIPSIS_RE = re.compile(r"\.{3}|…|\[\s*\.{3}\s*\]|\[…\]")
+_MIN_SEGMENT_WORDS = 3
 
 
 def evidence_in_text(evidence: str, corpus: str) -> bool:
-    """True when the quote genuinely occurs in the RFP text (whitespace/punctuation/case-insensitive).
+    """True when the COMPLETE quote genuinely occurs in the RFP text.
 
-    Short quotes must match exactly; longer ones may differ slightly at the edges, so any
-    run of `_SHINGLE` consecutive words from the quote found verbatim in the corpus counts.
+    Matching is case/punctuation/whitespace-insensitive. A quote may use an ellipsis to skip
+    words ("intake ... audit trails"); then every segment (≥ 3 words each) must occur in the
+    corpus, in order. No partial-fragment credit: six matching words do not make an invented
+    tail acceptable.
     """
-    ev_n, corpus_n = _norm_text(evidence), _norm_text(corpus)
-    if not ev_n or not corpus_n:
+    corpus_n = _norm_text(corpus)
+    if not corpus_n:
         return False
-    if ev_n in corpus_n:
-        return True
-    words = ev_n.split()
-    if len(words) < _SHINGLE + 2:
+    segments = [_norm_text(seg) for seg in _ELLIPSIS_RE.split(evidence or "")]
+    segments = [seg for seg in segments if seg]
+    if not segments:
         return False
-    return any(" ".join(words[i:i + _SHINGLE]) in corpus_n for i in range(len(words) - _SHINGLE + 1))
+    if len(segments) == 1:
+        return segments[0] in corpus_n
+    pos = 0
+    for seg in segments:
+        if len(seg.split()) < _MIN_SEGMENT_WORDS:
+            return False
+        found = corpus_n.find(seg, pos)
+        if found < 0:
+            return False
+        pos = found + len(seg)
+    return True
+
+
+def _body_without_title(corpus: str) -> str:
+    """The opportunity text minus its Title line, so a title-only quote can be told apart from a body quote."""
+    return "\n".join(line for line in (corpus or "").splitlines() if not line.lower().startswith("title:"))
 
 
 def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "",
@@ -443,12 +460,17 @@ def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "",
     """
     kept: list[dict[str, str]] = []
     title_n = _norm_text(title)
+    body = _body_without_title(corpus) if corpus is not None else None
     for r in risks:
         claim, ev = r.get("claim", ""), (r.get("evidence") or "").strip()
         ev_n = _norm_text(ev)
-        ungrounded = (not ev) or ev.lower() == "inferred" or (title_n and (ev_n == title_n or ev_n in title_n))
-        if not ungrounded and corpus is not None:
-            ungrounded = not evidence_in_text(ev, corpus)
+        ungrounded = (not ev) or ev.lower() == "inferred"
+        if not ungrounded:
+            if body is not None:
+                # With the RFP text available, the quote must occur in the body (not merely in the title).
+                ungrounded = not evidence_in_text(ev, body)
+            elif title_n and (ev_n == title_n or ev_n in title_n):
+                ungrounded = True  # no text to check against: a title-only quote proves nothing
         speculative = bool(_SPECULATIVE_RISK_RE.search(claim))
         if ungrounded or speculative:
             gap = claim.rstrip(".")

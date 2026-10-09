@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import oppos.config  # noqa: F401
-from oppos.scoring.qualifier import _ground_risks
+from oppos.scoring.qualifier import _build_opportunity_text, _ground_risks
 from oppos.scoring.schema import normalize_points
 from oppos.storage.db import _execute, _query, init_db
 
@@ -31,7 +31,7 @@ def main() -> None:
     args = ap.parse_args()
     init_db()
 
-    rows = _query("SELECT source_id, title, description, attachment_text, stage2_json FROM opportunities WHERE stage2_json IS NOT NULL AND stage2_json != ''")
+    rows = _query("SELECT * FROM opportunities WHERE stage2_json IS NOT NULL AND stage2_json != ''")
     touched = moved = legacy = 0
     examples: list[str] = []
     for r in rows:
@@ -45,7 +45,7 @@ def main() -> None:
             continue
         risks = normalize_points(raw_risks)
         gaps = [str(g).strip() for g in (s2.get("knowledge_gaps") or []) if str(g).strip()]
-        corpus = "\n".join(str(r.get(k) or "") for k in ("title", "description", "attachment_text"))
+        corpus = _build_opportunity_text(r, str(r.get("attachment_text") or ""))  # same text the live scorer validated against
         kept, new_gaps = _ground_risks(risks, list(gaps), title=str(r.get("title") or ""), corpus=corpus)
         n_moved = len(risks) - len(kept)
         if not n_moved:
