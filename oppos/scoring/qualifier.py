@@ -400,16 +400,24 @@ def _tier_for(score: int) -> int:
 # only an RFI", "market research phase, no award") is context, never a risk — but a requirement an
 # RFI states ("the RFI mandates an Oracle Forms integration") is still a risk when quoted.
 _SPECULATIVE_RISK_RE = re.compile(
-    r"\b(may|might|could|likely|possibly|potentially|probably)\s+(require|need|involve|include|expect|be)\b"
-    r"|\bnot (confirmed|stated|specified|named|yet)\b|\bunknown\b|\bunclear\b|\bneeds? (investigation|verification|confirmation)\b"
+    r"\bnot (confirmed|stated|specified|named|yet)\b|\bunknown\b|\bunclear\b|\bneeds? (investigation|verification|confirmation)\b"
     r"|\bno (direct|named|known|existing)?\s*(customer|parole|public[- ]sector|vertical)?\s*reference\b"
     r"|\bnot a (named|proven|listed) (vertical|pattern|industry)\b"
     r"|\b(this|it) is (only |just |merely )?(an? |the )?(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b"
     r"|\b(only|just|merely) (an? |the )?(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b"
     r"|\b(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b.{0,60}"
-    r"\b(rather than|not (a|an) (solicitation|rfp|procurement|bid)|no (award|contract|guarantee|formal)|not yet|may not (result|lead)|stage|phase|informational)\b"
+    r"\b(rather than|not (a|an) (solicitation|rfp|procurement|bid|commitment)|no (award|contract|guarantee|formal|obligation)|not yet"
+    r"|may not (result|lead)|will not result|stage|phase|informational?|planning purposes|budgetary|does not (commit|obligate|constitute|guarantee))\b"
+    r"|\bcannot be (confirmed|verified|determined)\b",
+    re.I,
+)
+# Conditional wording is speculation when the model wrote it, but a stated condition the RFP
+# itself spells out ("cloud hosting would require FedRAMP High") is a real requirement — such a
+# claim is kept when its evidence quotes the condition.
+_CONDITIONAL_RISK_RE = re.compile(
+    r"\b(may|might|could|likely|possibly|potentially|probably)\s+(require|need|involve|include|expect|be)\b"
     r"|\bif (the|a|an|this|any|future)\b.*\b(require|mandate|demand|need)"
-    r"|\bwould (need|require)\b|\bcannot be (confirmed|verified|determined)\b",
+    r"|\bwould (need|require)\b",
     re.I,
 )
 
@@ -503,6 +511,9 @@ def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "",
             elif title_n and (ev_n == title_n or ev_n in title_n):
                 ungrounded = True  # no text to check against: a title-only quote proves nothing
         speculative = bool(_SPECULATIVE_RISK_RE.search(claim))
+        if not speculative and _CONDITIONAL_RISK_RE.search(claim):
+            # Model-written condition → speculation; RFP-quoted condition → stated requirement.
+            speculative = not _CONDITIONAL_RISK_RE.search(ev)
         if ungrounded or speculative:
             gap = claim.rstrip(".")
             if gap and gap not in gaps and gap not in demoted:
@@ -565,8 +576,8 @@ def _stage2_failure(lob: LOB, message: str) -> dict[str, Any]:
         "lob": lob.key,
         "industry": "",
         "strengths": [],
-        "risks": [{"claim": "Scoring failed — manual review needed", "evidence": "inferred"}],
-        "knowledge_gaps": [],
+        "risks": [],  # a diagnostic is not an RFP risk — the grounding invariant holds for failures too
+        "knowledge_gaps": ["Scoring failed — manual review needed"],
         "competitive_notes": "",
         "recommended_action": "investigate",
         "summary": message,
