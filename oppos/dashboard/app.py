@@ -7,6 +7,7 @@ Run with:
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1681,6 +1682,39 @@ def render_empty(message: str) -> None:
     """, unsafe_allow_html=True)
 
 
+def _run_draft(opp: dict, pursuit: dict) -> None:
+    """Stage 3: draft the response for a pursued RFP, store it, note it in Slack."""
+    from oppos.drafting import compliance_status, draft_response
+    from oppos.outputs import slack_pursuits as sp
+    from oppos.storage.db import add_pursuit_event, save_draft
+
+    sid = opp.get("source_id", "")
+    title = opp.get("title", "Untitled")
+    comp = compliance_status()
+    with st.status(f"Drafting response: {title[:50]}…", expanded=True) as status:
+        att = opp.get("attachment_text") or ""
+        st.write(f"📄 Using the RFP description" + (f" and {len(att):,} characters of attachment text" if att else " — no attachments loaded (load them first for a better draft)"))
+        st.write("🔒 Compliance source: " + ("approved" if comp["approved"] else "not approved — security items will read [SECURITY TO CONFIRM]"))
+        try:
+            draft = draft_response(opp, attachment_text=att)
+        except Exception as e:
+            status.update(label="Draft failed", state="error")
+            st.error(f"Drafting failed: {e}")
+            return
+        save_draft(sid, draft)
+        add_pursuit_event(sid, CURRENT_USER.get("email", ""), "drafted",
+                          f"{draft['stats']['requirements']} requirements, {draft['stats']['needs_human']} need a human")
+        try:
+            sp.post_pursuit_update(pursuit.get("slack_channel_id"),
+                                   f"✍️ Response draft ready for *{title[:100]}* — {draft['stats']['requirements']} requirements, "
+                                   f"{draft['stats']['high_confidence']} high confidence, {draft['stats']['needs_human']} need a human. "
+                                   f"Review it on My desk, then append it to Notion.")
+        except Exception as e:
+            logging.getLogger(__name__).info("Slack draft notice failed: %s", e)
+        status.update(label="Draft ready ✓", state="complete")
+        st.write(f"✓ {draft['stats']['requirements']} requirements drafted" + (" (output was truncated — raise DRAFT_MAX_TOKENS)" if draft.get("truncated") else ""))
+
+
 def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
     """Workspace for one active pursuit: status strip, details, checklist, actions, activity."""
     import json as _json
@@ -1831,6 +1865,70 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
 
     else:
         st.caption(f"Actions are available to the owner ({owner}) and admins.")
+
+    # ── Response draft (Stage 3) ───────────────────────────────
+    from oppos.storage.db import add_pursuit_event as _add_event, get_draft as _get_draft
+    _draft = _get_draft(sid)
+    dc1, dc2, dc3 = st.columns([1, 1, 3])
+    if can_edit:
+        with dc1:
+            if st.button("✍️ Regenerate draft" if _draft else "✍️ Draft response", key=f"{k}_draft", use_container_width=True,
+                         help="Extracts every requirement in the RFP and drafts an answer per item from the LOB profile (and docs when Kapa is configured)."):
+                _run_draft(opp, pursuit)
+                st.rerun()
+        with dc2:
+            if _draft and npid:
+                if st.button("📝 Append to Notion", key=f"{k}_draft_notion", use_container_width=True):
+                    from oppos.outputs.notion_sync import append_response_draft
+                    if append_response_draft(str(npid), _draft):
+                        _add_event(sid, CURRENT_USER.get("email", ""), "draft_notion", "Draft appended to Notion page")
+                        st.success("Draft appended to the Notion page")
+                    else:
+                        st.error("Notion append failed — check NOTION_TOKEN and the page")
+    with dc3:
+        if _draft:
+            _cs = _draft.get("compliance_source") or {}
+            st.caption(f"Draft {str(_draft.get('generated_at', ''))[:16].replace('T', ' ')} UTC · "
+                       f"{_draft['stats']['requirements']} requirements · {_draft['stats']['high_confidence']} high confidence · "
+                       f"{_draft['stats']['needs_human']} need a human · compliance "
+                       + ("approved" if _cs.get("approved") else "not approved → [SECURITY TO CONFIRM]"))
+        else:
+            st.caption("No response draft yet." + (" Load attachments first for the best result." if not opp.get("attachment_text") else ""))
+    if _draft:
+        _reqs = _draft.get("requirements") or []
+        with st.expander(f"Response draft  ·  {len(_reqs)} requirements"):
+            if _draft.get("executive_summary"):
+                st.markdown('<div class="detail-label">Executive summary (draft)</div>', unsafe_allow_html=True)
+                st.write(_draft["executive_summary"])
+            if _draft.get("win_themes"):
+                st.markdown('<div class="detail-label" style="margin-top:8px;">Win themes</div>', unsafe_allow_html=True)
+                st.write(" · ".join(_draft["win_themes"]))
+            _sub = _draft.get("submission") or {}
+            st.caption(f"{_draft.get('rfp_type', '')} · submission {_sub.get('method', 'unknown')} · deadline {_sub.get('deadline', 'unknown')}"
+                       + (" · " + "; ".join(_sub.get("format_requirements", [])[:3]) if _sub.get("format_requirements") else ""))
+            for r in _reqs:
+                _conf_cls = {"high": "pp-ok", "medium": "pp-warn", "low": "pp-bad"}.get(r.get("confidence"), "")
+                _basis = ", ".join(r.get("basis") or [])
+                st.markdown(
+                    f'<div class="pp-strip" style="margin-top:14px;"><span class="pp-owner">{_esc(r["id"])}'
+                    + (f' · {_esc(r["section"])}' if r.get("section") else "") + "</span>"
+                    f'<span class="pp-pill">{_esc(r["category"].replace("_", " "))}</span>'
+                    f'<span class="pp-pill {_conf_cls}">{_esc(r["confidence"])} confidence</span>'
+                    f'<span class="pp-pill">{_esc(_basis)}</span></div>'
+                    f'<div class="evidence-quote" style="margin-left:0;">{_esc(r.get("text", ""))}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.write(r.get("response", ""))
+                if r.get("human_todo"):
+                    st.markdown(f'<div class="gap-item">? {_esc(r["human_todo"])}</div>', unsafe_allow_html=True)
+                if r.get("sources"):
+                    st.caption("Sources: " + "; ".join(r["sources"][:4]))
+            for _title, _key in (("Open questions for Q&A", "open_questions"), ("Assumptions", "assumptions"), ("Do not claim", "do_not_claim")):
+                _items = _draft.get(_key) or []
+                if _items:
+                    st.markdown(f'<div class="detail-label" style="margin-top:14px;">{_title}</div>', unsafe_allow_html=True)
+                    for x in _items:
+                        st.markdown(f'<div class="gap-item">• {_esc(x)}</div>', unsafe_allow_html=True)
 
     # ── Activity ───────────────────────────────────────────────
     with st.expander("Activity"):
@@ -2447,6 +2545,11 @@ def page_admin() -> None:
                 st.success(f"Saved {_changed} change(s)")
                 st.rerun()
 
+    from oppos.drafting import compliance_status as _compliance_status
+    _comp = _compliance_status()
+    st.caption("Compliance answers source (oppos/drafting/compliance.md): "
+               + (f"approved v{_comp['version']} by {_comp['approved_by']} on {_comp['approved_at']}" if _comp["approved"]
+                  else "NOT approved — response drafts mark every security/certification item [SECURITY TO CONFIRM] until the security team fills it in and sets approved: true."))
     if not CURRENT_USER.get("is_admin"):
         st.caption("Settings and portal registrations are available to admins (OPPOS_ADMINS).")
 

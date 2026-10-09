@@ -479,3 +479,56 @@ def update_pipeline_status(source_id: str, status: str, notes: str = "") -> bool
     except Exception as e:
         logger.error("Notion status update failed for '%s': %s", source_id, e)
         return False
+
+
+def append_response_draft(page_id: str, draft: dict[str, Any]) -> bool:
+    """Append the AI draft to an existing Notion page under its own heading."""
+    if not page_id:
+        return False
+    client = _get_client()
+    children: list[dict] = [
+        _divider(),
+        _heading(2, "Response Draft (AI — needs review)"),
+        _paragraph(
+            f"Generated {draft.get('generated_at', '')[:16].replace('T', ' ')} UTC by OppOS ({draft.get('model', '')}). "
+            f"{draft['stats']['requirements']} requirements · {draft['stats']['high_confidence']} high confidence · "
+            f"{draft['stats']['needs_human']} need a human. Compliance source "
+            + ("approved v" + str(draft['compliance_source'].get('version')) if draft['compliance_source'].get('approved') else "NOT approved — all security items marked [SECURITY TO CONFIRM]")
+            + ". Review every answer before it leaves the building."
+        ),
+    ]
+    sub = draft.get("submission") or {}
+    children.append(_paragraph(f"RFP type: {draft.get('rfp_type', '')} · Submission: {sub.get('method', 'unknown')} · Deadline: {sub.get('deadline', 'unknown')}"))
+    for f in sub.get("format_requirements") or []:
+        children.append(_bullet(f"Format: {f}"))
+    if draft.get("executive_summary"):
+        children.append(_heading(3, "Executive summary (draft)"))
+        children.extend(_text_to_blocks(draft["executive_summary"], max_chars=8000))
+    if draft.get("win_themes"):
+        children.append(_heading(3, "Win themes"))
+        children += [_bullet(t) for t in draft["win_themes"]]
+    children.append(_heading(3, "Requirements and draft responses"))
+    for r in draft.get("requirements") or []:
+        label = f"{r['id']}" + (f" · {r['section']}" if r.get("section") else "") + f" · {r['category'].replace('_', ' ')}"
+        children.append(_heading(3, _truncate(label, 100)))
+        children.append(_paragraph(_truncate("Requirement: " + r.get("text", ""), 2000)))
+        children.extend(_text_to_blocks(r.get("response", ""), max_chars=6000))
+        meta = f"Confidence: {r['confidence']} · Basis: {', '.join(r['basis'])}"
+        if r.get("sources"):
+            meta += " · Sources: " + "; ".join(r["sources"][:4])
+        if r.get("human_todo"):
+            meta += f" · TODO: {r['human_todo']}"
+        children.append(_paragraph(_truncate(meta, 2000)))
+    for title, key in (("Open questions for Q&A", "open_questions"), ("Assumptions", "assumptions"), ("Do not claim", "do_not_claim")):
+        items = draft.get(key) or []
+        if items:
+            children.append(_heading(3, title))
+            children += [_bullet(x) for x in items]
+    try:
+        for i in range(0, len(children), 100):
+            client.blocks.children.append(block_id=page_id, children=children[i:i + 100])
+        logger.info("Appended response draft to Notion page %s (%d blocks)", page_id, len(children))
+        return True
+    except Exception as e:
+        logger.error("Notion draft append failed: %s", e)
+        return False

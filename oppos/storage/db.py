@@ -230,6 +230,8 @@ _MIGRATIONS = [
     "ALTER TABLE opportunities ADD COLUMN attachment_text TEXT",
     "ALTER TABLE opportunities ADD COLUMN lob TEXT",
     "ALTER TABLE opportunities ADD COLUMN submitted_by TEXT",
+    "ALTER TABLE pursuits ADD COLUMN draft_json TEXT",
+    "ALTER TABLE pursuits ADD COLUMN drafted_at TEXT",
 ]
 
 
@@ -539,6 +541,7 @@ _PURSUIT_FIELDS = (
     "owner_email", "owner_name", "lob", "reason", "status", "qa_deadline", "submission_deadline",
     "submission_method", "portal", "registration_status", "checklist_json", "next_action",
     "notion_page_id", "slack_channel_id", "slack_channel_name", "created_by", "closed_at",
+    "draft_json", "drafted_at",
 )
 
 
@@ -735,3 +738,17 @@ def archive_sources(sources: list[str], note: str = "Source excluded") -> int:
         (note, datetime.utcnow().isoformat(), *sources),
     )
     return n
+
+
+def save_draft(source_id: str, draft: dict[str, Any]) -> None:
+    update_pursuit(source_id, draft_json=json.dumps(draft, ensure_ascii=False), drafted_at=datetime.utcnow().isoformat())
+
+
+def get_draft(source_id: str) -> dict[str, Any] | None:
+    p = get_pursuit(source_id)
+    if not p or not p.get("draft_json"):
+        return None
+    try:
+        return json.loads(p["draft_json"])
+    except (TypeError, json.JSONDecodeError):
+        return None
