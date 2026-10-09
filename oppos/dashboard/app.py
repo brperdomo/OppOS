@@ -1700,7 +1700,7 @@ def _run_draft(opp: dict, pursuit: dict) -> None:
         # Dogfood: Nutrient Data Extraction API maps the RFP PDFs to a requirements schema with page citations.
         extracted = None
         att_dir = ATTACHMENTS_DIR / sid
-        pdfs = sorted(att_dir.glob("*.pdf")) if att_dir.is_dir() else []
+        pdfs = sorted(f for f in att_dir.iterdir() if f.is_file() and f.suffix.lower() == ".pdf") if att_dir.is_dir() else []
         if pdfs:
             from oppos.drafting.extraction import extract_rfp_requirements, extraction_available
             if extraction_available():
