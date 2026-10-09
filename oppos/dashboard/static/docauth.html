@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Response document</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #fff; }
+  body { display: flex; flex-direction: column; }
+  /* The SDK draws its own toolbar at the top of the editor; ours sits underneath the page. */
+  .bar { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-top: 1px solid #e5e7eb; background: #f9fafb; flex: 0 0 auto; }
+  .bar button { padding: 6px 12px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px; }
+  .bar button:hover { background: #f3f4f6; }
+  .bar button:disabled { opacity: .5; cursor: default; }
+  .status { margin-left: auto; font-size: 12px; color: #6b7280; }
+  #editor { flex: 1 1 auto; min-height: 0; position: relative; }
+</style></head>
+<body>
+<div id="editor"></div>
+<div class="bar">
+  <button id="docx" disabled>⬇ DOCX</button>
+  <button id="pdf" disabled>⬇ PDF</button>
+  <button id="pdfa" disabled>⬇ PDF/A</button>
+  <span class="status" id="status">Loading Nutrient Document Authoring…</span>
+</div>
+<script>
+(async () => {
+  const status = document.getElementById('status');
+  // Payload (markdown, file stem, license key, SDK version) arrives in the URL fragment as URL-safe base64 JSON:
+  // the fragment never leaves the browser, and this page has the app's real hostname for license validation.
+  let cfg;
+  try {
+    const b64 = location.hash.slice(1).replace(/-/g, '+').replace(/_/g, '/');
+    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    cfg = JSON.parse(new TextDecoder().decode(bytes));
+  } catch (e) { status.textContent = 'No document payload: ' + e.message; return; }
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://document-authoring.cdn.nutrient.io/releases/document-authoring-' + cfg.version + '-umd.js';
+    s.onload = resolve; s.onerror = () => reject(new Error('could not load the Document Authoring SDK from the CDN'));
+    document.head.appendChild(s);
+  }).catch(e => { status.textContent = e.message; throw e; });
+  try {
+    let system, licenseNote = '';
+    if (cfg.licenseKey) {
+      try {
+        system = await DocAuth.createDocAuthSystem({ licenseKey: cfg.licenseKey });
+      } catch (e) {
+        // A rejected key (wrong domain, expired) must not leave a dead panel: fall back to the evaluation
+        // build (watermarked exports) and say why, so the license can be fixed in Licensor.
+        const msg = String(e && e.message || e);
+        const m = msg.match(/registered for a different bundle identifier: "([^"]*)" does not match "([^"]*)"/);
+        licenseNote = m ? 'license is bound to ' + m[1].replace(/[\^$\\]/g, '') + ', this page is ' + (m[2] || location.hostname)
+                        : 'license rejected: ' + msg.split('\n')[0].slice(0, 160);
+        console.warn('Document Authoring license rejected, using the evaluation build:', msg);
+      }
+    }
+    if (!system) system = await DocAuth.createDocAuthSystem({});
+    const doc = await system.import(new TextEncoder().encode(cfg.md), { format: 'markdown', fileName: cfg.stem + '.md' });
+    const editor = await system.createEditor(document.getElementById('editor'), { document: doc });
+    const save = async (format, ext, mime, extra) => {
+      status.textContent = 'Exporting ' + ext.toUpperCase() + '…';
+      try {
+        const buf = await editor.currentDocument().export(Object.assign({ format }, extra || {}));
+        const url = URL.createObjectURL(new Blob([buf], { type: mime }));
+        const a = document.createElement('a'); a.href = url; a.download = cfg.stem + '.' + ext; a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+        status.textContent = ext.toUpperCase() + ' downloaded';
+      } catch (e) { status.textContent = 'Export failed: ' + (e && e.message || e); }
+    };
+    document.getElementById('docx').onclick = () => save('docx', 'docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    document.getElementById('pdf').onclick = () => save('pdf', 'pdf', 'application/pdf');
+    document.getElementById('pdfa').onclick = () => save('pdf', 'pdf', 'application/pdf', { PDF_A: true });
+    for (const id of ['docx', 'pdf', 'pdfa']) document.getElementById(id).disabled = false;
+    status.textContent = licenseNote ? 'Ready (evaluation build, watermarked — ' + licenseNote + ')'
+                       : cfg.licenseKey ? 'Ready · licensed for ' + location.hostname
+                       : 'Ready (evaluation build — exports carry a watermark until DOCAUTH_LICENSE_KEY is set)';
+  } catch (e) {
+    status.textContent = 'Could not start the editor: ' + (e && e.message || e);
+  }
+})();
+</script>
+</body></html>

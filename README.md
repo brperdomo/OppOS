@@ -37,7 +37,7 @@ to pursue RFPs under your own identity while developing.
 | `SLACK_WEBHOOK_URL` | Fallback alerts when no bot token |
 | `SLACK_BOT_TOKEN` | Enables channel-per-pursuit, invites, pins, digest, reminders (see Slack app below) |
 | `NUTRIENT_API_KEY` | OCR / document processing for attachments |
-| `DOCAUTH_LICENSE_KEY` | Optional. Nutrient Document Authoring SDK license for the in-app response editor and DOCX / PDF export; without it the evaluation build adds a watermark |
+| `DOCAUTH_LICENSE_KEY` | Optional. Nutrient Document Authoring SDK license for the in-app response editor and DOCX / PDF export; without it (or if the key is rejected) the evaluation build adds a watermark. Web keys are bound to the hostname — register `nutrient-opp-os.streamlit.app` and `localhost` in Licensor. The editor page is served from `oppos/dashboard/static/` (`server.enableStaticServing` in `.streamlit/config.toml`) so the iframe carries the real hostname |
 | `KAPA_MCP_URL`, `KAPA_API_KEY` | Optional. Kapa hosted MCP server (`https://<subdomain>.mcp.kapa.ai`) + project API key: Stage 2 can search Nutrient docs to confirm capability claims and cites `doc: <url>` in evidence. Falls back to ungrounded scoring on error |
 
 ### GitHub repository variables (`vars`)
