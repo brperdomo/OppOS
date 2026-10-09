@@ -396,14 +396,18 @@ def _tier_for(score: int) -> int:
 
 
 # Risks written in these terms are speculation about what the RFP does not say — they belong in
-# knowledge_gaps, however the model labelled them. Procurement stage (RFI, market research, sources
-# sought) is always context, never a risk, so those terms match unconditionally.
+# knowledge_gaps, however the model labelled them. A claim *about* the procurement stage ("this is
+# only an RFI", "market research phase, no award") is context, never a risk — but a requirement an
+# RFI states ("the RFI mandates an Oracle Forms integration") is still a risk when quoted.
 _SPECULATIVE_RISK_RE = re.compile(
     r"\b(may|might|could|likely|possibly|potentially|probably)\s+(require|need|involve|include|expect|be)\b"
     r"|\bnot (confirmed|stated|specified|named|yet)\b|\bunknown\b|\bunclear\b|\bneeds? (investigation|verification|confirmation)\b"
     r"|\bno (direct|named|known|existing)?\s*(customer|parole|public[- ]sector|vertical)?\s*reference\b"
     r"|\bnot a (named|proven|listed) (vertical|pattern|industry)\b"
-    r"|\b(rfi|rfis|request for information|market research|sources[- ]sought|pre[- ]solicitation|procurement (stage|phase))\b"
+    r"|\b(this|it) is (only |just |merely )?(an? |the )?(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b"
+    r"|\b(only|just|merely) (an? |the )?(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b"
+    r"|\b(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b.{0,60}"
+    r"\b(rather than|not (a|an) (solicitation|rfp|procurement|bid)|no (award|contract|guarantee|formal)|not yet|may not (result|lead)|stage|phase|informational)\b"
     r"|\bif (the|a|an|this|any|future)\b.*\b(require|mandate|demand|need)"
     r"|\bwould (need|require)\b|\bcannot be (confirmed|verified|determined)\b",
     re.I,
@@ -485,6 +489,7 @@ def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "",
     RFP text is available — quotes something that does not occur in that text.
     """
     kept: list[dict[str, str]] = []
+    demoted: list[str] = []
     title_n = _norm_text(title)
     body = _body_without_title(corpus) if corpus is not None else None
     for r in risks:
@@ -500,11 +505,20 @@ def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "",
         speculative = bool(_SPECULATIVE_RISK_RE.search(claim))
         if ungrounded or speculative:
             gap = claim.rstrip(".")
-            if gap and gap not in gaps:
-                gaps.append(gap)
+            if gap and gap not in gaps and gap not in demoted:
+                demoted.append(gap)
         else:
             kept.append(r)
-    return kept, gaps
+    # Demoted claims lead the list so a cap on knowledge gaps can never silently drop them.
+    return kept, demoted + [g for g in gaps if g not in demoted]
+
+
+MAX_GAPS = 12
+
+
+def cap_gaps(gaps: list[str], n_demoted: int) -> list[str]:
+    """Cap knowledge gaps at MAX_GAPS without ever cutting the demoted risks at the front."""
+    return gaps[:max(MAX_GAPS, n_demoted)]
 
 
 def _normalize_stage2(result: dict[str, Any], lob: LOB, title: str = "", corpus: str | None = None) -> dict[str, Any]:
@@ -514,8 +528,9 @@ def _normalize_stage2(result: dict[str, Any], lob: LOB, title: str = "", corpus:
     out["strengths"] = normalize_points(out.get("strengths"))
     gaps_raw = out.get("knowledge_gaps") or []
     gaps = [str(g).strip()[:200] for g in gaps_raw if str(g).strip()] if isinstance(gaps_raw, list) else []
-    out["risks"], gaps = _ground_risks(normalize_points(out.get("risks")), gaps, title=title, corpus=corpus)
-    out["knowledge_gaps"] = gaps[:12]
+    risks_in = normalize_points(out.get("risks"))
+    out["risks"], gaps = _ground_risks(risks_in, gaps, title=title, corpus=corpus)
+    out["knowledge_gaps"] = cap_gaps(gaps, len(risks_in) - len(out["risks"]))
 
     try:
         score = int(round(float(out.get("fit_score", 0) or 0)))

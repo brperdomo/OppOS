@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import oppos.config  # noqa: F401
-from oppos.scoring.qualifier import _build_opportunity_text, _ground_risks
+from oppos.scoring.qualifier import _build_opportunity_text, _ground_risks, cap_gaps
 from oppos.scoring.schema import normalize_points
 from oppos.storage.db import _execute, _query, init_db
 
@@ -45,7 +45,15 @@ def main() -> None:
             continue
         risks = normalize_points(raw_risks)
         gaps = [str(g).strip() for g in (s2.get("knowledge_gaps") or []) if str(g).strip()]
-        corpus = _build_opportunity_text(r, str(r.get("attachment_text") or ""))  # same text the live scorer validated against
+        opp = dict(r)
+        if not opp.get("classification_code"):
+            # Not a column — live scoring saw it from the source record, so recover it from raw_json.
+            try:
+                raw = json.loads(r.get("raw_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                raw = {}
+            opp["classification_code"] = (raw.get("classificationCode") or raw.get("classification_code") or "") if isinstance(raw, dict) else ""
+        corpus = _build_opportunity_text(opp, str(r.get("attachment_text") or ""))  # same text the live scorer validated against
         kept, new_gaps = _ground_risks(risks, list(gaps), title=str(r.get("title") or ""), corpus=corpus)
         n_moved = len(risks) - len(kept)
         if not n_moved:
@@ -55,7 +63,7 @@ def main() -> None:
         if len(examples) < 5:
             examples.append(next(x["claim"] for x in risks if x not in kept)[:110])
         if args.apply:
-            s2["risks"], s2["knowledge_gaps"] = kept, new_gaps[:12]
+            s2["risks"], s2["knowledge_gaps"] = kept, cap_gaps(new_gaps, n_moved)
             _execute("UPDATE opportunities SET stage2_json = ? WHERE source_id = ?",
                      (json.dumps(s2, ensure_ascii=False), r["source_id"]))
 
