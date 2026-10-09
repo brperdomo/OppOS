@@ -674,3 +674,64 @@ def mark_reminder_sent(source_id: str, kind: str) -> None:
 
 def set_submitted_by(source_id: str, email: str) -> None:
     _execute("UPDATE opportunities SET submitted_by = ? WHERE source_id = ?", (email, source_id))
+
+
+# ---------------------------------------------------------------------------
+# Settings: excluded sources
+# ---------------------------------------------------------------------------
+
+_EXCLUDED_KEY = "excluded_sources"
+
+
+def get_excluded_sources() -> list[str]:
+    raw = get_meta(_EXCLUDED_KEY)
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return sorted({str(x) for x in data if x})
+
+
+def set_excluded_sources(sources: list[str]) -> None:
+    set_meta(_EXCLUDED_KEY, json.dumps(sorted({s for s in sources if s})))
+
+
+def list_sources_in_db() -> list[tuple[str, int]]:
+    """Distinct source keys present in opportunities with their row counts."""
+    rows = _query("SELECT source, COUNT(*) AS n FROM opportunities GROUP BY source ORDER BY n DESC")
+    return [(r["source"], int(r["n"])) for r in rows if r.get("source")]
+
+
+def count_active_by_sources(sources: list[str]) -> int:
+    if not sources:
+        return 0
+    ph = ", ".join("?" for _ in sources)
+    rows = _query(
+        f"""SELECT COUNT(*) AS n FROM opportunities
+            WHERE source IN ({ph}) AND pipeline_status IN ('new', 'qualified', 'expiring_soon')
+              AND source_id NOT IN (SELECT source_id FROM pursuits WHERE status IN ('evaluating', 'active'))""",
+        tuple(sources),
+    )
+    return int(rows[0]["n"]) if rows else 0
+
+
+def archive_sources(sources: list[str], note: str = "Source excluded") -> int:
+    """Move every still-active, unclaimed row from these sources to skipped. Returns rows changed.
+
+    Opportunities with an open pursuit (claimed or pursuing) are left alone — the
+    owner is working them regardless of where they were found.
+    """
+    if not sources:
+        return 0
+    n = count_active_by_sources(sources)
+    ph = ", ".join("?" for _ in sources)
+    _execute(
+        f"""UPDATE opportunities
+            SET pipeline_status = 'skipped', pipeline_notes = ?, pipeline_updated_at = ?
+            WHERE source IN ({ph}) AND pipeline_status IN ('new', 'qualified', 'expiring_soon')
+              AND source_id NOT IN (SELECT source_id FROM pursuits WHERE status IN ('evaluating', 'active'))""",
+        (note, datetime.utcnow().isoformat(), *sources),
+    )
+    return n

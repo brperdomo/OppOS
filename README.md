@@ -21,7 +21,7 @@ cp .env.example .env            # fill in keys (see "Configuration")
 streamlit run oppos/dashboard/app.py
 ```
 
-Without `[auth]` secrets the app runs as a single local admin user. Set `OPPOS_DEV_USER="Your Name <you@nutrient.io>"`
+Without `[auth]` secrets the app runs as a single local admin user (or set `OPPOS_AUTH_DISABLED=1`, as `.env.local` does, to force dev mode while `[auth]` exists locally). Set `OPPOS_DEV_USER="Your Name <you@nutrient.io>"`
 to pursue RFPs under your own identity while developing.
 
 ## Configuration
@@ -67,6 +67,11 @@ when a pursuit is won/lost/abandoned (`SLACK_ARCHIVE_ON_CLOSE=false` to keep the
 
 ## How SDRs use it
 
+The app has three pages (top navigation): **Find RFPs** (the shared pool — only unclaimed items), **My desk**
+(everything you claimed or are working, grouped Claimed → Pursuing → Submitted → Closed, with a Team toggle), and
+**Admin** (source health, portal registrations, settings).
+
+
 1. **Pipeline** — new, routed and scored RFPs. The chip shows the LOB; a badge shows whether we are registered on that portal.
    Open a card → *Load Attachments* → *Scan & Score* for a deep, evidence-backed assessment; it moves to **Qualified**.
 2. **Qualified / Expiring Soon** — *Pursue* makes you the owner, creates the Notion page and Slack channel, and starts reminders.
@@ -76,6 +81,7 @@ when a pursuit is won/lost/abandoned (`SLACK_ARCHIVE_ON_CLOSE=false` to keep the
    (Push to Notion · Salesforce Opp message · Submitted · Won/Lost · Abandon), and an activity log.
 4. Reminders post to the pursuit channel at T-14/7/3/1, due, overdue, Q&A T-3/T-1, and after 7 idle days.
 5. **Portal registrations** (admins) — keep status / vendor ID / who holds the login / lead time per portal. Never store passwords.
+6. **Settings** (admins) — exclude sources: hidden from every list, skipped by scans, never alerted; one click archives their remaining active items. Use it to retire a source (e.g. an aggregator) without deleting history.
 
 ## Scoring model
 

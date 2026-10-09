@@ -39,6 +39,9 @@ def main() -> None:
     assert not db._use_turso(), "Refusing to seed: Turso is configured. Run with OPPOS_ENV_FILE=.env.local"
     print(f"Seeding {cfg.DB_PATH}")
     db.init_db()
+    for table in ("opportunities", "pursuits", "pursuit_events", "reminders_sent", "source_health",
+                  "portal_registrations", "meta"):
+        db._execute(f"DELETE FROM {table}")  # demo state must be reproducible
 
     due_soon = (date.today() + timedelta(days=5)).isoformat()
     due_later = (date.today() + timedelta(days=24)).isoformat()
@@ -114,6 +117,7 @@ def main() -> None:
     db.record_source_health("kentucky_emars", "eMARS Kentucky (KY)", ok=False, count=0, new=0,
                             error="PlaywrightNotInstalled: cannot render CGI Advantage SPA", duration_s=0.3)
     db.set_meta("last_scan", __import__("datetime").datetime.utcnow().isoformat())
+    db.set_excluded_sources([])  # demo starts with no exclusions
     print("Seeded 3 opportunities, 1 registration, 1 active pursuit, 2 source-health rows.")
 
 

@@ -16,6 +16,7 @@ from oppos.scoring.prefilter import prefilter
 from oppos.scoring.qualifier import qualify
 from oppos.sources.registry import FetchFn, get_enabled_sources
 from oppos.storage.db import (
+    get_excluded_sources,
     init_db,
     is_seen,
     record_source_health,
@@ -61,6 +62,12 @@ def run_scan(
     """
     init_db()
     sources = sources if sources is not None else get_enabled_sources()
+    excluded = set(get_excluded_sources())
+    if excluded:
+        skipped = [name for key, name, _ in sources if key in excluded]
+        sources = [s for s in sources if s[0] not in excluded]
+        if skipped:
+            logger.info("Skipping excluded sources: %s", ", ".join(skipped))
     total = len(sources)
     posted_from = datetime.now() - timedelta(days=days)
 
@@ -138,8 +145,10 @@ def notify_after_scan(stats: dict[str, Any], min_score: int) -> int:
     from oppos.pursuits import OPEN_STAGES, board_rows
     from oppos.storage.db import get_opps_by_ids, get_unnotified, list_pursuits, set_slack_notified
 
+    excluded = set(get_excluded_sources())
     pending = [o for o in get_unnotified(min_score=min_score)
-               if (o.get("pipeline_status") or "new") in _DIGEST_ACTIVE_STATUSES]
+               if (o.get("pipeline_status") or "new") in _DIGEST_ACTIVE_STATUSES
+               and o.get("source") not in excluded]
     notified = 0
 
     if sp.SLACK_ALERT_MODE == "digest":
