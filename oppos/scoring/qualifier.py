@@ -410,7 +410,12 @@ _SPECULATIVE_RISK_RE = re.compile(
 
 
 def _norm_text(t: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", (t or "").lower()).strip()
+    """Lower-case token text. Keeps the symbols that distinguish technology names (C++, C#, .NET,
+    v8.21) while dropping sentence punctuation, so "C++" cannot match "C#" or "C"."""
+    t = (t or "").lower()
+    t = re.sub(r"\.(?=\s|$)", " ", t)          # sentence-ending periods are punctuation, not part of a token
+    t = re.sub(r"[^a-z0-9+#.]+", " ", t)        # keep + # . inside tokens
+    return re.sub(r"\s+", " ", t).strip()
 
 
 _ELLIPSIS_RE = re.compile(r"\.{3}|…|\[\s*\.{3}\s*\]|\[…\]")
