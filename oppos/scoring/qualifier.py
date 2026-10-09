@@ -413,11 +413,33 @@ def _norm_text(t: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (t or "").lower()).strip()
 
 
-def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "") -> tuple[list[dict[str, str]], list[str]]:
+_SHINGLE = 6  # consecutive normalised words that must appear verbatim in the RFP
+
+
+def evidence_in_text(evidence: str, corpus: str) -> bool:
+    """True when the quote genuinely occurs in the RFP text (whitespace/punctuation/case-insensitive).
+
+    Short quotes must match exactly; longer ones may differ slightly at the edges, so any
+    run of `_SHINGLE` consecutive words from the quote found verbatim in the corpus counts.
+    """
+    ev_n, corpus_n = _norm_text(evidence), _norm_text(corpus)
+    if not ev_n or not corpus_n:
+        return False
+    if ev_n in corpus_n:
+        return True
+    words = ev_n.split()
+    if len(words) < _SHINGLE + 2:
+        return False
+    return any(" ".join(words[i:i + _SHINGLE]) in corpus_n for i in range(len(words) - _SHINGLE + 1))
+
+
+def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "",
+                  corpus: str | None = None) -> tuple[list[dict[str, str]], list[str]]:
     """Keep only risks the RFP actually states; demote the rest to knowledge gaps.
 
-    A risk is ungrounded when it has no evidence, says "inferred", or only quotes the
-    opportunity title/agency (a title proves the topic, not a requirement).
+    A risk is ungrounded when it has no evidence, says "inferred", only quotes the
+    opportunity title/agency (a title proves the topic, not a requirement), or — when the
+    RFP text is available — quotes something that does not occur in that text.
     """
     kept: list[dict[str, str]] = []
     title_n = _norm_text(title)
@@ -425,6 +447,8 @@ def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "")
         claim, ev = r.get("claim", ""), (r.get("evidence") or "").strip()
         ev_n = _norm_text(ev)
         ungrounded = (not ev) or ev.lower() == "inferred" or (title_n and (ev_n == title_n or ev_n in title_n))
+        if not ungrounded and corpus is not None:
+            ungrounded = not evidence_in_text(ev, corpus)
         speculative = bool(_SPECULATIVE_RISK_RE.search(claim))
         if ungrounded or speculative:
             gap = claim.rstrip(".")
@@ -435,14 +459,14 @@ def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "")
     return kept, gaps
 
 
-def _normalize_stage2(result: dict[str, Any], lob: LOB, title: str = "") -> dict[str, Any]:
+def _normalize_stage2(result: dict[str, Any], lob: LOB, title: str = "", corpus: str | None = None) -> dict[str, Any]:
     out: dict[str, Any] = dict(lob.extras_defaults)
     out.update(result or {})
     out["lob"] = lob.key
     out["strengths"] = normalize_points(out.get("strengths"))
     gaps_raw = out.get("knowledge_gaps") or []
     gaps = [str(g).strip()[:200] for g in gaps_raw if str(g).strip()] if isinstance(gaps_raw, list) else []
-    out["risks"], gaps = _ground_risks(normalize_points(out.get("risks")), gaps, title=title)
+    out["risks"], gaps = _ground_risks(normalize_points(out.get("risks")), gaps, title=title, corpus=corpus)
     out["knowledge_gaps"] = gaps[:12]
 
     try:
@@ -539,7 +563,7 @@ def stage2_score(
                     out["truncated"] = True
                     return out
                 raise
-            out = _normalize_stage2(result, lob, title=str(opportunity.get("title") or ""))
+            out = _normalize_stage2(result, lob, title=str(opportunity.get("title") or ""), corpus=opp_text)
             if truncated:
                 logger.warning("Stage 2 output truncated at %d tokens for '%s' — raise STAGE2_MAX_TOKENS", max_tokens, title)
                 out["truncated"] = True
