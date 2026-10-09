@@ -694,9 +694,10 @@ with st.spinner("Loading pipeline..."):
     EXCLUDED_SOURCES = set(_get_excluded())
     # Anything that ever had a pursuit record stays visible in its lifecycle/history tabs,
     # so owners can still record outcomes after a source is excluded.
-    # "Released" means back to the pool, so it is not tracked — exclusion applies to it again.
-    TRACKED_IDS = ({p["source_id"] for p in _list_pursuits(status=None) if p.get("status") != "released"}
-                   if EXCLUDED_SOURCES else set())
+    # Anything with a pursuit record (open or closed) lives on a desk, never in the shared pool.
+    # "Released" means back to the pool, so it is not counted here.
+    PURSUED_IDS = {p["source_id"] for p in _list_pursuits(status=None) if p.get("status") != "released"}
+    TRACKED_IDS = PURSUED_IDS if EXCLUDED_SOURCES else set()
 
 # Every list view hides excluded sources, except opportunities that are or were pursued.
 from oppos.storage import db as _db
@@ -994,14 +995,26 @@ def _change_status(opp: dict, new_status: str, notes: str, current_status: str) 
     from oppos.pursuits import release_claim, transition_pursuit
     from oppos.storage.db import get_pursuit
 
+    from oppos.storage.db import add_pursuit_event, update_pursuit
+
     sid = opp.get("source_id", "")
     pursuit = get_pursuit(sid)
     p_status = (pursuit or {}).get("status")
     live = p_status in ("evaluating", "active", "submitted")
+    pursued = bool(pursuit) and p_status != "released"
 
-    if live and not CURRENT_USER.get("is_admin") and (pursuit.get("owner_email") or "").lower() != CURRENT_USER["email"]:
+    if pursued and not CURRENT_USER.get("is_admin") and (pursuit.get("owner_email") or "").lower() != CURRENT_USER["email"]:
         st.error(f"Owned by {pursuit.get('owner_name') or pursuit.get('owner_email')} ({p_status}) — "
                  "only the owner or an admin can change its status.")
+        return
+
+    if pursued and not live:
+        # Closed pursuit (won/lost/abandoned): keep the pursuit record consistent with the new status.
+        mapping = {"won": "won", "lost": "lost", "skipped": "abandoned", "submitted": "submitted", "in_progress": "active"}
+        new_p = mapping.get(new_status, "released")
+        set_pipeline_status(sid, new_status, notes=notes or None)
+        update_pursuit(sid, status=new_p, closed_at=None if new_p in ("submitted", "active") else datetime.utcnow().isoformat())
+        add_pursuit_event(sid, CURRENT_USER.get("email", ""), "status_sync", f"{p_status} → {new_p} via status control: {notes or ''}".strip())
         return
 
     if new_status == "in_progress" and current_status != "in_progress":
@@ -1831,18 +1844,19 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
 
 
 def _unclaimed(rows: list[dict]) -> tuple[list[dict], int]:
-    """Split pool rows into (unclaimed, number hidden because someone holds them).
+    """Split Find-RFPs rows into (shown, number hidden because they belong to a desk).
 
-    The pool is strict about exclusions: a tracked-item exception exists for lifecycle/history
-    views, never for Find RFPs, so an excluded-source row can't be re-claimed from here.
+    Anything with a pursuit record — claimed, pursuing, submitted or closed — is managed from
+    its owner's desk and never rendered (or counted) in the shared pool. The pool is also
+    strict about exclusions, so an excluded-source row can't be re-claimed from here.
     """
     pool = [r for r in rows if r.get("source") not in EXCLUDED_SOURCES]
-    kept = [r for r in pool if r.get("source_id") not in OPEN_PURSUITS]
+    kept = [r for r in pool if r.get("source_id") not in PURSUED_IDS]
     return kept, len(pool) - len(kept)
 
 
 def _claimed_note(n: int) -> str:
-    return f' &middot; <span style="color: var(--text-tertiary);">{n} claimed — see My desk → Team</span>' if n else ""
+    return f' &middot; <span style="color: var(--text-tertiary);">{n} on desks — see My desk → Team</span>' if n else ""
 
 
 def page_pool() -> None:
@@ -2170,11 +2184,12 @@ def page_pool() -> None:
 
     # --- Archive tab (won, lost, skipped) ---
     with tab_archive:
-        won_rows = _unclaimed(get_by_pipeline_status("won"))[0]
-        lost_rows = _unclaimed(get_by_pipeline_status("lost"))[0]
-        skipped_rows = _unclaimed(get_by_pipeline_status("skipped"))[0]
+        won_rows, _h1 = _unclaimed(get_by_pipeline_status("won"))
+        lost_rows, _h2 = _unclaimed(get_by_pipeline_status("lost"))
+        skipped_rows, _h3 = _unclaimed(get_by_pipeline_status("skipped"))
+        _claimed_a = _h1 + _h2 + _h3
         archive_rows = won_rows + lost_rows + skipped_rows
-        st.markdown(f'<div style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 16px;"><strong>{len(won_rows)}</strong> won &middot; <strong>{len(lost_rows)}</strong> lost &middot; <strong>{len(skipped_rows)}</strong> skipped</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 16px;"><strong>{len(won_rows)}</strong> won &middot; <strong>{len(lost_rows)}</strong> lost &middot; <strong>{len(skipped_rows)}</strong> skipped{_claimed_note(_claimed_a)}</div>', unsafe_allow_html=True)
 
         if not archive_rows:
             render_empty("No archived opportunities yet.")
