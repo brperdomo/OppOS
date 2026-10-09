@@ -425,11 +425,12 @@ def evidence_in_text(evidence: str, corpus: str) -> bool:
     corpus, in order. No partial-fragment credit: six matching words do not make an invented
     tail acceptable.
     """
-    corpus_n = _norm_text(corpus)
-    if not corpus_n:
+    # Token-sequence containment: pad with spaces so "ai" cannot match inside "training",
+    # "net" inside "internet", or "c" (from "C++") inside anything.
+    corpus_n = f" {_norm_text(corpus)} "
+    if not corpus_n.strip():
         return False
-    segments = [_norm_text(seg) for seg in _ELLIPSIS_RE.split(evidence or "")]
-    segments = [seg for seg in segments if seg]
+    segments = [f" {_norm_text(seg)} " for seg in _ELLIPSIS_RE.split(evidence or "") if _norm_text(seg)]
     if not segments:
         return False
     if len(segments) == 1:
@@ -441,13 +442,21 @@ def evidence_in_text(evidence: str, corpus: str) -> bool:
         found = corpus_n.find(seg, pos)
         if found < 0:
             return False
-        pos = found + len(seg)
+        pos = found + len(seg) - 1  # segments may share the boundary space
     return True
 
 
+_NON_EVIDENCE_LINES = ("title:", "url:")
+
+
 def _body_without_title(corpus: str) -> str:
-    """The opportunity text minus its Title line, so a title-only quote can be told apart from a body quote."""
-    return "\n".join(line for line in (corpus or "").splitlines() if not line.lower().startswith("title:"))
+    """The opportunity text minus its Title and URL lines.
+
+    A title proves the topic, not a requirement, and a procurement URL often carries the
+    title as a slug — neither can ground a risk.
+    """
+    return "\n".join(line for line in (corpus or "").splitlines()
+                     if not line.strip().lower().startswith(_NON_EVIDENCE_LINES))
 
 
 def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "",
