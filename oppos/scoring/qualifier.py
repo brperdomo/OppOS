@@ -396,13 +396,14 @@ def _tier_for(score: int) -> int:
 
 
 # Risks written in these terms are speculation about what the RFP does not say — they belong in
-# knowledge_gaps, however the model labelled them.
+# knowledge_gaps, however the model labelled them. Procurement stage (RFI, market research, sources
+# sought) is always context, never a risk, so those terms match unconditionally.
 _SPECULATIVE_RISK_RE = re.compile(
     r"\b(may|might|could|likely|possibly|potentially|probably)\s+(require|need|involve|include|expect|be)\b"
     r"|\bnot (confirmed|stated|specified|named|yet)\b|\bunknown\b|\bunclear\b|\bneeds? (investigation|verification|confirmation)\b"
     r"|\bno (direct|named|known|existing)?\s*(customer|parole|public[- ]sector|vertical)?\s*reference\b"
     r"|\bnot a (named|proven|listed) (vertical|pattern|industry)\b"
-    r"|\b(rfi|request for information|market research|sources[- ]sought)\b.*\b(no formal|not yet|unknown|phase)\b"
+    r"|\b(rfi|rfis|request for information|market research|sources[- ]sought|pre[- ]solicitation|procurement (stage|phase))\b"
     r"|\bif (the|a|an|this|any|future)\b.*\b(require|mandate|demand|need)"
     r"|\bwould (need|require)\b|\bcannot be (confirmed|verified|determined)\b",
     re.I,
@@ -452,16 +453,27 @@ def evidence_in_text(evidence: str, corpus: str) -> bool:
 
 
 _NON_EVIDENCE_LINES = ("title:", "url:")
+# Values _build_opportunity_text writes when a field is missing; they are ours, not the RFP's.
+_PLACEHOLDER_VALUES = {"n/a", "na", "none", "null", "tbd", "unknown", "not specified", "not stated", "not provided", ""}
+_METADATA_LINE_RE = re.compile(r"^(agency|notice type|naics|set-aside|classification code|place of performance|response deadline):\s*(.*)$", re.I)
 
 
 def _body_without_title(corpus: str) -> str:
-    """The opportunity text minus its Title and URL lines.
+    """The opportunity text minus its Title and URL lines and any placeholder-valued metadata line.
 
-    A title proves the topic, not a requirement, and a procurement URL often carries the
-    title as a slug — neither can ground a risk.
+    A title proves the topic, not a requirement, a procurement URL often carries the title as a
+    slug, and "Set-Aside: N/A" is our own filler — none of them can ground a risk.
     """
-    return "\n".join(line for line in (corpus or "").splitlines()
-                     if not line.strip().lower().startswith(_NON_EVIDENCE_LINES))
+    kept = []
+    for line in (corpus or "").splitlines():
+        low = line.strip().lower()
+        if low.startswith(_NON_EVIDENCE_LINES):
+            continue
+        m = _METADATA_LINE_RE.match(line.strip())
+        if m and m.group(2).strip().lower() in _PLACEHOLDER_VALUES:
+            continue
+        kept.append(line)
+    return "\n".join(kept)
 
 
 def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "",
@@ -478,7 +490,7 @@ def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "",
     for r in risks:
         claim, ev = r.get("claim", ""), (r.get("evidence") or "").strip()
         ev_n = _norm_text(ev)
-        ungrounded = (not ev) or ev.lower() == "inferred"
+        ungrounded = (not ev) or ev.lower() == "inferred" or ev_n in _PLACEHOLDER_VALUES
         if not ungrounded:
             if body is not None:
                 # With the RFP text available, the quote must occur in the body (not merely in the title).
