@@ -69,6 +69,15 @@ def boilerplate(lob_key: str) -> dict[str, str]:
 # Helpers
 # ---------------------------------------------------------------------------
 
+_UNKNOWN = {"", "unknown", "n/a", "none", "null", "tbd", "not specified"}
+
+
+def _known(value: Any) -> str:
+    """The value unless it is the drafter's 'unknown' sentinel (or similar), so callers can fall back."""
+    s = str(value or "").strip()
+    return "" if s.lower() in _UNKNOWN else s
+
+
 def _cell(text: Any, limit: int = 220) -> str:
     s = re.sub(r"\s+", " ", str(text or "")).strip().replace("|", "\\|")
     return s if len(s) <= limit else s[: limit - 1].rstrip() + "…"
@@ -159,8 +168,8 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
     # Submission details
     w("## Submission details")
     w("")
-    w(f"- **Method:** {sub.get('method') or 'unknown'}")
-    w(f"- **Deadline:** {sub.get('deadline') or opp.get('response_deadline') or 'unknown'}")
+    w(f"- **Method:** {_known(sub.get('method')) or opp.get('submission_method') or 'unknown'}")
+    w(f"- **Deadline:** {_known(sub.get('deadline')) or opp.get('response_deadline') or 'unknown'}")
     for f in sub.get("format_requirements") or []:
         if draft.get("required_forms") and str(f).startswith("Required form/attachment:"):
             continue  # listed once, below
