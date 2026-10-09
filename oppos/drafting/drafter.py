@@ -10,6 +10,7 @@ until then they are marked [SECURITY TO CONFIRM]. Pricing is never invented.
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 import logging
 import os
 import re
@@ -63,7 +64,7 @@ NOT_DRAFTED_MARK = "[NOT DRAFTED]"
 
 # Any sentence making one of these claims is a compliance claim and is gated when compliance.md is unapproved.
 _COMPLIANCE_RE = re.compile(
-    r"\b(SOC ?[123]|ISO ?\d{4,5}|FedRAMP|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|GDPR|CCPA|CJIS|PCI(?:[- ]DSS)?|FIPS(?:[ -]?140)?"
+    r"\b(SOC ?[123]|ISO ?\d{4,5}|FedRAMP|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|GDPR|CCPA|CMMC|ITAR|CJIS|PCI(?:[- ]DSS)?|FIPS(?:[ -]?140)?"
     r"|NIST(?: ?(?:800-53|800-171|CSF))?|IRS ?1075|FERPA|GLBA|SOX|Section ?508|WCAG|VPAT|ACR|penetration[- ]test|pen[- ]test"
     r"|data residency|encrypt(?:ed|ion)(?: at rest| in transit)?|certif(?:ied|ication|icate)s?|accredit(?:ed|ation)|attestation"
     r"|audit report|compliant|compliance|GovCloud|GCC(?: High)?|data (?:center|centre) location)\b",
@@ -73,13 +74,13 @@ _COMPLIANCE_RE = re.compile(
 # must not trip this, or every portal instruction becomes a sales item.
 _PRICING_RE = re.compile(
     r"\$\s?\d|\d\s?(?:USD|EUR|GBP)\b|\b(?:our|the|nutrient'?s?) pric(?:e|es|ing)\b|\bpric(?:e|es|ing) (?:is|are|starts?|begins?|ranges?|model|structure|tiers?)\b"
-    r"|\bper[- ](?:user|seat|named user|page|document|transaction)(?: per (?:month|year))?\b|\blicen[cs]e fee|\bsubscription fee|\b\d{1,3} ?% discount|\bdiscount ?%|\bdiscount of\b|\bTCO\b"
+    r"|\bper[- ](?:user|seat|named user|page|document|transaction)(?: per (?:month|year))?\b|\blicen[cs]e fee|\bsubscription fee|\bdiscount(?:s|ed|ing)?\b|\bTCO\b"
     r"|\bunit (?:cost|price)s?\b|\b(?:cost|price|pricing|rate) (?:schedule|sheet|proposal|breakdown)\b|\bbid (?:price|amount)s?\b|\bfreight (?:charge|cost)s?\b|\bhourly rate|\bnot[- ]to[- ]exceed\b",
     re.I,
 )
 TEAM_MARK = "[TEAM TO PROVIDE]"
 _SECURITY_ASK_RE = re.compile(
-    r"\b(SOC ?[123]|ISO ?\d{4,5}|FedRAMP|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|CJIS|PCI(?:[- ]DSS)?|FIPS|NIST|IRS ?1075|FERPA|GLBA"
+    r"\b(SOC ?[123]|ISO ?\d{4,5}|FedRAMP|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|GDPR|CCPA|CMMC|ITAR|SOX|CJIS|PCI(?:[- ]DSS)?|FIPS|NIST|IRS ?1075|FERPA|GLBA"
     r"|Section ?508|WCAG|VPAT|ACR|encrypt\w*|data residency|data (?:center|centre)|penetration|vulnerabilit\w*|incident response|breach"
     r"|disaster recovery|business continuity|backup|multi-?factor|MFA|single sign-on|SSO|SAML|audit (?:log|trail)|security (?:controls?|polic|questionnaire|assessment|certif|audit|standard|requirement)"
     r"|privacy|confidentialit\w*|background check|insurance certificate|cyber ?(?:security|liability))\b",
@@ -103,7 +104,7 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z\[\"'(])")
 _EXPLICIT_SECURITY_ASK_RE = re.compile(
     r"\b(provide|attach|submit|include|furnish|supply|enclose)\b.{0,80}\b(SOC|ISO|report|certificat|attestation|audit|questionnaire|VPAT|ACR|policy|policies|evidence|documentation)"
     r"|\b(describe|detail|explain|document|demonstrate|confirm|certify|state|specify|list)\b.{0,60}\b(security|encrypt|authentication|access control|incident|vulnerab|penetration|data (?:residency|retention|center)|backup|disaster|business continuity|SOC|ISO|HIPAA|FedRAMP|StateRAMP|CJIS|PCI|NIST|FIPS|508|WCAG|privacy)"
-    r"|\b(must|shall|required to|is required|mandatory)\b.{0,40}\b(SOC ?[123]|ISO ?\d{4,5}|FedRAMP|StateRAMP|HIPAA|BAA|HITRUST|CJIS|PCI|FIPS|NIST|IRS ?1075|FERPA|Section ?508|WCAG|VPAT)\b",
+    r"|\b(must|shall|required to|is required|mandatory|comply|compliance with|in accordance with|adhere)\b.{0,40}\b(SOC ?[123]|ISO ?\d{4,5}|FedRAMP|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|CJIS|PCI|FIPS|NIST|IRS ?1075|FERPA|GLBA|SOX|GDPR|CCPA|CMMC|ITAR|Section ?508|WCAG|VPAT)\b",
     re.I,
 )
 
@@ -111,31 +112,57 @@ _EXPLICIT_SECURITY_ASK_RE = re.compile(
 _STANDARD_SENTENCES = {s.strip().lower() for s in _SENTENCE_SPLIT.split(TRUST_CENTER_ANSWER)}
 # Generic words that only say *that* something is a compliance topic; they carry no fact to verify.
 _GENERIC_COMPLIANCE_TERMS = {"compliant", "compliance", "certified", "certification", "certifications", "certificate",
-                             "certificates", "accredited", "accreditation", "attestation", "audit report"}
+                             "certificates", "accredited", "accreditation", "attestation", "auditreport"}
+
+
+_NEGATION_RE = re.compile(
+    r"\b(not|no|never|none|without|cannot|neither|nor|lacks?|lacking|do not|does not|is not|are not|has no|have no"
+    r"|don't|doesn't|isn't|aren't|can't|won't|un(?:certified|accredited|supported|available))\b", re.I)
 
 
 def _claim_terms(sentence: str) -> set[str]:
     """The concrete compliance terms a sentence asserts (SOC 2, FedRAMP, HIPAA, encryption, …), normalised."""
-    return {re.sub(r"[\s-]+", " ", m.group(0).lower()).strip() for m in _COMPLIANCE_RE.finditer(sentence)}
+    return {re.sub(r"[\s-]+", "", m.group(0).lower()) for m in _COMPLIANCE_RE.finditer(sentence)}
+
+
+def _polarity(sentence: str) -> str:
+    """"neg" when the sentence denies something, otherwise "pos"."""
+    return "neg" if _NEGATION_RE.search(sentence) else "pos"
+
+
+@lru_cache(maxsize=4)
+def _approved_facts(body: str) -> dict[str, frozenset[str]]:
+    """term → polarities the approved file states it with. "No HIPAA BAA is offered" → hipaa/baa: {neg};
+    "SOC 2 Type II report dated … available under NDA" → soc2: {pos}."""
+    facts: dict[str, set[str]] = {}
+    for line in body.splitlines():
+        for sent in _SENTENCE_SPLIT.split(line.strip()):
+            pol = _polarity(sent)
+            for t in _claim_terms(sent):
+                facts.setdefault(t, set()).add(pol)
+    return {k: frozenset(v) for k, v in facts.items()}
 
 
 def _unsupported_terms(sentence: str, approved_body: str | None) -> set[str]:
-    """Compliance terms in `sentence` that the approved body does not mention (all of them when unapproved).
+    """Compliance terms in `sentence` the approved body does not state *with the same polarity*
+    (all of them when unapproved).
 
-    A term counts as supported only when the approved text contains it, so a model-written
-    "we hold FedRAMP authorization" is gated unless FedRAMP appears in compliance.md.
+    Presence of a word is not support: if compliance.md says "We do not hold FedRAMP
+    authorization", a model's "Nutrient holds FedRAMP Moderate authorization" is contradicted
+    and gated, while "Nutrient does not hold FedRAMP authorization" is allowed.
     """
     terms = _claim_terms(sentence)
     if not terms:
         return set()
     if not approved_body:
         return terms
-    body_n = re.sub(r"[\s-]+", " ", approved_body.lower())
     specific = {t for t in terms if t not in _GENERIC_COMPLIANCE_TERMS}
     if not specific:
         # Only generic words ("we are fully compliant") — nothing checkable, so a human must look.
         return terms
-    return {t for t in specific if t not in body_n}
+    facts = _approved_facts(approved_body)
+    pol = _polarity(sentence)
+    return {t for t in specific if pol not in facts.get(t, frozenset())}
 
 
 def _gate_compliance_prose(text: str, approved_body: str | None = None) -> tuple[str, bool]:
@@ -532,9 +559,17 @@ def draft_response(opp: dict[str, Any], attachment_text: str = "", lob_key: str 
             lead = (f"This is part {n} of {len(chunks)} of our response to this RFP. Answer ONLY pre-extracted items {ids} in "
                     f"`requirements`. Leave executive_summary empty, and win_themes, open_questions, assumptions and do_not_claim "
                     f"as empty lists unless something in these items changes them.")
+        catch_all = ""
+        if n == len(chunks):
+            # Extraction can skip a file or miss an item; the final part is the one call allowed to add them.
+            covered = "\n".join(f"- {e['id']}: {str(e.get('text', ''))[:110]}" for e in reqs)
+            lead += (" After those, add — with new ids R1, R2 … — every requirement or question in the RFP text below that "
+                     "no item in ALREADY COVERED addresses (mandatory items, forms, submission instructions, questions). "
+                     "Do not re-answer covered items.")
+            catch_all = f"\n\nALREADY COVERED (all pre-extracted items, for reference only):\n{covered}"
         if on_progress:
-            on_progress(f"Drafting part {n}/{len(chunks)} ({ids})")
-        raw, grounding = _one_call(client, lob, lead + "\n\n" + _rfp_text(opp, attachment_text, sub))
+            on_progress(f"Drafting part {n}/{len(chunks)} ({ids})" + (" + anything the extraction missed" if n == len(chunks) else ""))
+        raw, grounding = _one_call(client, lob, lead + "\n\n" + _rfp_text(opp, attachment_text, sub) + catch_all)
         if grounding:
             groundings.append(grounding)
         if merged is None:
