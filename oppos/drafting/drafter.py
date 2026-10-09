@@ -65,7 +65,7 @@ NOT_DRAFTED_MARK = "[NOT DRAFTED]"
 # Any sentence making one of these claims is a compliance claim and is gated when compliance.md is unapproved.
 _COMPLIANCE_RE = re.compile(
     r"\b(SOC ?[123](?: Type ?(?:II|I|2|1))?|ISO ?\d{4,5}|FedRAMP(?: (?:Low|Moderate|High))?|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|GDPR|CCPA|CMMC|ITAR|CJIS|PCI(?:[- ]DSS)?|FIPS(?:[ -]?140)?"
-    r"|NIST(?: ?(?:800-53|800-171|CSF))?|IRS ?1075|FERPA|GLBA|SOX|Section ?508|WCAG(?: ?2\.[0-9](?: ?AA?)?)?|VPAT|ACR|penetration[- ]test|pen[- ]test"
+    r"|NIST(?: ?(?:800-53|800-171|CSF))?|IRS ?1075|FERPA|GLBA|SOX|Section ?508|WCAG(?: ?2\.[0-9](?: ?AA?)?)?|VPAT|ACR|penetration[- ]test(?:s|ing)?|pen[- ]test(?:s|ing)?"
     r"|data residency|encrypt(?:s|ed|ion|ing)?(?: (?:data |all data )?(?:at rest|in transit))?|certif(?:ied|ication|icate)s?|accredit(?:ed|ation)|attestation"
     r"|audit report|compliant|compliance|GovCloud|GCC(?: High)?|data (?:center|centre) location)\b",
     re.I,
@@ -76,6 +76,14 @@ _PRICING_RE = re.compile(
     r"\$\s?\d|\d\s?(?:USD|EUR|GBP)\b|\b(?:our|the|nutrient'?s?) pric(?:e|es|ing)\b|\bpric(?:e|es|ing) (?:is|are|starts?|begins?|ranges?|model|structure|tiers?)\b"
     r"|\bper[- ](?:user|seat|named user|page|document|transaction)(?: per (?:month|year))?\b|\blicen[cs]e fee|\bsubscription fee|\bdiscount(?:s|ed|ing)?\b|\bTCO\b"
     r"|\bunit (?:cost|price)s?\b|\b(?:cost|price|pricing|rate) (?:schedule|sheet|proposal|breakdown)\b|\bbid (?:price|amount)s?\b|\bfreight (?:charge|cost)s?\b|\bhourly rate|\bnot[- ]to[- ]exceed\b",
+    re.I,
+)
+# Substantive commercial conditions that sales / legal set — never drafted, even without a price.
+_COMMERCIAL_TERMS_RE = re.compile(
+    r"\bpayment terms?\b|\bnet[- ]?\d{2,3}\b|\binvoic(?:e|ing) (?:terms|schedule|frequency)\b|\bwarrant(?:y|ies)\b|\bservice[- ]level (?:credits?|agreements?|guarantee)|\bSLA credits?\b"
+    r"|\b(?:limitation|cap) (?:of|on) liability\b|\bliability (?:cap|limit)\b|\bindemnif\w+|\btermination for convenience\b|\bauto(?:matic)?[- ]renew\w*|\brenewal terms?\b"
+    r"|\bcontract (?:term|duration|length) (?:of|is|will be)\b|\bminimum (?:commitment|term|purchase)\b|\blate (?:fees?|payment (?:fees?|penalt\w+))\b|\brefund\w*|\bescrow\b"
+    r"|\bmost[- ]favou?red\b|\bprice (?:escalation|increase|protection)\b|\bcredit terms?\b|\bpurchase order terms?\b",
     re.I,
 )
 TEAM_MARK = "[TEAM TO PROVIDE]"
@@ -122,11 +130,26 @@ _NEGATION_RE = re.compile(
     r"|don't|doesn't|isn't|aren't|can't|won't|un(?:certified|accredited|supported|available))\b", re.I)
 
 
-def _claim_terms(sentence: str) -> set[str]:
+# Security controls: not certifications, so general prose may mention them as product features, but inside
+# the answer to a security requirement they are claims that must come from the approved file.
+_CONTROL_RE = re.compile(
+    r"\b(MFA|multi-?factor(?: authentication)?|2FA|SSO|single sign-on|SAML(?: ?2\.0)?|OIDC|OAuth|RBAC|role-based access(?: control)?|access controls?"
+    r"|least privilege|backups?|disaster recovery|business continuity|RPO|RTO|incident response|breach notification|data retention|retention (?:period|policy)"
+    r"|vulnerability (?:scan|scanning|management)|audit (?:log|logging|trail)s?|SIEM|intrusion detection|WAF|DDoS|TLS(?: ?1\.[0-9])?|AES(?:-?(?:128|256))?"
+    r"|key management|KMS|HSM|US-based|onshore|background checks?|security (?:awareness )?training|cyber ?(?:security|liability) insurance|insurance)\b",
+    re.I,
+)
+
+
+def _claim_terms(sentence: str, controls: bool = False) -> set[str]:
     """The concrete compliance terms a sentence asserts (SOC 2, FedRAMP, HIPAA, encryption, …), normalised.
     A qualified term yields its base too ("SOC 2 Type II" → soc2typeii + soc2) so a fact that states
-    the type supports a claim that omits it, but never the other way round."""
+    the type supports a claim that omits it, but never the other way round. With `controls`, security
+    controls (MFA, SSO, backups, audit logs, TLS …) count as claims as well."""
     out: set[str] = set()
+    if controls:
+        for m in _CONTROL_RE.finditer(sentence):
+            out.add(re.sub(r"[\s.-]+", "", m.group(0).lower()))
     for m in _COMPLIANCE_RE.finditer(sentence):
         full = re.sub(r"[\s.-]+", "", m.group(0).lower())
         if full.startswith("encrypt"):  # encrypts / encrypted / encryption → one base term + the qualifier
@@ -168,13 +191,13 @@ def _approved_facts(body: str) -> tuple[tuple[str, frozenset[str], frozenset[str
     facts = []
     for line in body.splitlines():
         for sent in _SENTENCE_SPLIT.split(line.strip()):
-            terms = _claim_terms(sent) - _GENERIC_COMPLIANCE_TERMS
+            terms = _claim_terms(sent, controls=True) - _GENERIC_COMPLIANCE_TERMS
             if terms:
                 facts.append((_polarity(sent), frozenset(terms), frozenset(_scope_terms(sent)), frozenset(_YEAR_RE.findall(sent))))
     return tuple(facts)
 
 
-def _unsupported_terms(sentence: str, approved_body: str | None) -> set[str]:
+def _unsupported_terms(sentence: str, approved_body: str | None, controls: bool = False) -> set[str]:
     """Compliance terms in `sentence` that no single approved fact backs (all of them when unapproved).
 
     A claim is backed only when it *restates one approved fact*: same polarity, every concrete
@@ -184,7 +207,7 @@ def _unsupported_terms(sentence: str, approved_body: str | None) -> set[str]:
     while "Nutrient SDK is SOC 2 certified", "Nutrient is SOC 2 certified" (unscoped), "SOC 2 Type I"
     and "We do not hold …" (polarity) are all gated. Presence of a word elsewhere is never support.
     """
-    terms = _claim_terms(sentence)
+    terms = _claim_terms(sentence, controls=controls)
     if not terms:
         return set()
     if not approved_body:
@@ -203,7 +226,7 @@ def _unsupported_terms(sentence: str, approved_body: str | None) -> set[str]:
     return specific
 
 
-def _gate_compliance_prose(text: str, approved_body: str | None = None) -> tuple[str, bool]:
+def _gate_compliance_prose(text: str, approved_body: str | None = None, controls: bool = False) -> tuple[str, bool]:
     """Prefix every sentence that makes an unsupported compliance claim with SECURITY_MARK.
 
     Unapproved (`approved_body` None): every compliance claim is unsupported. Approved: a claim is
@@ -220,7 +243,7 @@ def _gate_compliance_prose(text: str, approved_body: str | None = None) -> tuple
         if sent.strip().lower() in _STANDARD_SENTENCES:  # the fixed standard answer is always allowed
             out.append(sent)
             continue
-        if _unsupported_terms(sent, approved_body) and not sent.lstrip().startswith(SECURITY_MARK):
+        if _unsupported_terms(sent, approved_body, controls) and not sent.lstrip().startswith(SECURITY_MARK):
             sent = f"{SECURITY_MARK} {sent.strip()}"
             flagged = True
         out.append(sent)
@@ -383,7 +406,8 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
                 todo = todo or "Security team to confirm or supply what this requirement explicitly asks for."
             elif explicit and comp["approved"]:
                 # Every claim must be backed by the approved file — a model-supplied basis ["compliance"] proves nothing.
-                response, gated = _gate_compliance_prose(response, comp["body"])
+                # Inside a security answer, controls (MFA, SSO, backups, TLS …) are claims too.
+                response, gated = _gate_compliance_prose(response, comp["body"], controls=True)
                 if gated:
                     basis, conf = ["needs_human"], "low"
                     todo = todo or "Security team to confirm the claim(s) not covered by the approved compliance answers."
@@ -397,7 +421,8 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
                 todo = todo or "Security team to confirm the compliance statement in this answer, or remove it."
         # Pricing: replace the whole answer only when price language is actually present (in the ask or the answer);
         # a "commercial" label alone is not enough — bid validity days or opening dates are not pricing.
-        if _PRICING_RE.search(response) or (cat == "commercial" and _PRICING_RE.search(req_text)):
+        commercial_ask = cat == "commercial" and (_PRICING_RE.search(req_text) or _COMMERCIAL_TERMS_RE.search(req_text))
+        if _PRICING_RE.search(response) or _COMMERCIAL_TERMS_RE.search(response) or commercial_ask:
             response = f"{SALES_MARK} — pricing / commercial terms for: {req_text[:160] or 'this requirement'}"
             basis, conf = ["needs_human"], "low"
             todo = "Sales to provide pricing and commercial terms."
@@ -452,6 +477,7 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
     assumptions = [_gate_pricing_prose(a)[0] for a in assumptions]
 
     sub = raw.get("submission") if isinstance(raw.get("submission"), dict) else {}
+    ext_sol = (extracted or {}).get("solicitation") or {}  # Data Extraction's page-cited facts beat the model's retelling
     fmt = _norm_list(sub.get("format_requirements"), 15)
     ext_forms = _norm_list((extracted or {}).get("required_forms"), 20)
     ext_criteria = [c for c in ((extracted or {}).get("evaluation_criteria") or []) if isinstance(c, dict) and c.get("criterion")]
@@ -469,7 +495,8 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
                        if extracted else None),
         "truncated": truncated,
         "rfp_type": str(raw.get("rfp_type") or "other"),
-        "submission": {"method": str(sub.get("method") or "unknown"), "deadline": str(sub.get("deadline") or "unknown"),
+        "submission": {"method": str(ext_sol.get("submission_method") or sub.get("method") or "unknown")[:200],
+                       "deadline": str(ext_sol.get("submission_deadline") or sub.get("deadline") or "unknown")[:120],
                        "format_requirements": fmt[:30]},
         "required_forms": ext_forms,
         "evaluation_criteria": [{"criterion": str(c["criterion"])[:300], "weight": str(c.get("weight") or "")[:40]} for c in ext_criteria][:20],
