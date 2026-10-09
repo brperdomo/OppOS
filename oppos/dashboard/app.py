@@ -2341,15 +2341,22 @@ def page_desk() -> None:
             render_card(o, "desk")  # plain status controls stay available for outcomes
             st.markdown("---")
 
-    closed = by_stage["closed"]
+    closed = sorted(by_stage["closed"], key=lambda x: x.get("closed_at") or x.get("updated_at") or "", reverse=True)
     if closed:
+        _closed_page = 50
+        _closed_key = f"desk_closed_show_{_view.lower()}"
+        _closed_show = st.session_state.get(_closed_key, _closed_page)
         with st.expander(f"Closed  ·  {len(closed)}"):
-            for p_ in sorted(closed, key=lambda x: x.get("closed_at") or x.get("updated_at") or "", reverse=True)[:50]:
+            for p_ in closed[:_closed_show]:
                 o = opps.get(p_["source_id"]) or {}
                 when = str(p_.get("closed_at") or p_.get("updated_at") or "")[:10]
                 st.markdown(f'<div class="pp-event">{_esc(when)} · <b>{_esc(stage_label(p_.get("status")))}</b> · '
                             f'{_esc(p_.get("owner_name") or p_.get("owner_email") or "")} — {_esc(o.get("title") or p_["source_id"])}</div>',
                             unsafe_allow_html=True)
+            if _closed_show < len(closed):
+                if st.button(f"Show more ({len(closed) - _closed_show} remaining)", key=f"{_closed_key}_more", use_container_width=True):
+                    st.session_state[_closed_key] = _closed_show + _closed_page
+                    st.rerun()
 
 
 def page_admin() -> None:
