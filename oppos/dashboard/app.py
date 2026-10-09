@@ -694,7 +694,9 @@ with st.spinner("Loading pipeline..."):
     EXCLUDED_SOURCES = set(_get_excluded())
     # Anything that ever had a pursuit record stays visible in its lifecycle/history tabs,
     # so owners can still record outcomes after a source is excluded.
-    TRACKED_IDS = {p["source_id"] for p in _list_pursuits(status=None)} if EXCLUDED_SOURCES else set()
+    # "Released" means back to the pool, so it is not tracked — exclusion applies to it again.
+    TRACKED_IDS = ({p["source_id"] for p in _list_pursuits(status=None) if p.get("status") != "released"}
+                   if EXCLUDED_SOURCES else set())
 
 # Every list view hides excluded sources, except opportunities that are or were pursued.
 from oppos.storage import db as _db
@@ -1829,9 +1831,14 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
 
 
 def _unclaimed(rows: list[dict]) -> tuple[list[dict], int]:
-    """Split pool rows into (unclaimed, number hidden because someone holds them)."""
-    kept = [r for r in rows if r.get("source_id") not in OPEN_PURSUITS]
-    return kept, len(rows) - len(kept)
+    """Split pool rows into (unclaimed, number hidden because someone holds them).
+
+    The pool is strict about exclusions: a tracked-item exception exists for lifecycle/history
+    views, never for Find RFPs, so an excluded-source row can't be re-claimed from here.
+    """
+    pool = [r for r in rows if r.get("source") not in EXCLUDED_SOURCES]
+    kept = [r for r in pool if r.get("source_id") not in OPEN_PURSUITS]
+    return kept, len(pool) - len(kept)
 
 
 def _claimed_note(n: int) -> str:
