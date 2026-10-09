@@ -16,6 +16,7 @@ from oppos.scoring.prefilter import prefilter
 from oppos.scoring.qualifier import qualify
 from oppos.sources.registry import FetchFn, get_enabled_sources
 from oppos.storage.db import (
+    get_excluded_sources,
     init_db,
     is_seen,
     record_source_health,
@@ -61,6 +62,12 @@ def run_scan(
     """
     init_db()
     sources = sources if sources is not None else get_enabled_sources()
+    excluded = set(get_excluded_sources())
+    if excluded:
+        skipped = [name for key, name, _ in sources if key in excluded]
+        sources = [s for s in sources if s[0] not in excluded]
+        if skipped:
+            logger.info("Skipping excluded sources: %s", ", ".join(skipped))
     total = len(sources)
     posted_from = datetime.now() - timedelta(days=days)
 

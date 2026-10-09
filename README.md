@@ -76,6 +76,7 @@ when a pursuit is won/lost/abandoned (`SLACK_ARCHIVE_ON_CLOSE=false` to keep the
    (Push to Notion · Salesforce Opp message · Submitted · Won/Lost · Abandon), and an activity log.
 4. Reminders post to the pursuit channel at T-14/7/3/1, due, overdue, Q&A T-3/T-1, and after 7 idle days.
 5. **Portal registrations** (admins) — keep status / vendor ID / who holds the login / lead time per portal. Never store passwords.
+6. **Settings** (admins) — exclude sources: hidden from every list, skipped by scans, never alerted; one click archives their remaining active items. Use it to retire a source (e.g. an aggregator) without deleting history.
 
 ## Scoring model
 

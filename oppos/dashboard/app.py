@@ -688,6 +688,19 @@ with st.spinner("Loading pipeline..."):
     from oppos.pursuits import OPEN_STAGES as _OPEN_STAGES
     from oppos.storage.db import list_pursuits as _list_pursuits
     OPEN_PURSUITS = {p["source_id"]: p for p in _list_pursuits(status=_OPEN_STAGES)}
+    from oppos.storage.db import get_excluded_sources as _get_excluded
+    EXCLUDED_SOURCES = set(_get_excluded())
+
+# Every list view hides excluded sources (pursuits you already own are unaffected).
+from oppos.storage import db as _db
+
+
+def get_all_scored(min_score: int = 0) -> list[dict]:
+    return [r for r in _db.get_all_scored(min_score) if r.get("source") not in EXCLUDED_SOURCES]
+
+
+def get_by_pipeline_status(status: str, min_score: int = 0) -> list[dict]:
+    return [r for r in _db.get_by_pipeline_status(status, min_score) if r.get("source") not in EXCLUDED_SOURCES]
 
 PIPELINE_LABELS = {
     "new": "New",
@@ -792,6 +805,39 @@ if _health_rows:
         st.markdown(_render_source_health(_health_rows), unsafe_allow_html=True)
 
 if CURRENT_USER.get("is_admin"):
+    with st.expander(f"Settings  ·  {len(EXCLUDED_SOURCES)} source{'s' if len(EXCLUDED_SOURCES) != 1 else ''} excluded"):
+        from oppos.storage.db import archive_sources, count_active_by_sources, list_sources_in_db, set_excluded_sources
+        _db_sources = dict(list_sources_in_db())
+        _all_keys = sorted(set(SOURCE_LABELS) | set(_db_sources) | EXCLUDED_SOURCES)
+        def _src_label(k: str) -> str:
+            base = SOURCE_LABELS.get(k, k)
+            n = _db_sources.get(k)
+            tag = "" if k in SOURCE_LABELS else " · retired"
+            return f"{base}{tag}" + (f"  ({n} rows)" if n else "")
+        st.caption("Excluded sources are hidden from every list, skipped by scans, and never alerted. "
+                   "Items you already claimed stay in your pursuits.")
+        _sel = st.multiselect("Excluded sources", _all_keys, default=sorted(EXCLUDED_SOURCES),
+                              format_func=_src_label, key="excluded_sources_select")
+        _sc1, _sc2 = st.columns([1, 2])
+        with _sc1:
+            if st.button("Save exclusions", key="excluded_save", use_container_width=True):
+                set_excluded_sources(_sel)
+                st.rerun()
+        with _sc2:
+            _n_active = count_active_by_sources(sorted(EXCLUDED_SOURCES)) if EXCLUDED_SOURCES else 0
+            if _n_active:
+                with st.popover(f"Archive {_n_active} active item{'s' if _n_active != 1 else ''} from excluded sources",
+                                use_container_width=True):
+                    st.write(f"Moves {_n_active} new / qualified / expiring items from "
+                             f"{', '.join(SOURCE_LABELS.get(k, k) for k in sorted(EXCLUDED_SOURCES))} to Archive (skipped) "
+                             "with the note \"Source excluded\". Pursuits are not touched. This cannot be undone in bulk.")
+                    if st.button("Archive them", key="excluded_archive", type="primary", use_container_width=True):
+                        _done = archive_sources(sorted(EXCLUDED_SOURCES))
+                        st.success(f"Archived {_done} items")
+                        st.rerun()
+            elif EXCLUDED_SOURCES:
+                st.caption("No active items remain from excluded sources.")
+
     _reg_known = sum(1 for r in PORTAL_REGS.values() if (r.get("status") or "unknown") != "unknown")
     with st.expander(f"Portal registrations  ·  {_reg_known}/{len(PORTAL_REGS)} known"):
         import pandas as pd
