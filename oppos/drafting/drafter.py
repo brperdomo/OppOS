@@ -64,9 +64,9 @@ NOT_DRAFTED_MARK = "[NOT DRAFTED]"
 
 # Any sentence making one of these claims is a compliance claim and is gated when compliance.md is unapproved.
 _COMPLIANCE_RE = re.compile(
-    r"\b(SOC ?[123]|ISO ?\d{4,5}|FedRAMP|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|GDPR|CCPA|CMMC|ITAR|CJIS|PCI(?:[- ]DSS)?|FIPS(?:[ -]?140)?"
-    r"|NIST(?: ?(?:800-53|800-171|CSF))?|IRS ?1075|FERPA|GLBA|SOX|Section ?508|WCAG|VPAT|ACR|penetration[- ]test|pen[- ]test"
-    r"|data residency|encrypt(?:ed|ion)(?: at rest| in transit)?|certif(?:ied|ication|icate)s?|accredit(?:ed|ation)|attestation"
+    r"\b(SOC ?[123](?: Type ?(?:II|I|2|1))?|ISO ?\d{4,5}|FedRAMP(?: (?:Low|Moderate|High))?|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|GDPR|CCPA|CMMC|ITAR|CJIS|PCI(?:[- ]DSS)?|FIPS(?:[ -]?140)?"
+    r"|NIST(?: ?(?:800-53|800-171|CSF))?|IRS ?1075|FERPA|GLBA|SOX|Section ?508|WCAG(?: ?2\.[0-9](?: ?AA?)?)?|VPAT|ACR|penetration[- ]test|pen[- ]test"
+    r"|data residency|encrypt(?:s|ed|ion|ing)?(?: (?:data |all data )?(?:at rest|in transit))?|certif(?:ied|ication|icate)s?|accredit(?:ed|ation)|attestation"
     r"|audit report|compliant|compliance|GovCloud|GCC(?: High)?|data (?:center|centre) location)\b",
     re.I,
 )
@@ -104,7 +104,9 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z\[\"'(])")
 _EXPLICIT_SECURITY_ASK_RE = re.compile(
     r"\b(provide|attach|submit|include|furnish|supply|enclose)\b.{0,80}\b(SOC|ISO|report|certificat|attestation|audit|questionnaire|VPAT|ACR|policy|policies|evidence|documentation)"
     r"|\b(describe|detail|explain|document|demonstrate|confirm|certify|state|specify|list)\b.{0,60}\b(security|encrypt|authentication|access control|incident|vulnerab|penetration|data (?:residency|retention|center)|backup|disaster|business continuity|SOC|ISO|HIPAA|FedRAMP|StateRAMP|CJIS|PCI|NIST|FIPS|508|WCAG|privacy)"
-    r"|\b(must|shall|required to|is required|mandatory|comply|compliance with|in accordance with|adhere)\b.{0,40}\b(SOC ?[123]|ISO ?\d{4,5}|FedRAMP|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|CJIS|PCI|FIPS|NIST|IRS ?1075|FERPA|GLBA|SOX|GDPR|CCPA|CMMC|ITAR|Section ?508|WCAG|VPAT)\b",
+    r"|\b(must|shall|required to|is required|mandatory|comply|compliance with|in accordance with|adhere)\b.{0,40}\b(SOC ?[123]|ISO ?\d{4,5}|FedRAMP|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|CJIS|PCI|FIPS|NIST|IRS ?1075|FERPA|GLBA|SOX|GDPR|CCPA|CMMC|ITAR|Section ?508|WCAG|VPAT"
+    r"|encrypt\w*|AES|TLS|data residency|data (?:center|centre)s?|US-based|onshore|MFA|multi-?factor|SSO|single sign-on|SAML|audit (?:log|trail)s?|penetration|vulnerability|backup|disaster recovery"
+    r"|business continuity|retention|breach|incident|background check|cyber ?(?:security|liability)|insurance)\b",
     re.I,
 )
 
@@ -121,8 +123,36 @@ _NEGATION_RE = re.compile(
 
 
 def _claim_terms(sentence: str) -> set[str]:
-    """The concrete compliance terms a sentence asserts (SOC 2, FedRAMP, HIPAA, encryption, …), normalised."""
-    return {re.sub(r"[\s-]+", "", m.group(0).lower()) for m in _COMPLIANCE_RE.finditer(sentence)}
+    """The concrete compliance terms a sentence asserts (SOC 2, FedRAMP, HIPAA, encryption, …), normalised.
+    A qualified term yields its base too ("SOC 2 Type II" → soc2typeii + soc2) so a fact that states
+    the type supports a claim that omits it, but never the other way round."""
+    out: set[str] = set()
+    for m in _COMPLIANCE_RE.finditer(sentence):
+        full = re.sub(r"[\s.-]+", "", m.group(0).lower())
+        if full.startswith("encrypt"):  # encrypts / encrypted / encryption → one base term + the qualifier
+            out.add("encryption")
+            for q in ("atrest", "intransit"):
+                if full.endswith(q):
+                    out.add("encryption" + q)
+            continue
+        out.add(full)
+        base = re.match(r"(soc[123]|fedramp|wcag)", full)
+        if base and base.group(1) != full:
+            out.add(base.group(1))
+    return out
+
+
+# Product / deployment scope words: an approved fact scoped to one product does not cover another.
+_SCOPE_RE = re.compile(
+    r"\b(Nutrient Workflow|Workflow(?: Automation)?|Low[- ]Code|Document Converter|Document Automation Server|Document Searchability"
+    r"|Document Editor|Documents for Salesforce|Web SDK|iOS SDK|Android SDK|\.NET SDK|Java SDK|Flutter|React Native|SDK|Document Engine"
+    r"|DWS|Document Web Services|Processor|Data Extraction|Document Authoring|AI Assistant|GdPicture|Nudocs|DocuVieware|Trust Center"
+    r"|Enhanced Cloud|SaaS|self[- ]managed|on[- ]prem(?:ises)?|cloud|Kubernetes|hosted|managed)\b", re.I)
+_YEAR_RE = re.compile(r"\b(20\d{2})\b")
+
+
+def _scope_terms(sentence: str) -> set[str]:
+    return {re.sub(r"[\s.-]+", "", m.group(0).lower()) for m in _SCOPE_RE.finditer(sentence)}
 
 
 def _polarity(sentence: str) -> str:
@@ -131,25 +161,28 @@ def _polarity(sentence: str) -> str:
 
 
 @lru_cache(maxsize=4)
-def _approved_facts(body: str) -> dict[str, frozenset[str]]:
-    """term → polarities the approved file states it with. "No HIPAA BAA is offered" → hipaa/baa: {neg};
-    "SOC 2 Type II report dated … available under NDA" → soc2: {pos}."""
-    facts: dict[str, set[str]] = {}
+def _approved_facts(body: str) -> tuple[tuple[str, frozenset[str], frozenset[str], frozenset[str]], ...]:
+    """One entry per sentence of the approved file: (polarity, compliance terms, scope terms, years).
+    "Nutrient Workflow (Enhanced Cloud): SOC 2 Type II report dated 2026-03-01" →
+    ("pos", {soc2typeii, soc2}, {nutrientworkflow, enhancedcloud}, {2026})."""
+    facts = []
     for line in body.splitlines():
         for sent in _SENTENCE_SPLIT.split(line.strip()):
-            pol = _polarity(sent)
-            for t in _claim_terms(sent):
-                facts.setdefault(t, set()).add(pol)
-    return {k: frozenset(v) for k, v in facts.items()}
+            terms = _claim_terms(sent) - _GENERIC_COMPLIANCE_TERMS
+            if terms:
+                facts.append((_polarity(sent), frozenset(terms), frozenset(_scope_terms(sent)), frozenset(_YEAR_RE.findall(sent))))
+    return tuple(facts)
 
 
 def _unsupported_terms(sentence: str, approved_body: str | None) -> set[str]:
-    """Compliance terms in `sentence` the approved body does not state *with the same polarity*
-    (all of them when unapproved).
+    """Compliance terms in `sentence` that no single approved fact backs (all of them when unapproved).
 
-    Presence of a word is not support: if compliance.md says "We do not hold FedRAMP
-    authorization", a model's "Nutrient holds FedRAMP Moderate authorization" is contradicted
-    and gated, while "Nutrient does not hold FedRAMP authorization" is allowed.
+    A claim is backed only when it *restates one approved fact*: same polarity, every concrete
+    compliance term and every product / deployment scope word and year in the claim also appear
+    in that fact, and — when the fact is scoped to a product — the claim names that product. So
+    with "Nutrient Workflow: SOC 2 Type II report …" approved, "Workflow has a SOC 2 report" passes,
+    while "Nutrient SDK is SOC 2 certified", "Nutrient is SOC 2 certified" (unscoped), "SOC 2 Type I"
+    and "We do not hold …" (polarity) are all gated. Presence of a word elsewhere is never support.
     """
     terms = _claim_terms(sentence)
     if not terms:
@@ -160,9 +193,14 @@ def _unsupported_terms(sentence: str, approved_body: str | None) -> set[str]:
     if not specific:
         # Only generic words ("we are fully compliant") — nothing checkable, so a human must look.
         return terms
-    facts = _approved_facts(approved_body)
-    pol = _polarity(sentence)
-    return {t for t in specific if pol not in facts.get(t, frozenset())}
+    pol, scope, years = _polarity(sentence), _scope_terms(sentence), set(_YEAR_RE.findall(sentence))
+    for f_pol, f_terms, f_scope, f_years in _approved_facts(approved_body):
+        if f_pol != pol or not specific <= f_terms or not scope <= f_scope or not years <= f_years:
+            continue
+        if f_scope and not scope:
+            continue  # the fact is scoped to a product/deployment; an unscoped claim over-generalises it
+        return set()
+    return specific
 
 
 def _gate_compliance_prose(text: str, approved_body: str | None = None) -> tuple[str, bool]:
