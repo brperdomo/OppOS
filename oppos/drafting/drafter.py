@@ -20,6 +20,7 @@ from typing import Any
 import anthropic
 
 from oppos.config import SCORING_MODEL_STAGE2
+from oppos.drafting.extraction import format_for_prompt
 from oppos.scoring.lobs import DEFAULT_LOB, LOBS, get_lob
 from oppos.scoring.lobs.base import _FRONTMATTER_RE
 from oppos.scoring.qualifier import (
@@ -102,6 +103,7 @@ You have a documentation search tool connected to Nutrient's product docs. Use i
 {docs_block}
 ## Drafting rules
 - Extract EVERY requirement, question, or evaluation criterion the RFP states (functional, technical, security/compliance, commercial, company, implementation). Keep the RFP's own numbering/section labels in `section` when present and quote or closely paraphrase the requirement in `text`.
+- If a PRE-EXTRACTED REQUIREMENTS block is present, it came from Nutrient's Data Extraction API with page citations: respond to every item in it, reuse its ids (E1, E2 …) and copy its `page`; add anything it missed with new ids (R1, R2 …). Do not drop or merge pre-extracted items.
 - Draft each `response` in first person plural ("we", "Nutrient"), 2–6 sentences, concrete: name the capability, how it meets the requirement, and any configuration or integration involved. No marketing filler.
 - `basis` lists where the answer comes from: "rfp" (restating facts in the RFP), "profile" (the profile above), "docs" (documentation you searched), "compliance" (the approved compliance section), "needs_human" (a person must supply or verify it). `sources` names the profile section or doc URL used.
 - Never invent customers, certifications, pricing, SLAs, or capabilities. Pricing/commercial terms → "[SALES TO PROVIDE]" with basis needs_human. References/case studies → only those named in the profile.
@@ -115,7 +117,7 @@ Respond with ONLY valid JSON matching this schema:
   "executive_summary": "<2–3 paragraphs we could open the response with>",
   "win_themes": ["<3–5 themes to carry through the response>"],
   "requirements": [
-    {{"id": "R1", "section": "<RFP section/number or ''>", "text": "<the requirement or question>",
+    {{"id": "E1 or R1", "section": "<RFP section/number or ''>", "page": <page number or null>, "text": "<the requirement or question>",
       "category": "<functional | technical | security_compliance | commercial | company | implementation | other>",
       "response": "<draft answer>", "confidence": "<high | medium | low>",
       "basis": ["<rfp | profile | docs | compliance | needs_human>"], "sources": ["<profile section or URL>"],
@@ -127,7 +129,7 @@ Respond with ONLY valid JSON matching this schema:
 }}"""
 
 
-def _rfp_text(opp: dict[str, Any], attachment_text: str) -> str:
+def _rfp_text(opp: dict[str, Any], attachment_text: str, extracted: dict[str, Any] | None = None) -> str:
     parts = [
         f"Title: {opp.get('title', '')}",
         f"Agency: {opp.get('agency', '')}",
@@ -141,6 +143,9 @@ def _rfp_text(opp: dict[str, Any], attachment_text: str) -> str:
         "=== RFP DESCRIPTION ===",
         (opp.get("description") or "").strip(),
     ]
+    pre = format_for_prompt(extracted) if extracted else ""
+    if pre:
+        parts += ["", pre]
     att = (attachment_text or opp.get("attachment_text") or "").strip()
     if att:
         parts += ["", "=== RFP DOCUMENTS (extracted text) ===", att]
@@ -160,7 +165,8 @@ def _norm_list(v: Any, limit: int = 30) -> list[str]:
     return [str(x).strip() for x in v if str(x).strip()][:limit]
 
 
-def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | None, truncated: bool) -> dict[str, Any]:
+def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | None, truncated: bool,
+               extracted: dict[str, Any] | None = None) -> dict[str, Any]:
     comp = compliance_status()
     reqs_out: list[dict[str, Any]] = []
     for i, r in enumerate(raw.get("requirements") or [], 1):
@@ -181,9 +187,15 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
             todo = todo or "Security team to confirm."
         if cat == "commercial" and "[SALES TO PROVIDE]" not in response and re.search(r"\$\s?\d|\bprice|pricing|cost\b", response, re.I):
             response = re.sub(r"\$\s?[\d,]+(\.\d+)?", "[SALES TO PROVIDE]", response)
+        page = r.get("page")
+        try:
+            page = int(page) if page not in (None, "", "null") else None
+        except (TypeError, ValueError):
+            page = None
         reqs_out.append({
             "id": str(r.get("id") or f"R{i}"),
             "section": str(r.get("section") or "").strip()[:80],
+            "page": page,
             "text": str(r.get("text") or "").strip()[:1500],
             "category": cat,
             "response": response[:4000],
@@ -199,6 +211,8 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
         "generated_at": datetime.utcnow().isoformat(timespec="seconds"),
         "compliance_source": {"approved": comp["approved"], "version": comp["version"]},
         "grounding": grounding,
+        "extraction": ({k: extracted.get(k) for k in ("mode", "files", "pages", "credits_cost", "credits_remaining", "skipped", "errors", "stats")}
+                       if extracted else None),
         "truncated": truncated,
         "rfp_type": str(raw.get("rfp_type") or "other"),
         "submission": {"method": str(sub.get("method") or "unknown"), "deadline": str(sub.get("deadline") or "unknown"),
@@ -266,11 +280,16 @@ def _call_grounded(client: anthropic.Anthropic, system: str, user_text: str) -> 
     return _Collected(collected, stop)
 
 
-def draft_response(opp: dict[str, Any], attachment_text: str = "", lob_key: str | None = None) -> dict[str, Any]:
-    """Produce the structured draft for one opportunity. Raises anthropic.APIError on hard failure."""
+def draft_response(opp: dict[str, Any], attachment_text: str = "", lob_key: str | None = None,
+                   extracted: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Produce the structured draft for one opportunity. Raises anthropic.APIError on hard failure.
+
+    `extracted` is the optional output of extraction.extract_rfp_requirements — page-cited
+    requirements from Nutrient's Data Extraction API that the model must answer item by item.
+    """
     lob = (get_lob(lob_key or opp.get("lob")) or LOBS[DEFAULT_LOB]).key
     client = _get_client()
-    user_text = "Draft our response to this RFP.\n\n" + _rfp_text(opp, attachment_text)
+    user_text = "Draft our response to this RFP.\n\n" + _rfp_text(opp, attachment_text, extracted)
 
     grounding = None
     resp: Any = None
@@ -292,4 +311,4 @@ def draft_response(opp: dict[str, Any], attachment_text: str = "", lob_key: str 
         if truncated:
             raise RuntimeError(f"Draft truncated at {DRAFT_MAX_TOKENS} tokens and could not be parsed — raise DRAFT_MAX_TOKENS") from e
         raise RuntimeError(f"Draft could not be parsed: {e}") from e
-    return _normalize(raw, lob, grounding, truncated)
+    return _normalize(raw, lob, grounding, truncated, extracted)

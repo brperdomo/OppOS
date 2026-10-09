@@ -509,7 +509,7 @@ def append_response_draft(page_id: str, draft: dict[str, Any]) -> bool:
         children += [_bullet(t) for t in draft["win_themes"]]
     children.append(_heading(3, "Requirements and draft responses"))
     for r in draft.get("requirements") or []:
-        label = f"{r['id']}" + (f" · {r['section']}" if r.get("section") else "") + f" · {r['category'].replace('_', ' ')}"
+        label = f"{r['id']}" + (f" · {r['section']}" if r.get("section") else "") + (f" · p.{r['page']}" if r.get("page") else "") + f" · {r['category'].replace('_', ' ')}"
         children.append(_heading(3, _truncate(label, 100)))
         children.append(_paragraph(_truncate("Requirement: " + r.get("text", ""), 2000)))
         children.extend(_text_to_blocks(r.get("response", ""), max_chars=6000))

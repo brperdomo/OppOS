@@ -1695,8 +1695,30 @@ def _run_draft(opp: dict, pursuit: dict) -> None:
         att = opp.get("attachment_text") or ""
         st.write(f"📄 Using the RFP description" + (f" and {len(att):,} characters of attachment text" if att else " — no attachments loaded (load them first for a better draft)"))
         st.write("🔒 Compliance source: " + ("approved" if comp["approved"] else "not approved — security items will read [SECURITY TO CONFIRM]"))
+
+        # Dogfood: Nutrient Data Extraction API maps the RFP PDFs to a requirements schema with page citations.
+        extracted = None
+        att_dir = ATTACHMENTS_DIR / sid
+        pdfs = sorted(att_dir.glob("*.pdf")) if att_dir.is_dir() else []
+        if pdfs:
+            from oppos.drafting.extraction import extract_rfp_requirements, extraction_available
+            if extraction_available():
+                extracted = extract_rfp_requirements(pdfs, on_progress=lambda m: st.write(f"🧩 {m}"))
+                st_ = extracted.get("stats") or {}
+                if extracted["requirements"]:
+                    st.write(f"✓ Nutrient Data Extraction: {st_['requirements']} requirements ({st_['mandatory']} mandatory) from "
+                             f"{extracted['pages']} pages · {extracted['credits_cost']} credits"
+                             + (f" · {extracted['credits_remaining']} remaining" if extracted.get("credits_remaining") is not None else ""))
+                for sk in extracted.get("skipped", []):
+                    st.write(f"⚠️ Skipped {sk}")
+                for er in extracted.get("errors", []):
+                    st.write(f"⚠️ Extraction error — {er}")
+                if not extracted["requirements"]:
+                    extracted = None
+            else:
+                st.write("ℹ️ NUTRIENT_API_KEY not set — drafting from text only")
         try:
-            draft = draft_response(opp, attachment_text=att)
+            draft = draft_response(opp, attachment_text=att, extracted=extracted)
         except Exception as e:
             status.update(label="Draft failed", state="error")
             st.error(f"Drafting failed: {e}")
@@ -1906,12 +1928,19 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
             _sub = _draft.get("submission") or {}
             st.caption(f"{_draft.get('rfp_type', '')} · submission {_sub.get('method', 'unknown')} · deadline {_sub.get('deadline', 'unknown')}"
                        + (" · " + "; ".join(_sub.get("format_requirements", [])[:3]) if _sub.get("format_requirements") else ""))
+            _ex = _draft.get("extraction")
+            if _ex and _ex.get("stats"):
+                st.caption(f"Requirements extracted with Nutrient Data Extraction API ({_ex.get('mode')}): "
+                           f"{_ex['stats']['requirements']} items, {_ex['stats']['mandatory']} mandatory, from {_ex.get('pages')} pages "
+                           f"across {len(_ex.get('files') or [])} file(s) · {_ex.get('credits_cost')} credits"
+                           + (f" · {_ex['stats']['low_grounding']} with low grounding score" if _ex['stats'].get('low_grounding') else ""))
             for r in _reqs:
                 _conf_cls = {"high": "pp-ok", "medium": "pp-warn", "low": "pp-bad"}.get(r.get("confidence"), "")
                 _basis = ", ".join(r.get("basis") or [])
                 st.markdown(
                     f'<div class="pp-strip" style="margin-top:14px;"><span class="pp-owner">{_esc(r["id"])}'
-                    + (f' · {_esc(r["section"])}' if r.get("section") else "") + "</span>"
+                    + (f' · {_esc(r["section"])}' if r.get("section") else "")
+                    + (f' · p.{r["page"]}' if r.get("page") else "") + "</span>"
                     f'<span class="pp-pill">{_esc(r["category"].replace("_", " "))}</span>'
                     f'<span class="pp-pill {_conf_cls}">{_esc(r["confidence"])} confidence</span>'
                     f'<span class="pp-pill">{_esc(_basis)}</span></div>'
