@@ -1944,6 +1944,12 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
             _sub = _draft.get("submission") or {}
             st.caption(f"{_draft.get('rfp_type', '')} · submission {_sub.get('method', 'unknown')} · deadline {_sub.get('deadline', 'unknown')}"
                        + (" · " + "; ".join(_sub.get("format_requirements", [])[:3]) if _sub.get("format_requirements") else ""))
+            if _draft.get("evaluation_criteria"):
+                st.markdown('<div class="detail-label" style="margin-top:8px;">Evaluation criteria (extracted)</div>', unsafe_allow_html=True)
+                st.write(" · ".join(f"{c['criterion']}" + (f" ({c['weight']})" if c.get("weight") else "") for c in _draft["evaluation_criteria"]))
+            if _draft.get("required_forms"):
+                st.markdown('<div class="detail-label" style="margin-top:8px;">Required forms / attachments (extracted)</div>', unsafe_allow_html=True)
+                st.write(" · ".join(_draft["required_forms"]))
             _ex = _draft.get("extraction")
             if _ex and _ex.get("stats"):
                 st.caption(f"Requirements extracted with Nutrient Data Extraction API ({_ex.get('mode')}): "

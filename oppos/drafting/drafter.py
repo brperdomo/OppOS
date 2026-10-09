@@ -349,6 +349,13 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
     assumptions = [_gate_pricing_prose(a)[0] for a in assumptions]
 
     sub = raw.get("submission") if isinstance(raw.get("submission"), dict) else {}
+    fmt = _norm_list(sub.get("format_requirements"), 15)
+    ext_forms = _norm_list((extracted or {}).get("required_forms"), 20)
+    ext_criteria = [c for c in ((extracted or {}).get("evaluation_criteria") or []) if isinstance(c, dict) and c.get("criterion")]
+    for frm in ext_forms:  # mandatory attachments from Data Extraction always survive, model or not
+        line = f"Required form/attachment: {frm}"
+        if not any(frm.lower() in f.lower() for f in fmt):
+            fmt.append(line)
     return {
         "lob": lob_key,
         "model": DRAFT_MODEL,
@@ -360,7 +367,9 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
         "truncated": truncated,
         "rfp_type": str(raw.get("rfp_type") or "other"),
         "submission": {"method": str(sub.get("method") or "unknown"), "deadline": str(sub.get("deadline") or "unknown"),
-                       "format_requirements": _norm_list(sub.get("format_requirements"), 15)},
+                       "format_requirements": fmt[:30]},
+        "required_forms": ext_forms,
+        "evaluation_criteria": [{"criterion": str(c["criterion"])[:300], "weight": str(c.get("weight") or "")[:40]} for c in ext_criteria][:20],
         "executive_summary": exec_summary,
         "win_themes": win_themes,
         "requirements": reqs_out,

@@ -172,9 +172,16 @@ def extract_rfp_requirements(
     budget = EXTRACTION_MAX_PAGES
     seq = 0
     for path in pdfs:
+        if budget <= 0:
+            result["skipped"].append(f"{path.name} (page budget of {EXTRACTION_MAX_PAGES} exhausted)")
+            continue
         n = page_count(path)
         if n is not None and n > budget:
             result["skipped"].append(f"{path.name} ({n} pages — over the remaining {budget}-page budget)")
+            continue
+        if n is None and budget < EXTRACTION_MAX_PAGES:
+            # Unknown size (encrypted/odd PDF) and part of the budget is already spent: don't gamble credits.
+            result["skipped"].append(f"{path.name} (page count unknown; only {budget} of {EXTRACTION_MAX_PAGES} budget pages remain)")
             continue
         if on_progress:
             on_progress(f"Extracting requirements from {path.name}" + (f" ({n} pages)" if n else ""))
@@ -189,9 +196,9 @@ def extract_rfp_requirements(
 
         data, meta = one["data"], one["metadata"]
         result["files"].append({"file": path.name, "pages": one["pages"], "credits": one["credits_cost"], "request_id": one["request_id"]})
-        result["pages"] += one["pages"] or (n or 0)
-        if n:
-            budget -= n
+        effective_pages = one["pages"] or (n or 0)
+        result["pages"] += effective_pages
+        budget -= effective_pages  # the API's count applies even when pypdf could not read the file
         if one["credits_cost"]:
             result["credits_cost"] += int(one["credits_cost"])
         if one["credits_remaining"] is not None:

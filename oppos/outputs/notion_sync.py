@@ -507,6 +507,12 @@ def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int 
     children.append(_paragraph(f"RFP type: {draft.get('rfp_type', '')} · Submission: {sub.get('method', 'unknown')} · Deadline: {sub.get('deadline', 'unknown')}"))
     for f in sub.get("format_requirements") or []:
         children.append(_bullet(f"Format: {f}"))
+    if draft.get("evaluation_criteria"):
+        children.append(_heading(3, "Evaluation criteria (extracted from the RFP)"))
+        children += [_bullet(f"{c['criterion']}" + (f" — {c['weight']}" if c.get("weight") else "")) for c in draft["evaluation_criteria"]]
+    if draft.get("required_forms"):
+        children.append(_heading(3, "Required forms and attachments (extracted from the RFP)"))
+        children += [_bullet(f) for f in draft["required_forms"]]
     if draft.get("executive_summary"):
         children.append(_heading(3, "Executive summary (draft)"))
         children.extend(_text_to_blocks(draft["executive_summary"], max_chars=8000))
