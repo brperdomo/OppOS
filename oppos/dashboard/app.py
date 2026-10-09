@@ -1914,11 +1914,24 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
                         _draft["notion_append"] = {"page_id": str(npid), "generated_at": _draft.get("generated_at"),
                                                    "done": done, "total": total, "complete": done >= total}
                         _save_draft(sid, _draft)
-                    res = append_response_draft(str(npid), _draft, start_batch=_prog.get("done", 0) if _resume else 0, on_batch=_on_batch)
+                    # If a batch landed on the page but its checkpoint could not be saved, the true position is kept
+                    # for this session so the next click resumes from there instead of the stale persisted one.
+                    _sess_key = f"{k}_notion_true_done"
+                    _sess = st.session_state.get(_sess_key) or {}
+                    _start = _prog.get("done", 0) if _resume else 0
+                    if _sess.get("page_id") == str(npid) and _sess.get("generated_at") == _draft.get("generated_at"):
+                        _start = max(_start, int(_sess.get("done", 0)))
+                    res = append_response_draft(str(npid), _draft, start_batch=_start, on_batch=_on_batch)
                     if res["ok"]:
+                        st.session_state.pop(_sess_key, None)
                         _add_event(sid, CURRENT_USER.get("email", ""), "draft_notion", f"Draft appended to Notion page ({res['total']} batches)")
                         st.success("Draft appended to the Notion page")
                         st.rerun()
+                    elif res.get("checkpoint_failed"):
+                        st.session_state[_sess_key] = {"page_id": str(npid), "generated_at": _draft.get("generated_at"), "done": res["done"]}
+                        st.error(f"Notion append paused after batch {res['done']}/{res['total']}: {res['error']}. "
+                                 f"Click again in this session to resume from batch {res['done'] + 1}; the saved checkpoint is behind, "
+                                 "so do not resume from another browser until this one finishes.")
                     else:
                         st.error(f"Notion append stopped at batch {res['done']}/{res['total']} — {res['error']}. "
                                  "Click again to resume; earlier batches will not be duplicated.")

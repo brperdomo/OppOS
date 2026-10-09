@@ -487,7 +487,8 @@ def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int 
 
     Resumable: pass `start_batch` to continue after a partial failure (the caller persists
     progress via `on_batch(done, total)`), so a retry never re-appends earlier batches.
-    Returns {"ok": bool, "done": batches_appended, "total": batches, "error": str | None}.
+    Returns {"ok": bool, "done": batches_appended, "total": batches, "error": str | None,
+             "checkpoint_failed": True when a batch was appended but on_batch raised — resume from `done`}.
     """
     if not page_id:
         return {"ok": False, "done": 0, "total": 0, "error": "no page id"}
@@ -548,6 +549,13 @@ def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int 
             return {"ok": False, "done": done, "total": len(batches), "error": str(e)[:300]}
         done += 1
         if on_batch:
-            on_batch(done, len(batches))
+            try:
+                on_batch(done, len(batches))
+            except Exception as e:
+                # The batch IS on the page but the checkpoint was not saved: stop here and tell the caller the true
+                # position, so a blind resume from the stale checkpoint cannot re-append it.
+                logger.error("Notion draft append: batch %d/%d appended but progress could not be saved: %s", done, len(batches), e)
+                return {"ok": False, "done": done, "total": len(batches), "checkpoint_failed": True,
+                        "error": f"batch {done} was appended but progress could not be saved ({str(e)[:160]})"}
     logger.info("Appended response draft to Notion page %s (%d blocks, %d batches)", page_id, len(children), len(batches))
     return {"ok": True, "done": done, "total": len(batches), "error": None}
