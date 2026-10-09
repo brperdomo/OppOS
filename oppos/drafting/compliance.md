@@ -7,9 +7,11 @@ owner: Security / Compliance team
 ---
 # Approved security & compliance answers for RFP responses
 
-**Status: NOT APPROVED.** Until `approved: true` is set above by the security team, the response
-drafter does not use anything in this file; every security, certification, hosting, privacy or
-accessibility question in an RFP is marked `[SECURITY TO CONFIRM]` in the draft.
+**Status: NOT APPROVED.** The drafter's default for any security, certification, hosting, privacy or
+accessibility item is the standard answer: documentation is available under NDA via the Nutrient Trust
+Center and the prospect requests access. Only when an RFP *explicitly* demands a specific statement or
+artifact in the response does the drafter need facts — until `approved: true` is set above by the security
+team, those items are marked `[SECURITY TO CONFIRM]`; afterwards they are answered from this file only.
 
 This file is the *only* source the drafter may use for compliance claims. It replaces ad-hoc
 answers and Trust Center scraping. Keep it factual, dated, and scoped per product/LOB — an

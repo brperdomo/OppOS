@@ -34,6 +34,7 @@ REQUIREMENTS_SCHEMA: dict[str, Any] = {
             "type": "object",
             "description": "Facts about the solicitation itself, as printed in the document.",
             "properties": {
+                "document_type": {"type": "string", "description": "What this document is: solicitation (the RFP/RFI/RFQ itself with scope and requirements), submission_instructions (portal or how-to-respond instructions), terms_and_conditions, form (a form to fill in), amendment, or other"},
                 "title": {"type": "string"},
                 "solicitation_number": {"type": "string"},
                 "agency": {"type": "string"},
@@ -92,15 +93,34 @@ def page_count(path: Path) -> int | None:
 
 
 def _leaf(meta: Any) -> dict[str, Any]:
-    """Normalise one citation leaf from output.metadata."""
+    """Normalise one citation leaf from output.metadata.
+
+    Handles both shapes seen from the API: the current one
+    (`citation: {confidence: {groundedness}, regions: [{pageNumber, bbox}], status}`) and the
+    earlier flat one (`confidence`, `confidenceComponents.groundingScore`, `pageNumber`, `bbox`).
+    """
     if not isinstance(meta, dict):
         return {}
+    cit = meta.get("citation") if isinstance(meta.get("citation"), dict) else {}
+    regions = cit.get("regions") if isinstance(cit.get("regions"), list) else []
+    region = regions[0] if regions and isinstance(regions[0], dict) else {}
+    page = meta.get("pageNumber") or region.get("pageNumber")
+    if page is None:
+        idx = meta.get("pageIndex", region.get("pageIndex"))
+        page = int(idx) + 1 if idx is not None else None
     comps = meta.get("confidenceComponents") or {}
+    cconf = cit.get("confidence") if isinstance(cit.get("confidence"), dict) else {}
+    grounding = comps.get("groundingScore")
+    if grounding is None:
+        grounding = cconf.get("groundedness", cconf.get("grounding"))
+    if grounding is None and isinstance(meta.get("confidence"), (int, float)):
+        grounding = meta["confidence"]
     return {
-        "page": meta.get("pageNumber") or (int(meta["pageIndex"]) + 1 if meta.get("pageIndex") is not None else None),
-        "bbox": meta.get("bbox"),
-        "confidence": meta.get("confidence"),
-        "grounding": comps.get("groundingScore", meta.get("confidence")),
+        "page": page,
+        "bbox": meta.get("bbox") or region.get("bbox"),
+        "confidence": meta.get("confidence") if isinstance(meta.get("confidence"), (int, float)) else grounding,
+        "grounding": grounding,
+        "cited": cit.get("status") == "cited" if cit else bool(page),
     }
 
 
@@ -178,7 +198,11 @@ def extract_rfp_requirements(
             result["credits_remaining"] = one["credits_remaining"]
 
         sol = data.get("solicitation") or {}
+        doc_type = str(sol.get("document_type") or "other").strip().lower().replace(" ", "_")
+        result["files"][-1]["document_type"] = doc_type
         for k, v in sol.items():
+            if k == "document_type":
+                continue
             if v and not result["solicitation"].get(k):
                 result["solicitation"][k] = v
 
@@ -193,6 +217,7 @@ def extract_rfp_requirements(
             result["requirements"].append({
                 "id": f"E{seq}",
                 "file": path.name,
+                "document_type": doc_type,
                 "section": str(item.get("section") or "").strip()[:80],
                 "text": str(item.get("text")).strip()[:1500],
                 "category": cat if cat in CATEGORIES.replace(" ", "").split("|") else "other",
@@ -200,6 +225,7 @@ def extract_rfp_requirements(
                 "page": cite.get("page"),
                 "grounding": cite.get("grounding"),
                 "confidence": cite.get("confidence"),
+                "cited": cite.get("cited", False),
             })
         for c in data.get("evaluation_criteria") or []:
             if isinstance(c, dict) and c.get("criterion"):
@@ -210,6 +236,8 @@ def extract_rfp_requirements(
 
     result["stats"] = {
         "requirements": len(result["requirements"]),
+        "by_document_type": {t: sum(1 for r in result["requirements"] if r.get("document_type") == t)
+                             for t in sorted({r.get("document_type") or "other" for r in result["requirements"]})},
         "mandatory": sum(1 for r in result["requirements"] if r["mandatory"]),
         "low_grounding": sum(1 for r in result["requirements"]
                              if isinstance(r.get("grounding"), (int, float)) and r["grounding"] < 0.6),
@@ -226,8 +254,15 @@ def format_for_prompt(extracted: dict[str, Any]) -> str:
     sol = extracted.get("solicitation") or {}
     if sol:
         lines.append("Solicitation facts: " + "; ".join(f"{k}: {v}" for k, v in sol.items() if v))
+    files = extracted.get("files") or []
+    if files:
+        lines.append("Documents: " + "; ".join(f"{f['file']} = {f.get('document_type', 'other')}" for f in files))
+    lines.append("Items from submission_instructions / terms_and_conditions / form documents are process or contractual "
+                 "obligations: acknowledge them briefly (how we will comply) rather than selling capabilities; items from the "
+                 "solicitation document are the requirements to answer in full.")
     for r in extracted["requirements"]:
-        tags = [f"file:{r['file']}" if r.get("file") else "", f"p.{r['page']}" if r.get("page") else "",
+        tags = [f"file:{r['file']}" if r.get("file") else "", r.get("document_type", "") if r.get("document_type") not in (None, "", "solicitation") else "",
+                f"p.{r['page']}" if r.get("page") else "",
                 f"§{r['section']}" if r.get("section") else "",
                 r.get("category", ""), "mandatory" if r.get("mandatory") else "",
                 f"grounding {r['grounding']:.2f}" if isinstance(r.get("grounding"), (int, float)) else ""]

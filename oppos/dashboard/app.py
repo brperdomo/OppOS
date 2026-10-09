@@ -1694,7 +1694,8 @@ def _run_draft(opp: dict, pursuit: dict) -> None:
     with st.status(f"Drafting response: {title[:50]}…", expanded=True) as status:
         att = opp.get("attachment_text") or ""
         st.write(f"📄 Using the RFP description" + (f" and {len(att):,} characters of attachment text" if att else " — no attachments loaded (load them first for a better draft)"))
-        st.write("🔒 Compliance source: " + ("approved" if comp["approved"] else "not approved — security items will read [SECURITY TO CONFIRM]"))
+        st.write("🔒 Security items get the Trust Center standard answer (NDA access on request); explicit asks for a specific statement or artifact are "
+                 + ("answered from the approved compliance file" if comp["approved"] else "marked [SECURITY TO CONFIRM]"))
 
         # Dogfood: Nutrient Data Extraction API maps the RFP PDFs to a requirements schema with page citations.
         extracted = None
@@ -1718,7 +1719,7 @@ def _run_draft(opp: dict, pursuit: dict) -> None:
             else:
                 st.write("ℹ️ NUTRIENT_API_KEY not set — drafting from text only")
         try:
-            draft = draft_response(opp, attachment_text=att, extracted=extracted)
+            draft = draft_response(opp, attachment_text=att, extracted=extracted, on_progress=lambda m: st.write(f"✍️ {m}"))
         except Exception as e:
             status.update(label="Draft failed", state="error")
             st.error(f"Drafting failed: {e}")
@@ -1926,8 +1927,9 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
             _cs = _draft.get("compliance_source") or {}
             st.caption(f"Draft {str(_draft.get('generated_at', ''))[:16].replace('T', ' ')} UTC · "
                        f"{_draft['stats']['requirements']} requirements · {_draft['stats']['high_confidence']} high confidence · "
-                       f"{_draft['stats']['needs_human']} need a human · compliance "
-                       + ("approved" if _cs.get("approved") else "not approved → [SECURITY TO CONFIRM]"))
+                       f"{_draft['stats']['needs_human']} need a human"
+                       + (f" · drafted in {_draft['chunks']} parts" if _draft.get("chunks") else "")
+                       + " · security: Trust Center standard answer" + ("" if _cs.get("approved") else "; explicit asks → [SECURITY TO CONFIRM]"))
         else:
             st.caption("No response draft yet." + (" Load attachments first for the best result." if not opp.get("attachment_text") else ""))
     if _draft:
