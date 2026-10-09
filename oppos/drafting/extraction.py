@@ -9,6 +9,7 @@ drafter works from page-cited requirements instead of a text blob.
 from __future__ import annotations
 
 import json
+import re
 import logging
 import os
 from pathlib import Path
@@ -84,10 +85,19 @@ def extraction_available() -> bool:
     return bool(api_key())
 
 
+_PAGE_OBJ_RE = re.compile(rb"/Type\s*/Page(?![s/\w])")
+
+
 def page_count(path: Path) -> int | None:
+    """Local page count, or None when it cannot be bounded (then the file is never sent for extraction)."""
     try:
         from pypdf import PdfReader
         return len(PdfReader(str(path)).pages)
+    except Exception:
+        pass
+    try:  # encrypted / odd files: count page objects in the raw bytes (object streams hide them → None)
+        n = len(_PAGE_OBJ_RE.findall(path.read_bytes()))
+        return n or None
     except Exception:
         return None
 
@@ -179,9 +189,11 @@ def extract_rfp_requirements(
         if n is not None and n > budget:
             result["skipped"].append(f"{path.name} ({n} pages — over the remaining {budget}-page budget)")
             continue
-        if n is None and budget < EXTRACTION_MAX_PAGES:
-            # Unknown size (encrypted/odd PDF) and part of the budget is already spent: don't gamble credits.
-            result["skipped"].append(f"{path.name} (page count unknown; only {budget} of {EXTRACTION_MAX_PAGES} budget pages remain)")
+        if n is None:
+            # The API charges per page and the charge cannot be undone — a file whose size we cannot bound
+            # locally is never uploaded, first in line or not.
+            result["skipped"].append(f"{path.name} (page count unknown — cannot bound credit spend; "
+                                     f"convert or unlock the PDF and retry)")
             continue
         if on_progress:
             on_progress(f"Extracting requirements from {path.name}" + (f" ({n} pages)" if n else ""))

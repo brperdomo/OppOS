@@ -108,9 +108,43 @@ _EXPLICIT_SECURITY_ASK_RE = re.compile(
 )
 
 
-def _gate_compliance_prose(text: str) -> tuple[str, bool]:
-    """Prefix every sentence that makes a compliance claim with SECURITY_MARK (unapproved mode).
+_STANDARD_SENTENCES = {s.strip().lower() for s in _SENTENCE_SPLIT.split(TRUST_CENTER_ANSWER)}
+# Generic words that only say *that* something is a compliance topic; they carry no fact to verify.
+_GENERIC_COMPLIANCE_TERMS = {"compliant", "compliance", "certified", "certification", "certifications", "certificate",
+                             "certificates", "accredited", "accreditation", "attestation", "audit report"}
 
+
+def _claim_terms(sentence: str) -> set[str]:
+    """The concrete compliance terms a sentence asserts (SOC 2, FedRAMP, HIPAA, encryption, …), normalised."""
+    return {re.sub(r"[\s-]+", " ", m.group(0).lower()).strip() for m in _COMPLIANCE_RE.finditer(sentence)}
+
+
+def _unsupported_terms(sentence: str, approved_body: str | None) -> set[str]:
+    """Compliance terms in `sentence` that the approved body does not mention (all of them when unapproved).
+
+    A term counts as supported only when the approved text contains it, so a model-written
+    "we hold FedRAMP authorization" is gated unless FedRAMP appears in compliance.md.
+    """
+    terms = _claim_terms(sentence)
+    if not terms:
+        return set()
+    if not approved_body:
+        return terms
+    body_n = re.sub(r"[\s-]+", " ", approved_body.lower())
+    specific = {t for t in terms if t not in _GENERIC_COMPLIANCE_TERMS}
+    if not specific:
+        # Only generic words ("we are fully compliant") — nothing checkable, so a human must look.
+        return terms
+    return {t for t in specific if t not in body_n}
+
+
+def _gate_compliance_prose(text: str, approved_body: str | None = None) -> tuple[str, bool]:
+    """Prefix every sentence that makes an unsupported compliance claim with SECURITY_MARK.
+
+    Unapproved (`approved_body` None): every compliance claim is unsupported. Approved: a claim is
+    allowed only when each concrete term it names appears in the approved compliance body — the
+    model's own `basis` label is never trusted. Only the sentences of the fixed standard Trust
+    Center answer are exempt; arbitrary prose that merely mentions the Trust Center is not.
     A sentence counts as gated only if it *starts* with the marker, so compound sentences
     like "We are SOC 2 certified; [SECURITY TO CONFIRM] residency" are still flagged.
     """
@@ -118,10 +152,10 @@ def _gate_compliance_prose(text: str) -> tuple[str, bool]:
         return text, False
     out, flagged = [], False
     for sent in _SENTENCE_SPLIT.split(text.strip()):
-        if "Trust Center" in sent:  # the standard pointer is always allowed
+        if sent.strip().lower() in _STANDARD_SENTENCES:  # the fixed standard answer is always allowed
             out.append(sent)
             continue
-        if _COMPLIANCE_RE.search(sent) and not sent.lstrip().startswith(SECURITY_MARK):
+        if _unsupported_terms(sent, approved_body) and not sent.lstrip().startswith(SECURITY_MARK):
             sent = f"{SECURITY_MARK} {sent.strip()}"
             flagged = True
         out.append(sent)
@@ -283,14 +317,16 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
                 basis, conf = ["needs_human"], "low"
                 todo = todo or "Security team to confirm or supply what this requirement explicitly asks for."
             elif explicit and comp["approved"]:
-                response, gated = _gate_compliance_prose(response) if "compliance" not in basis else (response, False)
+                # Every claim must be backed by the approved file — a model-supplied basis ["compliance"] proves nothing.
+                response, gated = _gate_compliance_prose(response, comp["body"])
                 if gated:
                     basis, conf = ["needs_human"], "low"
+                    todo = todo or "Security team to confirm the claim(s) not covered by the approved compliance answers."
             else:
                 # Not an explicit ask → the standard Trust Center answer; nothing to verify.
                 response, basis, conf, todo = TRUST_CENTER_ANSWER, ["standard"], "high", ""
-        elif not comp["approved"]:
-            response, gated = _gate_compliance_prose(response)
+        else:
+            response, gated = _gate_compliance_prose(response, comp["body"] if comp["approved"] else None)
             if gated:
                 basis, conf = ["needs_human"], "low"
                 todo = todo or "Security team to confirm the compliance statement in this answer, or remove it."
@@ -314,11 +350,13 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
         if rid in seen_ids:
             continue  # duplicate id from the model — keep the first answer
         seen_ids.add(rid)
+        # For an extracted id the citation is the extraction's — if it has no page/section, the answer has none;
+        # a model-invented page number must never fill the gap.
         reqs_out.append({
             "id": rid,
-            "file": str((ext or {}).get("file") or r.get("file") or "").strip()[:120],
-            "section": str((ext or {}).get("section") or r.get("section") or "").strip()[:80],
-            "page": (ext or {}).get("page") if ext and ext.get("page") is not None else page,
+            "file": str(ext.get("file") if ext else r.get("file") or "").strip()[:120],
+            "section": str(ext.get("section") if ext else r.get("section") or "").strip()[:80],
+            "page": ext.get("page") if ext else page,
             "text": req_text[:1500],
             "category": cat,
             "response": response[:4000],
@@ -340,10 +378,10 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
     exec_summary = str(raw.get("executive_summary") or "").strip()
     win_themes = _norm_list(raw.get("win_themes"), 8)
     assumptions = _norm_list(raw.get("assumptions"), 20)
-    if not comp["approved"]:
-        exec_summary, _ = _gate_compliance_prose(exec_summary)
-        win_themes = [_gate_compliance_prose(t)[0] for t in win_themes]
-        assumptions = [_gate_compliance_prose(a)[0] for a in assumptions]
+    approved_body = comp["body"] if comp["approved"] else None
+    exec_summary, _ = _gate_compliance_prose(exec_summary, approved_body)
+    win_themes = [_gate_compliance_prose(t, approved_body)[0] for t in win_themes]
+    assumptions = [_gate_compliance_prose(a, approved_body)[0] for a in assumptions]
     exec_summary, _ = _gate_pricing_prose(exec_summary)
     win_themes = [_gate_pricing_prose(t)[0] for t in win_themes]
     assumptions = [_gate_pricing_prose(a)[0] for a in assumptions]
