@@ -690,17 +690,26 @@ with st.spinner("Loading pipeline..."):
     OPEN_PURSUITS = {p["source_id"]: p for p in _list_pursuits(status=_OPEN_STAGES)}
     from oppos.storage.db import get_excluded_sources as _get_excluded
     EXCLUDED_SOURCES = set(_get_excluded())
+    # Anything that ever had a pursuit record stays visible in its lifecycle/history tabs,
+    # so owners can still record outcomes after a source is excluded.
+    TRACKED_IDS = {p["source_id"] for p in _list_pursuits(status=None)} if EXCLUDED_SOURCES else set()
 
-# Every list view hides excluded sources (pursuits you already own are unaffected).
+# Every list view hides excluded sources, except opportunities that are or were pursued.
 from oppos.storage import db as _db
 
 
+def _visible(rows: list[dict]) -> list[dict]:
+    if not EXCLUDED_SOURCES:
+        return rows
+    return [r for r in rows if r.get("source") not in EXCLUDED_SOURCES or r.get("source_id") in TRACKED_IDS]
+
+
 def get_all_scored(min_score: int = 0) -> list[dict]:
-    return [r for r in _db.get_all_scored(min_score) if r.get("source") not in EXCLUDED_SOURCES]
+    return _visible(_db.get_all_scored(min_score))
 
 
 def get_by_pipeline_status(status: str, min_score: int = 0) -> list[dict]:
-    return [r for r in _db.get_by_pipeline_status(status, min_score) if r.get("source") not in EXCLUDED_SOURCES]
+    return _visible(_db.get_by_pipeline_status(status, min_score))
 
 PIPELINE_LABELS = {
     "new": "New",

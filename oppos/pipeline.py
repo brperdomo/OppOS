@@ -145,8 +145,10 @@ def notify_after_scan(stats: dict[str, Any], min_score: int) -> int:
     from oppos.pursuits import OPEN_STAGES, board_rows
     from oppos.storage.db import get_opps_by_ids, get_unnotified, list_pursuits, set_slack_notified
 
+    excluded = set(get_excluded_sources())
     pending = [o for o in get_unnotified(min_score=min_score)
-               if (o.get("pipeline_status") or "new") in _DIGEST_ACTIVE_STATUSES]
+               if (o.get("pipeline_status") or "new") in _DIGEST_ACTIVE_STATUSES
+               and o.get("source") not in excluded]
     notified = 0
 
     if sp.SLACK_ALERT_MODE == "digest":

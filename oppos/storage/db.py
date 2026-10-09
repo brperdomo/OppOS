@@ -710,14 +710,19 @@ def count_active_by_sources(sources: list[str]) -> int:
     ph = ", ".join("?" for _ in sources)
     rows = _query(
         f"""SELECT COUNT(*) AS n FROM opportunities
-            WHERE source IN ({ph}) AND pipeline_status IN ('new', 'qualified', 'expiring_soon')""",
+            WHERE source IN ({ph}) AND pipeline_status IN ('new', 'qualified', 'expiring_soon')
+              AND source_id NOT IN (SELECT source_id FROM pursuits WHERE status IN ('evaluating', 'active'))""",
         tuple(sources),
     )
     return int(rows[0]["n"]) if rows else 0
 
 
 def archive_sources(sources: list[str], note: str = "Source excluded") -> int:
-    """Move every still-active row from these sources to skipped. Returns rows changed."""
+    """Move every still-active, unclaimed row from these sources to skipped. Returns rows changed.
+
+    Opportunities with an open pursuit (claimed or pursuing) are left alone — the
+    owner is working them regardless of where they were found.
+    """
     if not sources:
         return 0
     n = count_active_by_sources(sources)
@@ -725,7 +730,8 @@ def archive_sources(sources: list[str], note: str = "Source excluded") -> int:
     _execute(
         f"""UPDATE opportunities
             SET pipeline_status = 'skipped', pipeline_notes = ?, pipeline_updated_at = ?
-            WHERE source IN ({ph}) AND pipeline_status IN ('new', 'qualified', 'expiring_soon')""",
+            WHERE source IN ({ph}) AND pipeline_status IN ('new', 'qualified', 'expiring_soon')
+              AND source_id NOT IN (SELECT source_id FROM pursuits WHERE status IN ('evaluating', 'active'))""",
         (note, datetime.utcnow().isoformat(), *sources),
     )
     return n
