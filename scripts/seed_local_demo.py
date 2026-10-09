@@ -39,7 +39,8 @@ def main() -> None:
     assert not db._use_turso(), "Refusing to seed: Turso is configured. Run with OPPOS_ENV_FILE=.env.local"
     print(f"Seeding {cfg.DB_PATH}")
     db.init_db()
-    for table in ("pursuits", "pursuit_events", "reminders_sent", "source_health"):
+    for table in ("opportunities", "pursuits", "pursuit_events", "reminders_sent", "source_health",
+                  "portal_registrations", "meta"):
         db._execute(f"DELETE FROM {table}")  # demo state must be reproducible
 
     due_soon = (date.today() + timedelta(days=5)).isoformat()

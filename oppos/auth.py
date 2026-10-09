@@ -16,6 +16,9 @@ _DEV_FALLBACK = {"email": "local@oppos.dev", "name": "Local User"}
 
 
 def auth_configured() -> bool:
+    # Escape hatch for the local demo instance and automated tests. Never set this in production.
+    if (os.environ.get("OPPOS_AUTH_DISABLED") or "").strip().lower() in ("1", "true", "yes"):
+        return False
     try:
         auth = st.secrets.get("auth")  # type: ignore[attr-defined]
     except Exception:

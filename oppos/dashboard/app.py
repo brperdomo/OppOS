@@ -76,9 +76,11 @@ NUTRIENT_CSS = """
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
 }
 
-/* Hide default Streamlit header and footer */
-#MainMenu, footer, header {visibility: hidden;}
-.stDeployButton {display: none;}
+/* Hide Streamlit chrome — but keep the header: it hosts the page navigation */
+#MainMenu, footer {visibility: hidden;}
+.stDeployButton, [data-testid="stAppDeployButton"], [data-testid="stToolbarActions"] {display: none;}
+header[data-testid="stHeader"] { background: transparent; }
+header[data-testid="stHeader"] a, header[data-testid="stHeader"] span { font-size: 14px; }
 
 /* Main container */
 .block-container {
@@ -743,37 +745,6 @@ def _run_scan() -> dict:
     return stats
 
 
-# --- Scan button row ---
-scan_col, manual_col = st.columns([1, 1])
-with scan_col:
-    scan_clicked = st.button("Scan for New RFPs", use_container_width=True, type="primary")
-    # Show last scan timestamp
-    _last_scan_raw = get_meta("last_scan")
-    if _last_scan_raw:
-        try:
-            _last_scan_dt = datetime.fromisoformat(_last_scan_raw).replace(tzinfo=timezone.utc)
-            _now_utc = datetime.now(timezone.utc)
-            _delta = _now_utc - _last_scan_dt
-            if _delta.total_seconds() < 60:
-                _ago = "just now"
-            elif _delta.total_seconds() < 3600:
-                _mins = int(_delta.total_seconds() // 60)
-                _ago = f"{_mins}m ago"
-            elif _delta.total_seconds() < 86400:
-                _hrs = int(_delta.total_seconds() // 3600)
-                _ago = f"{_hrs}h ago"
-            else:
-                _days = int(_delta.days)
-                _ago = f"{_days}d ago"
-            _local_str = _last_scan_dt.astimezone().strftime("%-m/%-d %I:%M %p")
-            st.caption(f"Last scan: {_local_str} ({_ago})")
-        except Exception:
-            st.caption(f"Last scan: {_last_scan_raw}")
-with manual_col:
-    manual_open = st.button("Submit Manual RFP", use_container_width=True)
-
-
-
 def _render_source_health(rows: list[dict]) -> str:
     import html as _html
     now = datetime.now(timezone.utc)
@@ -804,115 +775,6 @@ def _render_source_health(rows: list[dict]) -> str:
     out.append("</table>")
     return "".join(out)
 
-
-from oppos.storage.db import get_source_health as _get_source_health
-_health_rows = _get_source_health()
-if _health_rows:
-    _n_fail = sum(1 for r in _health_rows if r.get("last_error"))
-    _health_label = "Source health" + (f"  ·  {_n_fail} failing" if _n_fail else "  ·  all OK")
-    with st.expander(_health_label):
-        st.markdown(_render_source_health(_health_rows), unsafe_allow_html=True)
-
-if CURRENT_USER.get("is_admin"):
-    with st.expander(f"Settings  ·  {len(EXCLUDED_SOURCES)} source{'s' if len(EXCLUDED_SOURCES) != 1 else ''} excluded"):
-        from oppos.storage.db import archive_sources, count_active_by_sources, list_sources_in_db, set_excluded_sources
-        _db_sources = dict(list_sources_in_db())
-        _all_keys = sorted(set(SOURCE_LABELS) | set(_db_sources) | EXCLUDED_SOURCES)
-        def _src_label(k: str) -> str:
-            base = SOURCE_LABELS.get(k, k)
-            n = _db_sources.get(k)
-            tag = "" if k in SOURCE_LABELS else " · retired"
-            return f"{base}{tag}" + (f"  ({n} rows)" if n else "")
-        st.caption("Excluded sources are hidden from every list, skipped by scans, and never alerted. "
-                   "Items you already claimed stay in your pursuits.")
-        _sel = st.multiselect("Excluded sources", _all_keys, default=sorted(EXCLUDED_SOURCES),
-                              format_func=_src_label, key="excluded_sources_select")
-        _sc1, _sc2 = st.columns([1, 2])
-        with _sc1:
-            if st.button("Save exclusions", key="excluded_save", use_container_width=True):
-                set_excluded_sources(_sel)
-                st.rerun()
-        with _sc2:
-            _n_active = count_active_by_sources(sorted(EXCLUDED_SOURCES)) if EXCLUDED_SOURCES else 0
-            if _n_active:
-                with st.popover(f"Archive {_n_active} active item{'s' if _n_active != 1 else ''} from excluded sources",
-                                use_container_width=True):
-                    st.write(f"Moves {_n_active} new / qualified / expiring items from "
-                             f"{', '.join(SOURCE_LABELS.get(k, k) for k in sorted(EXCLUDED_SOURCES))} to Archive (skipped) "
-                             "with the note \"Source excluded\". Pursuits are not touched. This cannot be undone in bulk.")
-                    if st.button("Archive them", key="excluded_archive", type="primary", use_container_width=True):
-                        _done = archive_sources(sorted(EXCLUDED_SOURCES))
-                        st.success(f"Archived {_done} items")
-                        st.rerun()
-            elif EXCLUDED_SOURCES:
-                st.caption("No active items remain from excluded sources.")
-
-    _reg_known = sum(1 for r in PORTAL_REGS.values() if (r.get("status") or "unknown") != "unknown")
-    with st.expander(f"Portal registrations  ·  {_reg_known}/{len(PORTAL_REGS)} known"):
-        import pandas as pd
-        from oppos.pursuits import REGISTRATION_LABELS, REGISTRATION_STATUSES
-        from oppos.storage.db import upsert_portal_registration
-
-        _reg_cols = ["portal", "display_name", "status", "vendor_id", "login_owner", "lead_time_days", "url", "notes"]
-        _reg_rows = [{c: r.get(c) for c in _reg_cols} for r in PORTAL_REGS.values()]
-        _reg_df = pd.DataFrame(_reg_rows, columns=_reg_cols).sort_values("display_name", na_position="last").reset_index(drop=True)
-        _reg_df["lead_time_days"] = pd.to_numeric(_reg_df["lead_time_days"], errors="coerce")
-        _reg_df["status"] = _reg_df["status"].fillna("unknown")
-        st.caption("Which procurement portals Nutrient is registered on, who holds the login, and how long registration takes. "
-                   "Shown as a badge on every card and used in the pursuit checklist. Never store passwords here.")
-        _edited = st.data_editor(
-            _reg_df, hide_index=True, use_container_width=True, disabled=["portal", "display_name"], key="reg_editor",
-            column_config={
-                "portal": st.column_config.TextColumn("Key"),
-                "display_name": st.column_config.TextColumn("Portal"),
-                "status": st.column_config.SelectboxColumn("Status", options=REGISTRATION_STATUSES, required=True),
-                "vendor_id": st.column_config.TextColumn("Vendor / supplier ID"),
-                "login_owner": st.column_config.TextColumn("Login held by"),
-                "lead_time_days": st.column_config.NumberColumn("Lead time (days)", min_value=0, step=1),
-                "url": st.column_config.LinkColumn("Registration URL"),
-                "notes": st.column_config.TextColumn("Notes"),
-            },
-        )
-        if st.button("Save registrations", key="reg_save"):
-            _changed = 0
-            for _new, _old in zip(_edited.to_dict("records"), _reg_df.to_dict("records")):
-                def _clean(v):
-                    return None if v is None or (isinstance(v, float) and pd.isna(v)) else v
-                _new_c = {k: _clean(v) for k, v in _new.items()}
-                _old_c = {k: _clean(v) for k, v in _old.items()}
-                if _new_c != _old_c:
-                    _lead = _new_c.get("lead_time_days")
-                    upsert_portal_registration(
-                        _new_c["portal"], status=_new_c.get("status") or "unknown", vendor_id=_new_c.get("vendor_id"),
-                        login_owner=_new_c.get("login_owner"), lead_time_days=int(_lead) if _lead is not None else None,
-                        url=_new_c.get("url"), notes=_new_c.get("notes"),
-                    )
-                    _changed += 1
-            st.success(f"Saved {_changed} change(s)")
-            st.rerun()
-
-if scan_clicked:
-    scan_stats = _run_scan()
-    st.session_state["last_scan_stats"] = scan_stats
-    st.rerun()
-
-# Show scan results from session state (persists across reruns)
-_scan_stats = st.session_state.pop("last_scan_stats", None)
-if _scan_stats:
-    filtered = _scan_stats.get("filtered_out", 0)
-    if _scan_stats["new"] > 0:
-        filter_note = f" · {filtered} non-software filtered out" if filtered else ""
-        st.success(
-            f"Found **{_scan_stats['new']} new** opportunities "
-            f"({_scan_stats['scored']} scored above threshold{filter_note}) "
-            f"from {_scan_stats['fetched']} total listings scanned."
-        )
-    else:
-        st.info(f"No new opportunities found. Scanned {_scan_stats['fetched']} listings across all sources.")
-    if _scan_stats["errors"]:
-        with st.expander(f"{len(_scan_stats['errors'])} source(s) had errors"):
-            for err in _scan_stats["errors"]:
-                st.text(err)
 
 # --- Manual RFP submission ---
 def _run_manual_url(url: str) -> dict:
@@ -1027,62 +889,6 @@ def _manual_rfp_dialog() -> None:
     if st.button("Done", key="manual_done", use_container_width=True):
         st.session_state.pop("manual_result", None)
         st.rerun()
-
-
-if manual_open:
-    _manual_rfp_dialog()
-
-all_rows = get_all_scored(min_score=0)
-
-status_counts = {}
-for s in PIPELINE_LABELS:
-    status_counts[s] = sum(1 for r in all_rows if (r.get("pipeline_status") or "new") == s)
-
-high_fit = sum(1 for r in all_rows if int(r.get("fit_score") or 0) >= 65)
-
-st.markdown(f"""
-<div class="stats-bar">
-    <div class="stat-item">
-        <div class="stat-value">{len(all_rows)}</div>
-        <div class="stat-label">Total Reviewed</div>
-    </div>
-    <div class="stat-item">
-        <div class="stat-value green">{high_fit}</div>
-        <div class="stat-label">High Fit (65+)</div>
-    </div>
-    <div class="stat-item">
-        <div class="stat-value" style="color: var(--accent-orange);">{status_counts.get('expiring_soon', 0)}</div>
-        <div class="stat-label">Expiring</div>
-    </div>
-    <div class="stat-item">
-        <div class="stat-value gold">{len(OPEN_PURSUITS)}</div>
-        <div class="stat-label">Claimed / Pursuing</div>
-    </div>
-    <div class="stat-item">
-        <div class="stat-value green">{status_counts.get('submitted', 0)}</div>
-        <div class="stat-label">Submitted</div>
-    </div>
-    <div class="stat-item">
-        <div class="stat-value pink">{status_counts.get('won', 0)}</div>
-        <div class="stat-label">Won</div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-_expiring_count = status_counts.get('expiring_soon', 0)
-_expired_count = status_counts.get('expired', 0)
-_archive_count = status_counts.get('won', 0) + status_counts.get('lost', 0) + status_counts.get('skipped', 0)
-
-tab_pipeline, tab_qualified, tab_expiring, tab_in_progress, tab_submitted, tab_archive, tab_expired = st.tabs([
-    f"Pipeline ({status_counts.get('new', 0)})",
-    f"Qualified ({status_counts.get('qualified', 0)})",
-    f"Expiring Soon ({_expiring_count})" if _expiring_count else "Expiring Soon",
-    f"Pursuits ({len(OPEN_PURSUITS)})",
-    f"Submitted ({status_counts.get('submitted', 0)})",
-    f"Archive ({_archive_count})",
-    f"Expired ({_expired_count})" if _expired_count else "Expired",
-])
-
 
 
 def _ensure_files_exist(opp: dict, selected_paths: list) -> list:
@@ -1644,7 +1450,7 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
     st.markdown("\n".join(card_parts), unsafe_allow_html=True)
 
     # --- Claim / ownership controls (standard across Pipeline, Qualified, Expiring) ---
-    if pipeline_status in ("new", "qualified", "expiring_soon"):
+    if tab_key != "desk" and pipeline_status in ("new", "qualified", "expiring_soon"):
         from oppos.pursuits import claim_opportunity as _claim, release_claim as _release
         _mine_p = _open_p and (_open_p.get("owner_email") or "").lower() == CURRENT_USER["email"]
         gc1, gc2, gc3 = st.columns([1, 1, 2])
@@ -2022,238 +1828,405 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
                         f'{_esc(str(ev.get("actor") or ""))} — {_esc(str(ev.get("detail") or ""))}</div>', unsafe_allow_html=True)
 
 
-# --- Pipeline tab (new opportunities) ---
-with tab_pipeline:
-    col_f1, col_f2, col_f3 = st.columns(3)
-    with col_f1:
-        min_score = st.slider("Min Score", 0, 100, 40, step=5, key="pipe_score")
-    with col_f2:
-        sort_by = st.selectbox("Sort by", ["Fit Score", "Deadline", "Posted"], key="pipe_sort")
-    with col_f3:
-        source_filter = st.multiselect(
-            "Source",
-            list(SOURCE_LABELS.keys()),
-            format_func=lambda k: SOURCE_LABELS.get(k, k),
-            key="pipe_source",
+def _unclaimed(rows: list[dict]) -> tuple[list[dict], int]:
+    """Split pool rows into (unclaimed, number hidden because someone holds them)."""
+    kept = [r for r in rows if r.get("source_id") not in OPEN_PURSUITS]
+    return kept, len(rows) - len(kept)
+
+
+def _claimed_note(n: int) -> str:
+    return f' &middot; <span style="color: var(--text-tertiary);">{n} claimed — see My desk → Team</span>' if n else ""
+
+
+def page_pool() -> None:
+    """Find RFPs — the shared pool. Only unclaimed opportunities appear here."""
+    # --- Scan button row ---
+    scan_col, manual_col = st.columns([1, 1])
+    with scan_col:
+        scan_clicked = st.button("Scan for New RFPs", use_container_width=True, type="primary")
+        # Show last scan timestamp
+        _last_scan_raw = get_meta("last_scan")
+        if _last_scan_raw:
+            try:
+                _last_scan_dt = datetime.fromisoformat(_last_scan_raw).replace(tzinfo=timezone.utc)
+                _now_utc = datetime.now(timezone.utc)
+                _delta = _now_utc - _last_scan_dt
+                if _delta.total_seconds() < 60:
+                    _ago = "just now"
+                elif _delta.total_seconds() < 3600:
+                    _mins = int(_delta.total_seconds() // 60)
+                    _ago = f"{_mins}m ago"
+                elif _delta.total_seconds() < 86400:
+                    _hrs = int(_delta.total_seconds() // 3600)
+                    _ago = f"{_hrs}h ago"
+                else:
+                    _days = int(_delta.days)
+                    _ago = f"{_days}d ago"
+                _local_str = _last_scan_dt.astimezone().strftime("%-m/%-d %I:%M %p")
+                st.caption(f"Last scan: {_local_str} ({_ago})")
+            except Exception:
+                st.caption(f"Last scan: {_last_scan_raw}")
+    with manual_col:
+        manual_open = st.button("Submit Manual RFP", use_container_width=True)
+
+
+
+    if manual_open:
+        _manual_rfp_dialog()
+
+    if scan_clicked:
+        scan_stats = _run_scan()
+        st.session_state["last_scan_stats"] = scan_stats
+        st.rerun()
+
+    # Show scan results from session state (persists across reruns)
+    _scan_stats = st.session_state.pop("last_scan_stats", None)
+    if _scan_stats:
+        filtered = _scan_stats.get("filtered_out", 0)
+        if _scan_stats["new"] > 0:
+            filter_note = f" · {filtered} non-software filtered out" if filtered else ""
+            st.success(
+                f"Found **{_scan_stats['new']} new** opportunities "
+                f"({_scan_stats['scored']} scored above threshold{filter_note}) "
+                f"from {_scan_stats['fetched']} total listings scanned."
+            )
+        else:
+            st.info(f"No new opportunities found. Scanned {_scan_stats['fetched']} listings across all sources.")
+        if _scan_stats["errors"]:
+            with st.expander(f"{len(_scan_stats['errors'])} source(s) had errors"):
+                for err in _scan_stats["errors"]:
+                    st.text(err)
+
+
+    all_rows = get_all_scored(min_score=0)
+
+    status_counts = {}
+    for s in PIPELINE_LABELS:
+        status_counts[s] = sum(1 for r in all_rows if (r.get("pipeline_status") or "new") == s)
+
+    high_fit = sum(1 for r in all_rows if int(r.get("fit_score") or 0) >= 65)
+
+    st.markdown(f"""
+    <div class="stats-bar">
+        <div class="stat-item">
+            <div class="stat-value">{len(all_rows)}</div>
+            <div class="stat-label">Total Reviewed</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value green">{high_fit}</div>
+            <div class="stat-label">High Fit (65+)</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value" style="color: var(--accent-orange);">{status_counts.get('expiring_soon', 0)}</div>
+            <div class="stat-label">Expiring</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value gold">{len(OPEN_PURSUITS)}</div>
+            <div class="stat-label">Claimed / Pursuing</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value green">{status_counts.get('submitted', 0)}</div>
+            <div class="stat-label">Submitted</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value pink">{status_counts.get('won', 0)}</div>
+            <div class="stat-label">Won</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+    _expiring_count = status_counts.get('expiring_soon', 0)
+    _expired_count = status_counts.get('expired', 0)
+    _archive_count = status_counts.get('won', 0) + status_counts.get('lost', 0) + status_counts.get('skipped', 0)
+    _pool_new = len(_unclaimed([r for r in all_rows if (r.get("pipeline_status") or "new") == "new"])[0])
+    _pool_qual = len(_unclaimed([r for r in all_rows if r.get("pipeline_status") == "qualified"])[0])
+    tab_pipeline, tab_qualified, tab_expiring, tab_archive, tab_expired = st.tabs([
+        f"Pipeline ({_pool_new})",
+        f"Qualified ({_pool_qual})",
+        f"Expiring Soon ({_expiring_count})" if _expiring_count else "Expiring Soon",
+        f"Archive ({_archive_count})",
+        f"Expired ({_expired_count})" if _expired_count else "Expired",
+    ])
+
+    # --- Pipeline tab (new opportunities) ---
+    with tab_pipeline:
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1:
+            min_score = st.slider("Min Score", 0, 100, 40, step=5, key="pipe_score")
+        with col_f2:
+            sort_by = st.selectbox("Sort by", ["Fit Score", "Deadline", "Posted"], key="pipe_sort")
+        with col_f3:
+            source_filter = st.multiselect(
+                "Source",
+                list(SOURCE_LABELS.keys()),
+                format_func=lambda k: SOURCE_LABELS.get(k, k),
+                key="pipe_source",
+            )
+
+        rows = get_all_scored(min_score=min_score)
+        rows = [r for r in rows if (r.get("pipeline_status") or "new") == "new"]
+        rows, _claimed_n = _unclaimed(rows)
+
+        if source_filter:
+            rows = [r for r in rows if r.get("source") in source_filter]
+
+        if sort_by == "Deadline":
+            rows.sort(key=lambda r: r.get("response_deadline") or "9999")
+        elif sort_by == "Posted":
+            rows.sort(key=lambda r: r.get("posted_date") or "", reverse=True)
+
+        st.markdown(f'<div style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 16px;"><strong>{len(rows)}</strong> new opportunities{_claimed_note(_claimed_n)}</div>', unsafe_allow_html=True)
+
+        if not rows:
+            render_empty("No new opportunities matching filters. Hit 'Scan for New RFPs' above to pull the latest from all sources.")
+        _pipe_page_size = 50
+        _pipe_show = st.session_state.get("pipe_show", _pipe_page_size)
+        for opp in rows[:_pipe_show]:
+            render_card(opp, "pipe")
+        if _pipe_show < len(rows):
+            if st.button(f"Show more ({len(rows) - _pipe_show} remaining)", key="pipe_more", use_container_width=True):
+                st.session_state["pipe_show"] = _pipe_show + _pipe_page_size
+                st.rerun()
+
+    # --- Qualified tab ---
+    with tab_qualified:
+        qual_rows, _claimed_q = _unclaimed(get_by_pipeline_status("qualified"))
+        st.markdown(
+            f'<div style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 16px;">'
+            f'<strong>{len(qual_rows)}</strong> scanned &amp; scored — ready for your decision{_claimed_note(_claimed_q)}</div>',
+            unsafe_allow_html=True,
         )
 
-    rows = get_all_scored(min_score=min_score)
-    rows = [r for r in rows if (r.get("pipeline_status") or "new") == "new"]
-    _hide_claimed = st.checkbox("Hide RFPs claimed by teammates", value=True, key="pipe_hide_claimed")
-    if _hide_claimed:
-        rows = [r for r in rows if r["source_id"] not in OPEN_PURSUITS
-                or (OPEN_PURSUITS[r["source_id"]].get("owner_email") or "").lower() == CURRENT_USER["email"]]
-
-    if source_filter:
-        rows = [r for r in rows if r.get("source") in source_filter]
-
-    if sort_by == "Deadline":
-        rows.sort(key=lambda r: r.get("response_deadline") or "9999")
-    elif sort_by == "Posted":
-        rows.sort(key=lambda r: r.get("posted_date") or "", reverse=True)
-
-    st.markdown(f'<div style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 16px;"><strong>{len(rows)}</strong> new opportunities</div>', unsafe_allow_html=True)
-
-    if not rows:
-        render_empty("No new opportunities matching filters. Hit 'Scan for New RFPs' above to pull the latest from all sources.")
-    _pipe_page_size = 50
-    _pipe_show = st.session_state.get("pipe_show", _pipe_page_size)
-    for opp in rows[:_pipe_show]:
-        render_card(opp, "pipe")
-    if _pipe_show < len(rows):
-        if st.button(f"Show more ({len(rows) - _pipe_show} remaining)", key="pipe_more", use_container_width=True):
-            st.session_state["pipe_show"] = _pipe_show + _pipe_page_size
-            st.rerun()
-
-# --- Qualified tab ---
-with tab_qualified:
-    qual_rows = get_by_pipeline_status("qualified")
-    st.markdown(
-        f'<div style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 16px;">'
-        f'<strong>{len(qual_rows)}</strong> scanned &amp; scored — ready for your decision</div>',
-        unsafe_allow_html=True,
-    )
-
-    if not qual_rows:
-        render_empty("No qualified RFPs yet. Open an opportunity in Pipeline, click 'Load Attachments', then 'Scan & Score' to move it here.")
-    for opp in qual_rows:
-        render_card(opp, "qual", show_status_controls=False)
-        qsid = opp.get("source_id", "")
-        qc1, qc2 = st.columns(2)
-        with qc1:
-            with st.popover("Pursue →", use_container_width=True):
-                pursue_reason = st.text_input(
-                    "Why are we pursuing this?",
-                    key=f"pursue_reason_{qsid}",
-                    placeholder="Strong fit for case management, aligns with public sector push",
-                )
-                if st.button("Confirm Pursue", key=f"confirm_pursue_{qsid}", use_container_width=True):
-                    _pursue_opportunity(opp, reason=pursue_reason or "")
-                    st.rerun()
-        with qc2:
-            with st.popover("Skip →", use_container_width=True):
-                skip_reason = st.text_input(
-                    "Reason for skipping?",
-                    key=f"skip_reason_{qsid}",
-                    placeholder="Not a workflow fit — pure staffing RFP",
-                )
-                if st.button("Confirm Skip", key=f"confirm_skip_{qsid}", use_container_width=True):
-                    _change_status(opp, "skipped", skip_reason or "Skipped after qualification review", "qualified")
-                    st.rerun()
-        st.markdown("---")
-
-# --- Expiring Soon tab ---
-with tab_expiring:
-    exp_rows = get_by_pipeline_status("expiring_soon")
-    exp_rows.sort(key=lambda r: r.get("response_deadline") or "9999")
-
-    _unscored_exp = [r for r in exp_rows if int(r.get("fit_score") or 0) == 0]
-    _scored_exp = [r for r in exp_rows if int(r.get("fit_score") or 0) > 0]
-
-    st.markdown(
-        f'<div style="color: var(--accent-orange); font-size: 14px; margin-bottom: 16px;">'
-        f'<strong>{len(exp_rows)}</strong> opportunities expiring within 7 days'
-        f'{f" — <strong>{len(_unscored_exp)}</strong> unscored" if _unscored_exp else ""}'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-    # --- Batch scoring controls ---
-    if _unscored_exp:
-        def _score_batch(batch: list[dict], label: str) -> None:
-            """Score a batch of opportunities — skips Stage 1, goes straight to deep scoring."""
-            from oppos.scoring.qualifier import force_score
-            from oppos.storage.db import upsert_opportunity
-
-            progress = st.progress(0, text=f"Scoring {label}...")
-            results = []
-            for i, opp in enumerate(batch):
-                title = opp.get("title", "Untitled")[:50]
-                progress.progress(
-                    (i) / len(batch),
-                    text=f"Scoring {i+1}/{len(batch)}: {title}...",
-                )
-                try:
-                    att_text = opp.get("attachment_text") or ""
-                    scored = force_score(opp, attachment_text=att_text)
-                    scored["attachment_text"] = att_text or None
-                    upsert_opportunity(scored)
-                    set_pipeline_status(
-                        opp["source_id"], "expiring_soon",
-                        notes=f"Scored from description — {scored.get('fit_score', 0)}/100",
+        if not qual_rows:
+            render_empty("No unclaimed qualified RFPs. Open an opportunity in Pipeline, click 'Load Attachments', then 'Scan & Score' to move it here — claimed ones live on My desk.")
+        for opp in qual_rows:
+            render_card(opp, "qual", show_status_controls=False)
+            qsid = opp.get("source_id", "")
+            qc1, qc2 = st.columns(2)
+            with qc1:
+                with st.popover("✋ Grab & pursue →", use_container_width=True):
+                    pursue_reason = st.text_input(
+                        "Why are we pursuing this?",
+                        key=f"pursue_reason_{qsid}",
+                        placeholder="Strong fit for case management, aligns with public sector push",
                     )
-                    results.append((title, scored.get("fit_score", 0), None))
-                except Exception as e:
-                    results.append((title, 0, str(e)))
+                    if st.button("Confirm Pursue", key=f"confirm_pursue_{qsid}", use_container_width=True):
+                        _pursue_opportunity(opp, reason=pursue_reason or "")
+                        st.rerun()
+            with qc2:
+                with st.popover("Skip →", use_container_width=True):
+                    skip_reason = st.text_input(
+                        "Reason for skipping?",
+                        key=f"skip_reason_{qsid}",
+                        placeholder="Not a workflow fit — pure staffing RFP",
+                    )
+                    if st.button("Confirm Skip", key=f"confirm_skip_{qsid}", use_container_width=True):
+                        _change_status(opp, "skipped", skip_reason or "Skipped after qualification review", "qualified")
+                        st.rerun()
+            st.markdown("---")
 
-            progress.progress(1.0, text="Done!")
+    # --- Expiring Soon tab ---
+    with tab_expiring:
+        exp_rows, _claimed_e = _unclaimed(get_by_pipeline_status("expiring_soon"))
+        exp_rows.sort(key=lambda r: r.get("response_deadline") or "9999")
 
-            # Show results summary
-            ok = [r for r in results if r[2] is None]
-            errs = [r for r in results if r[2] is not None]
-            if ok:
-                avg = sum(r[1] for r in ok) / len(ok)
-                high = sum(1 for r in ok if r[1] >= 65)
-                st.success(f"Scored {len(ok)} RFPs — avg {avg:.0f}/100, {high} high-fit (65+)")
-            if errs:
-                st.warning(f"{len(errs)} failed: {', '.join(r[0] for r in errs)}")
+        _unscored_exp = [r for r in exp_rows if int(r.get("fit_score") or 0) == 0]
+        _scored_exp = [r for r in exp_rows if int(r.get("fit_score") or 0) > 0]
 
-        batch_size = 10
-        total_unscored = len(_unscored_exp)
-        bc1, bc2, bc3 = st.columns([1, 1, 2])
-        with bc1:
-            if st.button(
-                f"Score Next {min(batch_size, total_unscored)}",
-                key="exp_score_batch",
-                use_container_width=True,
-            ):
-                _score_batch(_unscored_exp[:batch_size], f"next {min(batch_size, total_unscored)}")
-                st.rerun()
-        with bc2:
-            if total_unscored > batch_size:
-                if st.button(
-                    f"Score All {total_unscored}",
-                    key="exp_score_all",
-                    use_container_width=True,
-                ):
-                    _score_batch(_unscored_exp, f"all {total_unscored}")
-                    st.rerun()
-        with bc3:
-            st.markdown(
-                '<div style="font-size: 12px; color: var(--text-tertiary); padding-top: 8px;">'
-                'AI-score using RFP description — no documents needed</div>',
-                unsafe_allow_html=True,
-            )
-        st.markdown("---")
+        st.markdown(
+            f'<div style="color: var(--accent-orange); font-size: 14px; margin-bottom: 16px;">'
+            f'<strong>{len(exp_rows)}</strong> opportunities expiring within 7 days'
+            f'{f" — <strong>{len(_unscored_exp)}</strong> unscored" if _unscored_exp else ""}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
-    if not exp_rows:
-        render_empty("No expiring opportunities. Deadlines are checked automatically on each page load.")
-    for opp in exp_rows:
-        render_card(opp, "exp")
-        esid = opp.get("source_id", "")
-        _opp_score = int(opp.get("fit_score") or 0)
-
-        # Individual score button for unscored opps
-        if _opp_score == 0:
-            if st.button("Score This", key=f"exp_score_{esid}"):
+        # --- Batch scoring controls ---
+        if _unscored_exp:
+            def _score_batch(batch: list[dict], label: str) -> None:
+                """Score a batch of opportunities — skips Stage 1, goes straight to deep scoring."""
                 from oppos.scoring.qualifier import force_score
                 from oppos.storage.db import upsert_opportunity
-                with st.spinner(f"Scoring {opp.get('title', '')[:40]}..."):
-                    att_text = opp.get("attachment_text") or ""
-                    scored = force_score(opp, attachment_text=att_text)
-                    scored["attachment_text"] = att_text or None
-                    upsert_opportunity(scored)
-                    set_pipeline_status(
-                        esid, "expiring_soon",
-                        notes=f"Scored from description — {scored.get('fit_score', 0)}/100",
+
+                progress = st.progress(0, text=f"Scoring {label}...")
+                results = []
+                for i, opp in enumerate(batch):
+                    title = opp.get("title", "Untitled")[:50]
+                    progress.progress(
+                        (i) / len(batch),
+                        text=f"Scoring {i+1}/{len(batch)}: {title}...",
                     )
-                new_score = scored.get("fit_score", 0)
-                s2_result = scored.get("stage2") or {}
-                st.success(f"Score: **{new_score}/100** — {s2_result.get('recommended_action', 'N/A')}")
-                if s2_result.get("summary"):
-                    st.info(s2_result["summary"])
+                    try:
+                        att_text = opp.get("attachment_text") or ""
+                        scored = force_score(opp, attachment_text=att_text)
+                        scored["attachment_text"] = att_text or None
+                        upsert_opportunity(scored)
+                        set_pipeline_status(
+                            opp["source_id"], "expiring_soon",
+                            notes=f"Scored from description — {scored.get('fit_score', 0)}/100",
+                        )
+                        results.append((title, scored.get("fit_score", 0), None))
+                    except Exception as e:
+                        results.append((title, 0, str(e)))
 
-        # Pursue / Skip actions — always available
-        ec1, ec2 = st.columns(2)
-        with ec1:
-            with st.popover("Pursue →", use_container_width=True):
-                exp_pursue_reason = st.text_input(
-                    "Why are we pursuing this?",
-                    key=f"exp_pursue_reason_{esid}",
-                    placeholder="Deadline approaching but strong fit — fast turnaround",
-                )
-                if st.button("Confirm Pursue", key=f"exp_confirm_pursue_{esid}", use_container_width=True):
-                    _pursue_opportunity(opp, reason=exp_pursue_reason or "Deadline approaching — fast turnaround")
-                    st.rerun()
-        with ec2:
-            with st.popover("Skip →", use_container_width=True):
-                exp_skip_reason = st.text_input(
-                    "Reason for skipping?",
-                    key=f"exp_skip_reason_{esid}",
-                    placeholder="Won't make the deadline, not worth rushing",
-                )
-                if st.button("Confirm Skip", key=f"exp_confirm_skip_{esid}", use_container_width=True):
-                    _change_status(opp, "skipped", exp_skip_reason or "Skipped — deadline too close", "expiring_soon")
-                    st.rerun()
-        st.markdown("---")
+                progress.progress(1.0, text="Done!")
 
-# --- Pursuits tab (active pursuits, mine or team) ---
-with tab_in_progress:
+                # Show results summary
+                ok = [r for r in results if r[2] is None]
+                errs = [r for r in results if r[2] is not None]
+                if ok:
+                    avg = sum(r[1] for r in ok) / len(ok)
+                    high = sum(1 for r in ok if r[1] >= 65)
+                    st.success(f"Scored {len(ok)} RFPs — avg {avg:.0f}/100, {high} high-fit (65+)")
+                if errs:
+                    st.warning(f"{len(errs)} failed: {', '.join(r[0] for r in errs)}")
+
+            batch_size = 10
+            total_unscored = len(_unscored_exp)
+            bc1, bc2, bc3 = st.columns([1, 1, 2])
+            with bc1:
+                if st.button(
+                    f"Score Next {min(batch_size, total_unscored)}",
+                    key="exp_score_batch",
+                    use_container_width=True,
+                ):
+                    _score_batch(_unscored_exp[:batch_size], f"next {min(batch_size, total_unscored)}")
+                    st.rerun()
+            with bc2:
+                if total_unscored > batch_size:
+                    if st.button(
+                        f"Score All {total_unscored}",
+                        key="exp_score_all",
+                        use_container_width=True,
+                    ):
+                        _score_batch(_unscored_exp, f"all {total_unscored}")
+                        st.rerun()
+            with bc3:
+                st.markdown(
+                    '<div style="font-size: 12px; color: var(--text-tertiary); padding-top: 8px;">'
+                    'AI-score using RFP description — no documents needed</div>',
+                    unsafe_allow_html=True,
+                )
+            st.markdown("---")
+
+        if not exp_rows:
+            render_empty("No expiring opportunities. Deadlines are checked automatically on each page load.")
+        for opp in exp_rows:
+            render_card(opp, "exp")
+            esid = opp.get("source_id", "")
+            _opp_score = int(opp.get("fit_score") or 0)
+
+            # Individual score button for unscored opps
+            if _opp_score == 0:
+                if st.button("Score This", key=f"exp_score_{esid}"):
+                    from oppos.scoring.qualifier import force_score
+                    from oppos.storage.db import upsert_opportunity
+                    with st.spinner(f"Scoring {opp.get('title', '')[:40]}..."):
+                        att_text = opp.get("attachment_text") or ""
+                        scored = force_score(opp, attachment_text=att_text)
+                        scored["attachment_text"] = att_text or None
+                        upsert_opportunity(scored)
+                        set_pipeline_status(
+                            esid, "expiring_soon",
+                            notes=f"Scored from description — {scored.get('fit_score', 0)}/100",
+                        )
+                    new_score = scored.get("fit_score", 0)
+                    s2_result = scored.get("stage2") or {}
+                    st.success(f"Score: **{new_score}/100** — {s2_result.get('recommended_action', 'N/A')}")
+                    if s2_result.get("summary"):
+                        st.info(s2_result["summary"])
+
+            # Pursue / Skip actions — always available
+            ec1, ec2 = st.columns(2)
+            with ec1:
+                with st.popover("✋ Grab & pursue →", use_container_width=True):
+                    exp_pursue_reason = st.text_input(
+                        "Why are we pursuing this?",
+                        key=f"exp_pursue_reason_{esid}",
+                        placeholder="Deadline approaching but strong fit — fast turnaround",
+                    )
+                    if st.button("Confirm Pursue", key=f"exp_confirm_pursue_{esid}", use_container_width=True):
+                        _pursue_opportunity(opp, reason=exp_pursue_reason or "Deadline approaching — fast turnaround")
+                        st.rerun()
+            with ec2:
+                with st.popover("Skip →", use_container_width=True):
+                    exp_skip_reason = st.text_input(
+                        "Reason for skipping?",
+                        key=f"exp_skip_reason_{esid}",
+                        placeholder="Won't make the deadline, not worth rushing",
+                    )
+                    if st.button("Confirm Skip", key=f"exp_confirm_skip_{esid}", use_container_width=True):
+                        _change_status(opp, "skipped", exp_skip_reason or "Skipped — deadline too close", "expiring_soon")
+                        st.rerun()
+            st.markdown("---")
+
+    # --- Archive tab (won, lost, skipped) ---
+    with tab_archive:
+        won_rows = get_by_pipeline_status("won")
+        lost_rows = get_by_pipeline_status("lost")
+        skipped_rows = get_by_pipeline_status("skipped")
+        archive_rows = won_rows + lost_rows + skipped_rows
+        st.markdown(f'<div style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 16px;"><strong>{len(won_rows)}</strong> won &middot; <strong>{len(lost_rows)}</strong> lost &middot; <strong>{len(skipped_rows)}</strong> skipped</div>', unsafe_allow_html=True)
+
+        if not archive_rows:
+            render_empty("No archived opportunities yet.")
+        _arch_page_size = 50
+        _arch_show = st.session_state.get("arch_show", _arch_page_size)
+        for opp in archive_rows[:_arch_show]:
+            render_card(opp, "arch")
+        if _arch_show < len(archive_rows):
+            if st.button(f"Show more ({len(archive_rows) - _arch_show} remaining)", key="arch_more", use_container_width=True):
+                st.session_state["arch_show"] = _arch_show + _arch_page_size
+                st.rerun()
+
+    # --- Expired tab ---
+    with tab_expired:
+        expired_rows = get_by_pipeline_status("expired")
+        expired_rows.sort(key=lambda r: r.get("response_deadline") or "", reverse=True)
+        st.markdown(
+            f'<div style="color: var(--accent-red); font-size: 14px; margin-bottom: 16px;">'
+            f'<strong>{len(expired_rows)}</strong> expired — deadline passed before action was taken</div>',
+            unsafe_allow_html=True,
+        )
+
+        if not expired_rows:
+            render_empty("No expired opportunities. Deadlines are checked automatically on each page load.")
+        _expd_page_size = 50
+        _expd_show = st.session_state.get("expd_show", _expd_page_size)
+        for opp in expired_rows[:_expd_show]:
+            render_card(opp, "expd", show_status_controls=False)
+        if _expd_show < len(expired_rows):
+            if st.button(f"Show more ({len(expired_rows) - _expd_show} remaining)", key="expd_more", use_container_width=True):
+                st.session_state["expd_show"] = _expd_show + _expd_page_size
+                st.rerun()
+
+
+
+def page_desk() -> None:
+    """My desk — everything the signed-in user has claimed or is working, grouped by stage."""
+    import html as _html
+    from oppos.pursuits import OPEN_STAGES, board_rows, days_until as _du, stage_label
     from oppos.storage.db import add_pursuit_event, create_pursuit, get_opps_by_ids, list_pursuits
 
-    from oppos.pursuits import OPEN_STAGES, board_rows
-    _active = list_pursuits(status=OPEN_STAGES)
-    _mine = [p for p in _active if (p.get("owner_email") or "").lower() == CURRENT_USER["email"]]
+    me = CURRENT_USER["email"]
     _vc1, _vc2 = st.columns([1, 3])
     with _vc1:
-        _view = st.radio("View", ["Mine", "Team"], horizontal=True, label_visibility="collapsed",
-                         index=0 if _mine else 1, key="pursuit_view")
-    _rows_p = _mine if _view == "Mine" else _active
+        _view = st.radio("View", ["Mine", "Team"], horizontal=True, label_visibility="collapsed", key="pursuit_view")
+    all_p = list_pursuits(status=None)
+    rows_p = all_p if _view == "Team" else [p for p in all_p if (p.get("owner_email") or "").lower() == me]
+    open_p = [p for p in rows_p if p.get("status") in OPEN_STAGES]
+    by_stage = {
+        "evaluating": [p for p in rows_p if p.get("status") == "evaluating"],
+        "active": [p for p in rows_p if p.get("status") == "active"],
+        "submitted": [p for p in rows_p if p.get("status") == "submitted"],
+        "closed": [p for p in rows_p if p.get("status") in ("won", "lost", "abandoned", "released")],
+    }
+    opps = get_opps_by_ids([p["source_id"] for p in rows_p])
+
     if _view == "Mine":
-        from oppos.pursuits import days_until as _du
-        _all_mine = list_pursuits(status=None, owner_email=CURRENT_USER["email"])
-        _cnt = lambda *sts: sum(1 for p in _all_mine if p.get("status") in sts)
-        _next = sorted(((_du(p.get("submission_deadline")), p) for p in _mine if _du(p.get("submission_deadline")) is not None),
+        _cnt = lambda *sts: sum(1 for p in rows_p if p.get("status") in sts)
+        _next = sorted(((_du(p.get("submission_deadline")), p) for p in open_p if _du(p.get("submission_deadline")) is not None),
                        key=lambda t: t[0])
         _next_txt = (f"next due in {_next[0][0]}d" if _next and _next[0][0] >= 0 else "overdue item" if _next else "no deadlines set")
         st.markdown(
@@ -2269,32 +2242,29 @@ with tab_in_progress:
     with _vc2:
         st.markdown(
             f'<div style="color: var(--text-tertiary); font-size: 14px; padding-top: 6px;">'
-            f'<strong>{len(_rows_p)}</strong> active pursuit{"s" if len(_rows_p) != 1 else ""}'
-            + (f' &middot; <strong>{len(_mine)}</strong> mine' if _view == "Team" else "") + "</div>",
-            unsafe_allow_html=True,
+            f'<strong>{len(open_p)}</strong> in flight'
+            + (f' &middot; <strong>{sum(1 for p in open_p if (p.get("owner_email") or "").lower() == me)}</strong> mine' if _view == "Team" else "")
+            + "</div>", unsafe_allow_html=True,
         )
 
-    # In-progress RFPs from before pursuit tracking existed — adopt them into the new model.
-    _have = {p["source_id"] for p in _active}
-    _orphans = [o for o in get_by_pipeline_status("in_progress") if o["source_id"] not in _have]
-    if _orphans:
+    # Legacy in-progress RFPs with no pursuit record — adopt them into the model.
+    _have = {p["source_id"] for p in all_p}
+    _orphans = [o for o in _db.get_by_pipeline_status("in_progress") if o["source_id"] not in _have]
+    if _orphans and _view == "Team":
         _oc1, _oc2 = st.columns([3, 1])
         _oc1.info(f"{len(_orphans)} in-progress RFP(s) predate pursuit tracking and have no owner yet.")
         if _oc2.button("Adopt as mine", key="adopt_orphans", use_container_width=True):
             for o in _orphans:
-                create_pursuit(o["source_id"], owner_email=CURRENT_USER["email"], owner_name=CURRENT_USER["name"],
-                               lob=o.get("lob"), reason=o.get("pipeline_notes") or "Adopted from In Progress",
-                               status="active", submission_deadline=(o.get("response_deadline") or "")[:10] or None,
-                               portal=o.get("source"), notion_page_id=o.get("notion_page_id"), created_by=CURRENT_USER["email"])
-                add_pursuit_event(o["source_id"], CURRENT_USER["email"], "adopted", "Adopted from legacy In Progress")
+                create_pursuit(o["source_id"], owner_email=me, owner_name=CURRENT_USER["name"], lob=o.get("lob"),
+                               reason=o.get("pipeline_notes") or "Adopted from In Progress", status="active",
+                               submission_deadline=(o.get("response_deadline") or "")[:10] or None,
+                               portal=o.get("source"), notion_page_id=o.get("notion_page_id"), created_by=me)
+                add_pursuit_event(o["source_id"], me, "adopted", "Adopted from legacy In Progress")
             st.rerun()
 
-    _opps_by_id = get_opps_by_ids([p["source_id"] for p in _rows_p])
-
     # Team board — the shared "what is being worked on" report
-    if _rows_p:
-        import html as _html
-        _board = board_rows(_rows_p, _opps_by_id)
+    if open_p:
+        _board = board_rows(open_p, opps)
         _b = ['<table class="health-table"><tr><th>Owner</th><th>Stage</th><th>LOB</th><th>RFP</th><th>Agency</th>'
               '<th>Due</th><th>Checklist</th><th>Last activity</th></tr>']
         for r in _board:
@@ -2307,71 +2277,146 @@ with tab_in_progress:
                       f"<td>{link}</td><td>{_html.escape(r['agency'][:40])}</td><td><span class=\"{due_cls}\">{due_txt}</span></td>"
                       f"<td>{r['checklist']}</td><td class=\"health-note\">{_html.escape(r['last_activity'])}</td></tr>")
         _b.append("</table>")
-        with st.expander(f"Team board  ·  {len(_board)} in flight", expanded=(_view == "Team")):
+        with st.expander(f"{'Team' if _view == 'Team' else 'My'} board  ·  {len(_board)} in flight", expanded=(_view == "Team")):
             st.markdown("".join(_b), unsafe_allow_html=True)
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    if not _rows_p:
-        render_empty("No active pursuits" + (" of yours" if _view == "Mine" else "")
-                     + ". Click 'Grab' on any card to claim it, then 'Start pursuing' to commit -- "
-                       "you become the owner, it gets a Slack channel and a Notion page, and reminders start.")
-    for _p in _rows_p:
-        _opp = _opps_by_id.get(_p["source_id"])
-        if not _opp:
+    if not any(by_stage.values()):
+        render_empty("Nothing on your desk yet. Go to Find RFPs and click 'Grab' on anything worth evaluating -- "
+                     "it lands here as Claimed; 'Start pursuing' creates the Notion page and Slack channel and starts reminders.")
+        return
+
+    _sections = [
+        ("evaluating", "Claimed — evaluating", "Decide: start pursuing or release back to the pool."),
+        ("active", "Pursuing", "Work the checklist; mark Submitted when the response goes in."),
+        ("submitted", "Submitted — awaiting outcome", "Record Won or Lost when the agency decides."),
+    ]
+    for stage, title, hint in _sections:
+        items = by_stage[stage]
+        if not items:
             continue
-        render_card(_opp, "ip")
-        _render_pursuit_panel(_opp, _p)
-        st.markdown("---")
+        st.markdown(f'<div class="detail-label" style="margin:18px 0 4px;font-size:12px;">{title} · {len(items)}</div>'
+                    f'<div style="color: var(--text-tertiary); font-size: 12px; margin-bottom: 10px;">{hint}</div>', unsafe_allow_html=True)
+        for p_ in items:
+            o = opps.get(p_["source_id"])
+            if not o:
+                continue
+            render_card(o, "desk", show_status_controls=False)
+            _render_pursuit_panel(o, p_)
+            st.markdown("---")
 
-# --- Submitted tab ---
-with tab_submitted:
-    sub_rows = get_by_pipeline_status("submitted")
-    st.markdown(f'<div style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 16px;"><strong>{len(sub_rows)}</strong> submitted</div>', unsafe_allow_html=True)
+    closed = by_stage["closed"]
+    if closed:
+        with st.expander(f"Closed  ·  {len(closed)}"):
+            for p_ in sorted(closed, key=lambda x: x.get("closed_at") or x.get("updated_at") or "", reverse=True)[:50]:
+                o = opps.get(p_["source_id"]) or {}
+                when = str(p_.get("closed_at") or p_.get("updated_at") or "")[:10]
+                st.markdown(f'<div class="pp-event">{_esc(when)} · <b>{_esc(stage_label(p_.get("status")))}</b> · '
+                            f'{_esc(p_.get("owner_name") or p_.get("owner_email") or "")} — {_esc(o.get("title") or p_["source_id"])}</div>',
+                            unsafe_allow_html=True)
 
-    if not sub_rows:
-        render_empty("No submissions yet. Mark RFPs as submitted once you've responded.")
-    for opp in sub_rows:
-        render_card(opp, "sub")
 
-# --- Archive tab (won, lost, skipped) ---
-with tab_archive:
-    won_rows = get_by_pipeline_status("won")
-    lost_rows = get_by_pipeline_status("lost")
-    skipped_rows = get_by_pipeline_status("skipped")
-    archive_rows = won_rows + lost_rows + skipped_rows
-    st.markdown(f'<div style="color: var(--text-tertiary); font-size: 14px; margin-bottom: 16px;"><strong>{len(won_rows)}</strong> won &middot; <strong>{len(lost_rows)}</strong> lost &middot; <strong>{len(skipped_rows)}</strong> skipped</div>', unsafe_allow_html=True)
+def page_admin() -> None:
+    """Admin — source health, portal registrations, settings."""
+    from oppos.storage.db import get_source_health as _get_source_health
+    _health_rows = [r for r in _get_source_health() if r.get("source") not in EXCLUDED_SOURCES]
+    if _health_rows:
+        _n_fail = sum(1 for r in _health_rows if r.get("last_error"))
+        _health_label = "Source health" + (f"  ·  {_n_fail} failing" if _n_fail else "  ·  all OK")
+        with st.expander(_health_label):
+            st.markdown(_render_source_health(_health_rows), unsafe_allow_html=True)
 
-    if not archive_rows:
-        render_empty("No archived opportunities yet.")
-    _arch_page_size = 50
-    _arch_show = st.session_state.get("arch_show", _arch_page_size)
-    for opp in archive_rows[:_arch_show]:
-        render_card(opp, "arch")
-    if _arch_show < len(archive_rows):
-        if st.button(f"Show more ({len(archive_rows) - _arch_show} remaining)", key="arch_more", use_container_width=True):
-            st.session_state["arch_show"] = _arch_show + _arch_page_size
-            st.rerun()
+    if CURRENT_USER.get("is_admin"):
+        with st.expander(f"Settings  ·  {len(EXCLUDED_SOURCES)} source{'s' if len(EXCLUDED_SOURCES) != 1 else ''} excluded"):
+            from oppos.storage.db import archive_sources, count_active_by_sources, list_sources_in_db, set_excluded_sources
+            _db_sources = dict(list_sources_in_db())
+            _all_keys = sorted(set(SOURCE_LABELS) | set(_db_sources) | EXCLUDED_SOURCES)
+            def _src_label(k: str) -> str:
+                base = SOURCE_LABELS.get(k, k)
+                n = _db_sources.get(k)
+                tag = "" if k in SOURCE_LABELS else " · retired"
+                return f"{base}{tag}" + (f"  ({n} rows)" if n else "")
+            st.caption("Excluded sources are hidden from every list, skipped by scans, and never alerted. "
+                       "Items you already claimed stay in your pursuits.")
+            _sel = st.multiselect("Excluded sources", _all_keys, default=sorted(EXCLUDED_SOURCES),
+                                  format_func=_src_label, key="excluded_sources_select")
+            _sc1, _sc2 = st.columns([1, 2])
+            with _sc1:
+                if st.button("Save exclusions", key="excluded_save", use_container_width=True):
+                    set_excluded_sources(_sel)
+                    st.rerun()
+            with _sc2:
+                _n_active = count_active_by_sources(sorted(EXCLUDED_SOURCES)) if EXCLUDED_SOURCES else 0
+                if _n_active:
+                    with st.popover(f"Archive {_n_active} active item{'s' if _n_active != 1 else ''} from excluded sources",
+                                    use_container_width=True):
+                        st.write(f"Moves {_n_active} new / qualified / expiring items from "
+                                 f"{', '.join(SOURCE_LABELS.get(k, k) for k in sorted(EXCLUDED_SOURCES))} to Archive (skipped) "
+                                 "with the note \"Source excluded\". Pursuits are not touched. This cannot be undone in bulk.")
+                        if st.button("Archive them", key="excluded_archive", type="primary", use_container_width=True):
+                            _done = archive_sources(sorted(EXCLUDED_SOURCES))
+                            st.success(f"Archived {_done} items")
+                            st.rerun()
+                elif EXCLUDED_SOURCES:
+                    st.caption("No active items remain from excluded sources.")
 
-# --- Expired tab ---
-with tab_expired:
-    expired_rows = get_by_pipeline_status("expired")
-    expired_rows.sort(key=lambda r: r.get("response_deadline") or "", reverse=True)
-    st.markdown(
-        f'<div style="color: var(--accent-red); font-size: 14px; margin-bottom: 16px;">'
-        f'<strong>{len(expired_rows)}</strong> expired — deadline passed before action was taken</div>',
-        unsafe_allow_html=True,
-    )
+        _reg_known = sum(1 for r in PORTAL_REGS.values() if (r.get("status") or "unknown") != "unknown")
+        with st.expander(f"Portal registrations  ·  {_reg_known}/{len(PORTAL_REGS)} known"):
+            import pandas as pd
+            from oppos.pursuits import REGISTRATION_LABELS, REGISTRATION_STATUSES
+            from oppos.storage.db import upsert_portal_registration
 
-    if not expired_rows:
-        render_empty("No expired opportunities. Deadlines are checked automatically on each page load.")
-    _expd_page_size = 50
-    _expd_show = st.session_state.get("expd_show", _expd_page_size)
-    for opp in expired_rows[:_expd_show]:
-        render_card(opp, "expd", show_status_controls=False)
-    if _expd_show < len(expired_rows):
-        if st.button(f"Show more ({len(expired_rows) - _expd_show} remaining)", key="expd_more", use_container_width=True):
-            st.session_state["expd_show"] = _expd_show + _expd_page_size
-            st.rerun()
+            _reg_cols = ["portal", "display_name", "status", "vendor_id", "login_owner", "lead_time_days", "url", "notes"]
+            _reg_rows = [{c: r.get(c) for c in _reg_cols} for r in PORTAL_REGS.values()]
+            _reg_df = pd.DataFrame(_reg_rows, columns=_reg_cols).sort_values("display_name", na_position="last").reset_index(drop=True)
+            _reg_df["lead_time_days"] = pd.to_numeric(_reg_df["lead_time_days"], errors="coerce")
+            _reg_df["status"] = _reg_df["status"].fillna("unknown")
+            st.caption("Which procurement portals Nutrient is registered on, who holds the login, and how long registration takes. "
+                       "Shown as a badge on every card and used in the pursuit checklist. Never store passwords here.")
+            _edited = st.data_editor(
+                _reg_df, hide_index=True, use_container_width=True, disabled=["portal", "display_name"], key="reg_editor",
+                column_config={
+                    "portal": st.column_config.TextColumn("Key"),
+                    "display_name": st.column_config.TextColumn("Portal"),
+                    "status": st.column_config.SelectboxColumn("Status", options=REGISTRATION_STATUSES, required=True),
+                    "vendor_id": st.column_config.TextColumn("Vendor / supplier ID"),
+                    "login_owner": st.column_config.TextColumn("Login held by"),
+                    "lead_time_days": st.column_config.NumberColumn("Lead time (days)", min_value=0, step=1),
+                    "url": st.column_config.LinkColumn("Registration URL"),
+                    "notes": st.column_config.TextColumn("Notes"),
+                },
+            )
+            if st.button("Save registrations", key="reg_save"):
+                _changed = 0
+                for _new, _old in zip(_edited.to_dict("records"), _reg_df.to_dict("records")):
+                    def _clean(v):
+                        return None if v is None or (isinstance(v, float) and pd.isna(v)) else v
+                    _new_c = {k: _clean(v) for k, v in _new.items()}
+                    _old_c = {k: _clean(v) for k, v in _old.items()}
+                    if _new_c != _old_c:
+                        _lead = _new_c.get("lead_time_days")
+                        upsert_portal_registration(
+                            _new_c["portal"], status=_new_c.get("status") or "unknown", vendor_id=_new_c.get("vendor_id"),
+                            login_owner=_new_c.get("login_owner"), lead_time_days=int(_lead) if _lead is not None else None,
+                            url=_new_c.get("url"), notes=_new_c.get("notes"),
+                        )
+                        _changed += 1
+                st.success(f"Saved {_changed} change(s)")
+                st.rerun()
+
+    if not CURRENT_USER.get("is_admin"):
+        st.caption("Settings and portal registrations are available to admins (OPPOS_ADMINS).")
+
+
+_nav = st.navigation(
+    [
+        st.Page(page_pool, title="Find RFPs", icon=":material/search:", default=True),  # served at /
+        st.Page(page_desk, title="My desk", icon=":material/person:", url_path="desk"),
+        st.Page(page_admin, title="Admin", icon=":material/settings:", url_path="admin"),
+    ],
+    position="top",
+)
+_nav.run()
 
 st.markdown(f"""
 <div class="oppos-footer">
