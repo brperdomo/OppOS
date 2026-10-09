@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 import anthropic
@@ -110,7 +111,10 @@ For fit_score (0-100):
 
 ## Evidence rules (strict)
 - Every strength and every risk MUST carry `evidence`: a short verbatim quote (25 words or fewer) from the RFP text that supports it. If nothing in the RFP supports it directly, write exactly "inferred" — never paraphrase and present it as a quote.
-- Put anything that matters but is not stated in the RFP into `knowledge_gaps` (e.g. "hosting requirements not stated", "incumbent vendor unknown", "user counts not given"). Never fill a gap with a guess.
+- A **risk is something the RFP states** that works against us: a required certification we lack, a mandated platform or integration we do not support, a scope outside the profile, a disqualifying term. It must quote the RFP.
+- Anything the RFP does **not** state goes in `knowledge_gaps`, not `risks` — "may require X", "integration with Y not confirmed", "no customer reference in this vertical", "scoring criteria unknown", "needs investigation" are all gaps. Never fill a gap with a guess, and never list a speculation as a risk.
+- Procurement stage is context, not risk: an RFI, market-research notice or sources-sought is a normal entry point for us. Mention the stage in `summary`; do not list it as a risk and do not lower the score for it. Likewise never penalise a tight deadline or an unstated budget.
+- Score what the RFP asks for against what the profile offers. Unknowns do not lower `fit_score`; they make the assessment less certain, which you express through `knowledge_gaps` and a lower `fit_tier` only when the gaps are material.
 - Never invent certifications, customers, pricing, or capabilities that are not in the profile above. If the RFP asks for something the profile does not cover, that is a risk, not a strength.
 - Never state prices, list prices, or dollar figures in your output, even if the profile mentions them — pricing is handled by sales. Describe pricing posture qualitatively (e.g. "quote-based on-prem licensing", "usage-metered cloud tier") only when it affects fit.
 """
@@ -391,14 +395,55 @@ def _tier_for(score: int) -> int:
     return 1 if score >= 80 else 2 if score >= 60 else 3
 
 
-def _normalize_stage2(result: dict[str, Any], lob: LOB) -> dict[str, Any]:
+# Risks written in these terms are speculation about what the RFP does not say — they belong in
+# knowledge_gaps, however the model labelled them.
+_SPECULATIVE_RISK_RE = re.compile(
+    r"\b(may|might|could|likely|possibly|potentially|probably)\s+(require|need|involve|include|expect|be)\b"
+    r"|\bnot (confirmed|stated|specified|named|yet)\b|\bunknown\b|\bunclear\b|\bneeds? (investigation|verification|confirmation)\b"
+    r"|\bno (direct|named|known|existing)?\s*(customer|parole|public[- ]sector|vertical)?\s*reference\b"
+    r"|\bnot a (named|proven|listed) (vertical|pattern|industry)\b"
+    r"|\b(rfi|request for information|market research|sources[- ]sought)\b.*\b(no formal|not yet|unknown|phase)\b"
+    r"|\bif (the|a|an|this|any|future)\b.*\b(require|mandate|demand|need)"
+    r"|\bwould (need|require)\b|\bcannot be (confirmed|verified|determined)\b",
+    re.I,
+)
+
+
+def _norm_text(t: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (t or "").lower()).strip()
+
+
+def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "") -> tuple[list[dict[str, str]], list[str]]:
+    """Keep only risks the RFP actually states; demote the rest to knowledge gaps.
+
+    A risk is ungrounded when it has no evidence, says "inferred", or only quotes the
+    opportunity title/agency (a title proves the topic, not a requirement).
+    """
+    kept: list[dict[str, str]] = []
+    title_n = _norm_text(title)
+    for r in risks:
+        claim, ev = r.get("claim", ""), (r.get("evidence") or "").strip()
+        ev_n = _norm_text(ev)
+        ungrounded = (not ev) or ev.lower() == "inferred" or (title_n and (ev_n == title_n or ev_n in title_n))
+        speculative = bool(_SPECULATIVE_RISK_RE.search(claim))
+        if ungrounded or speculative:
+            gap = claim.rstrip(".")
+            if gap and gap not in gaps:
+                gaps.append(gap)
+        else:
+            kept.append(r)
+    return kept, gaps
+
+
+def _normalize_stage2(result: dict[str, Any], lob: LOB, title: str = "") -> dict[str, Any]:
     out: dict[str, Any] = dict(lob.extras_defaults)
     out.update(result or {})
     out["lob"] = lob.key
     out["strengths"] = normalize_points(out.get("strengths"))
-    out["risks"] = normalize_points(out.get("risks"))
-    gaps = out.get("knowledge_gaps") or []
-    out["knowledge_gaps"] = [str(g).strip()[:200] for g in gaps if str(g).strip()][:10] if isinstance(gaps, list) else []
+    gaps_raw = out.get("knowledge_gaps") or []
+    gaps = [str(g).strip()[:200] for g in gaps_raw if str(g).strip()] if isinstance(gaps_raw, list) else []
+    out["risks"], gaps = _ground_risks(normalize_points(out.get("risks")), gaps, title=title)
+    out["knowledge_gaps"] = gaps[:12]
 
     try:
         score = int(round(float(out.get("fit_score", 0) or 0)))
@@ -494,7 +539,7 @@ def stage2_score(
                     out["truncated"] = True
                     return out
                 raise
-            out = _normalize_stage2(result, lob)
+            out = _normalize_stage2(result, lob, title=str(opportunity.get("title") or ""))
             if truncated:
                 logger.warning("Stage 2 output truncated at %d tokens for '%s' — raise STAGE2_MAX_TOKENS", max_tokens, title)
                 out["truncated"] = True

@@ -422,13 +422,52 @@ def _parse_deadline(raw: str | None) -> datetime | None:
     return None
 
 
+def _parse_any_date(raw: str | None) -> datetime | None:
+    dt = _parse_deadline(raw)
+    if dt is None and raw:
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00").replace(" ", "T"))
+        except ValueError:
+            return None
+    if dt is not None and dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt
+
+
+def expire_stale_undated(stale_days: int | None = None) -> int:
+    """Active rows with NO deadline that were posted (or first seen) more than `stale_days` ago → expired.
+
+    Portals sometimes publish closed/awarded bids without a close date; without this
+    rule they can sit in Pipeline forever as "Due TBD". Returns rows transitioned.
+    """
+    from oppos.config import STALE_NO_DEADLINE_DAYS
+    days = STALE_NO_DEADLINE_DAYS if stale_days is None else stale_days
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    placeholders = ", ".join("?" for _ in _DEADLINE_CHECK_STATUSES)
+    rows = _query(
+        f"""SELECT source_id, posted_date, created_at FROM opportunities
+            WHERE pipeline_status IN ({placeholders})
+              AND (response_deadline IS NULL OR response_deadline = '')""",
+        tuple(_DEADLINE_CHECK_STATUSES),
+    )
+    n = 0
+    for r in rows:
+        posted = _parse_any_date(r.get("posted_date"))
+        basis, when = ("posted", posted) if posted else ("first seen", _parse_any_date(r.get("created_at")))
+        if when is not None and when < cutoff:
+            set_pipeline_status(r["source_id"], "expired",
+                                notes=f"Auto-expired — stale: no deadline, {basis} {when.date().isoformat()} (> {days} days)")
+            n += 1
+    return n
+
+
 def check_deadlines(warn_days: int = 7) -> dict[str, int]:
     """Check all active opportunities and move them to expiring_soon / expired.
 
-    - expired: deadline has passed (date + time)
+    - expired: deadline has passed (date + time), or no deadline and stale (see expire_stale_undated)
     - expiring_soon: deadline is within `warn_days` days
 
-    Returns {"expired": n, "expiring_soon": n} counts of transitions made.
+    Returns {"expired": n, "expiring_soon": n, "stale": n} counts of transitions made.
     """
     now = datetime.utcnow()
     warn_cutoff = now + timedelta(days=warn_days)
@@ -443,7 +482,7 @@ def check_deadlines(warn_days: int = 7) -> dict[str, int]:
         tuple(_DEADLINE_CHECK_STATUSES),
     )
 
-    counts = {"expired": 0, "expiring_soon": 0}
+    counts = {"expired": 0, "expiring_soon": 0, "stale": 0}
 
     for row in rows:
         dl = _parse_deadline(row.get("response_deadline"))
@@ -469,6 +508,10 @@ def check_deadlines(warn_days: int = 7) -> dict[str, int]:
                     set_pipeline_status(sid, "expiring_soon", notes=f"Deadline within {warn_days} days")
                     counts["expiring_soon"] += 1
 
+    try:
+        counts["stale"] = expire_stale_undated()
+    except Exception:  # never let the stale sweep break page load
+        pass
     return counts
 
 
