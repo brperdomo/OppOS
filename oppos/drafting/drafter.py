@@ -45,6 +45,43 @@ MAX_RFP_CHARS = 150_000           # description + attachment text passed to the 
 COMPLIANCE_PATH = Path(__file__).resolve().parent / "compliance.md"
 
 _CATEGORIES = ("functional", "technical", "security_compliance", "commercial", "company", "implementation", "other")
+
+SECURITY_MARK = "[SECURITY TO CONFIRM]"
+SALES_MARK = "[SALES TO PROVIDE]"
+NOT_DRAFTED_MARK = "[NOT DRAFTED]"
+
+# Any sentence making one of these claims is a compliance claim and is gated when compliance.md is unapproved.
+_COMPLIANCE_RE = re.compile(
+    r"\b(SOC ?[123]|ISO ?\d{4,5}|FedRAMP|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|GDPR|CCPA|CJIS|PCI(?:[- ]DSS)?|FIPS(?:[ -]?140)?"
+    r"|NIST(?: ?(?:800-53|800-171|CSF))?|IRS ?1075|FERPA|GLBA|SOX|Section ?508|WCAG|VPAT|ACR|penetration[- ]test|pen[- ]test"
+    r"|data residency|encrypt(?:ed|ion)(?: at rest| in transit)?|certif(?:ied|ication|icate)s?|accredit(?:ed|ation)|attestation"
+    r"|audit report|compliant|compliance|GovCloud|GCC(?: High)?|data (?:center|centre) location)\b",
+    re.I,
+)
+_PRICING_RE = re.compile(
+    r"\$\s?\d|\b(pric(?:e|es|ing)|per[- ](?:user|seat|named user|page|document|month|year|annum|transaction)|license fee|subscription fee"
+    r"|discount|quote|quotation|cost(?:s|ing)? (?:is|are|will|would|of)|total cost|TCO)\b",
+    re.I,
+)
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z\[\"'(])")
+
+
+def _gate_compliance_prose(text: str) -> tuple[str, bool]:
+    """Prefix every sentence that makes a compliance claim with SECURITY_MARK (unapproved mode).
+
+    A sentence counts as gated only if it *starts* with the marker, so compound sentences
+    like "We are SOC 2 certified; [SECURITY TO CONFIRM] residency" are still flagged.
+    """
+    if not text:
+        return text, False
+    out, flagged = [], False
+    for sent in _SENTENCE_SPLIT.split(text.strip()):
+        if _COMPLIANCE_RE.search(sent) and not sent.lstrip().startswith(SECURITY_MARK):
+            sent = f"{SECURITY_MARK} {sent.strip()}"
+            flagged = True
+        out.append(sent)
+    return " ".join(out), flagged
+
 _BASIS = ("rfp", "profile", "docs", "compliance", "needs_human")
 _CONFIDENCE = ("high", "medium", "low")
 
@@ -103,7 +140,7 @@ You have a documentation search tool connected to Nutrient's product docs. Use i
 {docs_block}
 ## Drafting rules
 - Extract EVERY requirement, question, or evaluation criterion the RFP states (functional, technical, security/compliance, commercial, company, implementation). Keep the RFP's own numbering/section labels in `section` when present and quote or closely paraphrase the requirement in `text`.
-- If a PRE-EXTRACTED REQUIREMENTS block is present, it came from Nutrient's Data Extraction API with page citations: respond to every item in it, reuse its ids (E1, E2 …) and copy its `page`; add anything it missed with new ids (R1, R2 …). Do not drop or merge pre-extracted items.
+- If a PRE-EXTRACTED REQUIREMENTS block is present, it came from Nutrient's Data Extraction API with page citations: respond to every item in it, reuse its ids (E1, E2 …) and copy its `page` and `file`; add anything it missed with new ids (R1, R2 …). Do not drop or merge pre-extracted items.
 - Draft each `response` in first person plural ("we", "Nutrient"), 2–6 sentences, concrete: name the capability, how it meets the requirement, and any configuration or integration involved. No marketing filler.
 - `basis` lists where the answer comes from: "rfp" (restating facts in the RFP), "profile" (the profile above), "docs" (documentation you searched), "compliance" (the approved compliance section), "needs_human" (a person must supply or verify it). `sources` names the profile section or doc URL used.
 - Never invent customers, certifications, pricing, SLAs, or capabilities. Pricing/commercial terms → "[SALES TO PROVIDE]" with basis needs_human. References/case studies → only those named in the profile.
@@ -117,7 +154,7 @@ Respond with ONLY valid JSON matching this schema:
   "executive_summary": "<2–3 paragraphs we could open the response with>",
   "win_themes": ["<3–5 themes to carry through the response>"],
   "requirements": [
-    {{"id": "E1 or R1", "section": "<RFP section/number or ''>", "page": <page number or null>, "text": "<the requirement or question>",
+    {{"id": "E1 or R1", "section": "<RFP section/number or ''>", "page": <page number or null>, "file": "<source PDF name or ''>", "text": "<the requirement or question>",
       "category": "<functional | technical | security_compliance | commercial | company | implementation | other>",
       "response": "<draft answer>", "confidence": "<high | medium | low>",
       "basis": ["<rfp | profile | docs | compliance | needs_human>"], "sources": ["<profile section or URL>"],
@@ -169,6 +206,8 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
                extracted: dict[str, Any] | None = None) -> dict[str, Any]:
     comp = compliance_status()
     reqs_out: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    by_ext: dict[str, dict[str, Any]] = {e["id"]: e for e in ((extracted or {}).get("requirements") or [])}
     for i, r in enumerate(raw.get("requirements") or [], 1):
         if not isinstance(r, dict):
             continue
@@ -179,23 +218,35 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
         conf = conf if conf in _CONFIDENCE else "low"
         response = str(r.get("response") or "").strip()
         todo = str(r.get("human_todo") or "").strip()
-        # Hard gate: no compliance claims without an approved source, whatever the model did.
-        if cat == "security_compliance" and not comp["approved"] and "[SECURITY TO CONFIRM]" not in response:
-            response = f"[SECURITY TO CONFIRM] — {response}" if response else "[SECURITY TO CONFIRM]"
-            basis = ["needs_human"]
-            conf = "low"
-            todo = todo or "Security team to confirm."
-        if cat == "commercial" and "[SALES TO PROVIDE]" not in response and re.search(r"\$\s?\d|\bprice|pricing|cost\b", response, re.I):
-            response = re.sub(r"\$\s?[\d,]+(\.\d+)?", "[SALES TO PROVIDE]", response)
+        req_text = str(r.get("text") or "").strip()
+        # Hard gates, applied to EVERY category — the model's category and markers are not trusted.
+        if not comp["approved"]:
+            if cat == "security_compliance" and not response.lstrip().startswith(SECURITY_MARK):
+                response = f"{SECURITY_MARK} {response}".strip() if response else SECURITY_MARK
+                gated = True
+            else:
+                response, gated = _gate_compliance_prose(response)
+            if gated or cat == "security_compliance":
+                basis, conf = ["needs_human"], "low"
+                todo = todo or "Security team to confirm every compliance statement in this answer."
+        if cat == "commercial" or _PRICING_RE.search(response):
+            response = f"{SALES_MARK} — pricing / commercial terms for: {req_text[:160] or 'this requirement'}"
+            basis, conf = ["needs_human"], "low"
+            todo = "Sales to provide pricing and commercial terms."
         page = r.get("page")
         try:
             page = int(page) if page not in (None, "", "null") else None
         except (TypeError, ValueError):
             page = None
+        rid = str(r.get("id") or f"R{i}").strip()
+        if rid in seen_ids:
+            continue  # duplicate id from the model — keep the first answer
+        seen_ids.add(rid)
         reqs_out.append({
-            "id": str(r.get("id") or f"R{i}"),
-            "section": str(r.get("section") or "").strip()[:80],
-            "page": page,
+            "id": rid,
+            "file": str(r.get("file") or by_ext.get(rid, {}).get("file") or "").strip()[:120],
+            "section": str(r.get("section") or by_ext.get(rid, {}).get("section") or "").strip()[:80],
+            "page": page if page is not None else by_ext.get(rid, {}).get("page"),
             "text": str(r.get("text") or "").strip()[:1500],
             "category": cat,
             "response": response[:4000],
@@ -204,6 +255,24 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
             "sources": _norm_list(r.get("sources"), 8),
             "human_todo": todo[:500],
         })
+    # Every extracted requirement must be answered; synthesize a needs_human entry for any the model dropped.
+    missing = [e for rid, e in by_ext.items() if rid not in seen_ids]
+    for e in missing:
+        reqs_out.append({
+            "id": e["id"], "file": e.get("file") or "", "section": e.get("section") or "", "page": e.get("page"),
+            "text": e.get("text", "")[:1500], "category": e.get("category") or "other",
+            "response": f"{NOT_DRAFTED_MARK} — the model did not return an answer for this extracted requirement; draft it manually.",
+            "confidence": "low", "basis": ["needs_human"], "sources": [], "human_todo": "Draft this answer.",
+        })
+
+    exec_summary = str(raw.get("executive_summary") or "").strip()
+    win_themes = _norm_list(raw.get("win_themes"), 8)
+    assumptions = _norm_list(raw.get("assumptions"), 20)
+    if not comp["approved"]:
+        exec_summary, _ = _gate_compliance_prose(exec_summary)
+        win_themes = [_gate_compliance_prose(t)[0] for t in win_themes]
+        assumptions = [_gate_compliance_prose(a)[0] for a in assumptions]
+
     sub = raw.get("submission") if isinstance(raw.get("submission"), dict) else {}
     return {
         "lob": lob_key,
@@ -217,16 +286,17 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
         "rfp_type": str(raw.get("rfp_type") or "other"),
         "submission": {"method": str(sub.get("method") or "unknown"), "deadline": str(sub.get("deadline") or "unknown"),
                        "format_requirements": _norm_list(sub.get("format_requirements"), 15)},
-        "executive_summary": str(raw.get("executive_summary") or "").strip(),
-        "win_themes": _norm_list(raw.get("win_themes"), 8),
+        "executive_summary": exec_summary,
+        "win_themes": win_themes,
         "requirements": reqs_out,
         "open_questions": _norm_list(raw.get("open_questions"), 20),
-        "assumptions": _norm_list(raw.get("assumptions"), 20),
+        "assumptions": assumptions,
         "do_not_claim": _norm_list(raw.get("do_not_claim"), 20),
         "stats": {
             "requirements": len(reqs_out),
             "needs_human": sum(1 for r in reqs_out if "needs_human" in r["basis"]),
             "high_confidence": sum(1 for r in reqs_out if r["confidence"] == "high"),
+            "missing_from_model": len(missing),
         },
     }
 
@@ -304,11 +374,12 @@ def draft_response(opp: dict[str, Any], attachment_text: str = "", lob_key: str 
     if resp is None:
         resp = _call_plain(client, _system(lob, grounded=False), user_text)
 
-    truncated = getattr(resp, "stop_reason", "") == "max_tokens"
+    if getattr(resp, "stop_reason", "") == "max_tokens":
+        # A repaired prefix would silently drop trailing requirements / do-not-claim items. Refuse it.
+        raise RuntimeError(f"Draft hit the {DRAFT_MAX_TOKENS}-token output limit and was discarded — raise DRAFT_MAX_TOKENS "
+                           "or split the RFP (e.g. draft per attachment)")
     try:
         raw = _repair_and_parse_json(_final_text(resp))
     except (json.JSONDecodeError, IndexError, KeyError, AttributeError) as e:
-        if truncated:
-            raise RuntimeError(f"Draft truncated at {DRAFT_MAX_TOKENS} tokens and could not be parsed — raise DRAFT_MAX_TOKENS") from e
         raise RuntimeError(f"Draft could not be parsed: {e}") from e
-    return _normalize(raw, lob, grounding, truncated, extracted)
+    return _normalize(raw, lob, grounding, False, extracted)

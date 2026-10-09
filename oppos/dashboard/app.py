@@ -1900,13 +1900,27 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
                 st.rerun()
         with dc2:
             if _draft and npid:
-                if st.button("📝 Append to Notion", key=f"{k}_draft_notion", use_container_width=True):
+                _prog = _draft.get("notion_append") or {}
+                _resume = (_prog.get("page_id") == str(npid) and _prog.get("generated_at") == _draft.get("generated_at")
+                           and not _prog.get("complete"))
+                _btn = f"📝 Resume Notion append ({_prog.get('done', 0)}/{_prog.get('total', '?')})" if _resume else (
+                    "📝 Appended to Notion ✓" if _prog.get("complete") and _prog.get("generated_at") == _draft.get("generated_at") else "📝 Append to Notion")
+                if st.button(_btn, key=f"{k}_draft_notion", use_container_width=True,
+                             disabled=bool(_prog.get("complete") and _prog.get("generated_at") == _draft.get("generated_at"))):
                     from oppos.outputs.notion_sync import append_response_draft
-                    if append_response_draft(str(npid), _draft):
-                        _add_event(sid, CURRENT_USER.get("email", ""), "draft_notion", "Draft appended to Notion page")
+                    from oppos.storage.db import save_draft as _save_draft
+                    def _on_batch(done: int, total: int) -> None:
+                        _draft["notion_append"] = {"page_id": str(npid), "generated_at": _draft.get("generated_at"),
+                                                   "done": done, "total": total, "complete": done >= total}
+                        _save_draft(sid, _draft)
+                    res = append_response_draft(str(npid), _draft, start_batch=_prog.get("done", 0) if _resume else 0, on_batch=_on_batch)
+                    if res["ok"]:
+                        _add_event(sid, CURRENT_USER.get("email", ""), "draft_notion", f"Draft appended to Notion page ({res['total']} batches)")
                         st.success("Draft appended to the Notion page")
+                        st.rerun()
                     else:
-                        st.error("Notion append failed — check NOTION_TOKEN and the page")
+                        st.error(f"Notion append stopped at batch {res['done']}/{res['total']} — {res['error']}. "
+                                 "Click again to resume; earlier batches will not be duplicated.")
     with dc3:
         if _draft:
             _cs = _draft.get("compliance_source") or {}
@@ -1933,14 +1947,15 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
                 st.caption(f"Requirements extracted with Nutrient Data Extraction API ({_ex.get('mode')}): "
                            f"{_ex['stats']['requirements']} items, {_ex['stats']['mandatory']} mandatory, from {_ex.get('pages')} pages "
                            f"across {len(_ex.get('files') or [])} file(s) · {_ex.get('credits_cost')} credits"
-                           + (f" · {_ex['stats']['low_grounding']} with low grounding score" if _ex['stats'].get('low_grounding') else ""))
+                           + (f" · {_ex['stats']['low_grounding']} with low grounding score" if _ex['stats'].get('low_grounding') else "")
+                           + (f" · {_draft['stats']['missing_from_model']} extracted item(s) not answered by the model (marked [NOT DRAFTED])" if _draft['stats'].get('missing_from_model') else ""))
             for r in _reqs:
                 _conf_cls = {"high": "pp-ok", "medium": "pp-warn", "low": "pp-bad"}.get(r.get("confidence"), "")
                 _basis = ", ".join(r.get("basis") or [])
                 st.markdown(
                     f'<div class="pp-strip" style="margin-top:14px;"><span class="pp-owner">{_esc(r["id"])}'
                     + (f' · {_esc(r["section"])}' if r.get("section") else "")
-                    + (f' · p.{r["page"]}' if r.get("page") else "") + "</span>"
+                    + (f' · {_esc(r["file"])} p.{r["page"]}' if r.get("page") and r.get("file") else f' · p.{r["page"]}' if r.get("page") else "") + "</span>"
                     f'<span class="pp-pill">{_esc(r["category"].replace("_", " "))}</span>'
                     f'<span class="pp-pill {_conf_cls}">{_esc(r["confidence"])} confidence</span>'
                     f'<span class="pp-pill">{_esc(_basis)}</span></div>'

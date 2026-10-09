@@ -211,7 +211,8 @@ def extract_rfp_requirements(
     result["stats"] = {
         "requirements": len(result["requirements"]),
         "mandatory": sum(1 for r in result["requirements"] if r["mandatory"]),
-        "low_grounding": sum(1 for r in result["requirements"] if (r.get("grounding") or 1) < 0.6),
+        "low_grounding": sum(1 for r in result["requirements"]
+                             if isinstance(r.get("grounding"), (int, float)) and r["grounding"] < 0.6),
         "estimated_credits_per_page": _CREDITS_PER_PAGE.get(mode),
     }
     return result
@@ -226,7 +227,8 @@ def format_for_prompt(extracted: dict[str, Any]) -> str:
     if sol:
         lines.append("Solicitation facts: " + "; ".join(f"{k}: {v}" for k, v in sol.items() if v))
     for r in extracted["requirements"]:
-        tags = [f"p.{r['page']}" if r.get("page") else "", f"§{r['section']}" if r.get("section") else "",
+        tags = [f"file:{r['file']}" if r.get("file") else "", f"p.{r['page']}" if r.get("page") else "",
+                f"§{r['section']}" if r.get("section") else "",
                 r.get("category", ""), "mandatory" if r.get("mandatory") else "",
                 f"grounding {r['grounding']:.2f}" if isinstance(r.get("grounding"), (int, float)) else ""]
         lines.append(f"[{r['id']}] ({', '.join(t for t in tags if t)}) {r['text']}")
