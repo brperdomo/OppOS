@@ -45,6 +45,12 @@ from oppos.storage.db import check_deadlines, get_all_scored, get_by_pipeline_st
 
 ATTACHMENTS_DIR = DB_PATH.parent / "attachments"
 
+
+def _att_dir(source_id: str) -> Path:
+    """The attachment folder for an opportunity — the same sanitised name the downloader writes to."""
+    from oppos.sources.attachments import _sanitize_filename
+    return ATTACHMENTS_DIR / _sanitize_filename(str(source_id or ""))
+
 NUTRIENT_ICON_SVG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 50 36'%3E%3Cpath d='M4.15 22.15C1.86 22.15 0 20.29 0 18s1.86-4.15 4.15-4.15 4.15 1.86 4.15 4.15-1.86 4.15-4.15 4.15zm41.52-8.3c-2.29 0-4.15 1.86-4.15 4.15s1.86 4.15 4.15 4.15 4.15-1.86 4.15-4.15-1.86-4.15-4.15-4.15zM6.34 28.16c-1.76 1.47-1.99 4.09-.51 5.85s4.09 1.99 5.85.51 1.99-4.09.51-5.85-4.09-1.99-5.85-.51zm37.15-20.33c1.76-1.47 1.99-4.09.51-5.85s-4.09-1.99-5.85-.51-1.99 4.09-.51 5.85 4.09 1.99 5.85.51zM11.68 1.47C9.92 0 7.3.23 5.83 1.99s-.23 4.38 1.51 5.85 4.38.23 5.85-1.51.23-4.38-1.51-5.85zm31.81 26.69c-1.76-1.47-4.38-1.25-5.85.51s-1.25 4.38.51 5.85 4.38 1.25 5.85-.51 1.25-4.38-.51-5.85zm-10.6-8.9c-1.76-1.47-4.38-1.25-5.85.51s-1.25 4.38.51 5.85 4.38 1.25 5.85-.51 1.25-4.38-.51-5.85zm-10.6-8.9c-1.76-1.47-4.38-1.25-5.85.51s-1.25 4.38.51 5.85 4.38 1.25 5.85-.51 1.25-4.38-.51-5.85z' fill='%23f0c966'/%3E%3C/svg%3E"
 
 st.set_page_config(page_title="OppOS — Nutrient", page_icon=NUTRIENT_ICON_SVG, layout="wide")
@@ -958,7 +964,7 @@ def _pursue_opportunity(opp: dict, reason: str = "") -> None:
         try:
             opp["pipeline_status"] = "in_progress"
             opp["pipeline_notes"] = reason or "Qualified — pursuing"
-            att_dir = ATTACHMENTS_DIR / sid
+            att_dir = _att_dir(sid)
             att_paths = sorted(att_dir.glob("*")) if att_dir.exists() else []
             page_id = push_opportunity(opp, attachment_paths=att_paths or None)
             if page_id:
@@ -1054,7 +1060,7 @@ def _push_to_notion(opp: dict) -> None:
         st.write("📤 Sending RFP data, scanned documents, and capability profile…")
 
         # Collect attachment files if they exist on disk
-        att_dir = ATTACHMENTS_DIR / sid
+        att_dir = _att_dir(sid)
         attachment_paths = sorted(att_dir.glob("*")) if att_dir.exists() else []
         if attachment_paths:
             st.write(f"📎 {len(attachment_paths)} attachment(s) will be uploaded")
@@ -1659,7 +1665,7 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
     # --- Deep Scan ---
     _render_deep_scan(opp, tab_key)
 
-    att_dir = ATTACHMENTS_DIR / opp.get("source_id", "")
+    att_dir = _att_dir(opp.get("source_id", ""))
     if att_dir.is_dir():
         files = sorted(att_dir.iterdir())
         if files:
@@ -1699,7 +1705,7 @@ def _run_draft(opp: dict, pursuit: dict) -> None:
 
         # Dogfood: Nutrient Data Extraction API maps the RFP PDFs to a requirements schema with page citations.
         extracted = None
-        att_dir = ATTACHMENTS_DIR / sid
+        att_dir = _att_dir(sid)
         pdfs = sorted(f for f in att_dir.iterdir() if f.is_file() and f.suffix.lower() == ".pdf") if att_dir.is_dir() else []
         if pdfs:
             from oppos.drafting.extraction import extract_rfp_requirements, extraction_available
@@ -1715,7 +1721,12 @@ def _run_draft(opp: dict, pursuit: dict) -> None:
                 for er in extracted.get("errors", []):
                     st.write(f"⚠️ Extraction error — {er}")
                 if not extracted["requirements"]:
-                    extracted = None
+                    # A forms-only or instructions-only package yields no requirement items but still carries the
+                    # authoritative deadline / method / forms / criteria — keep them; discard only an empty result.
+                    kept = any(extracted.get(k) for k in ("solicitation", "required_forms", "evaluation_criteria"))
+                    st.write("ℹ️ No requirement items extracted" + (" — keeping the extracted submission facts" if kept else ""))
+                    if not kept:
+                        extracted = None
             else:
                 st.write("ℹ️ NUTRIENT_API_KEY not set — drafting from text only")
         try:
