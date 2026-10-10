@@ -22,14 +22,28 @@
 <script>
 (async () => {
   const status = document.getElementById('status');
-  // Payload (markdown, file stem, license key, SDK version) arrives in the URL fragment as URL-safe base64 JSON:
-  // the fragment never leaves the browser, and this page has the app's real hostname for license validation.
-  let cfg;
-  try {
-    const b64 = location.hash.slice(1).replace(/-/g, '+').replace(/_/g, '/');
-    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-    cfg = JSON.parse(new TextDecoder().decode(bytes));
-  } catch (e) { status.textContent = 'No document payload: ' + e.message; return; }
+  // Payload (markdown, file stem, license key, SDK version) is published by a sibling Streamlit component on the
+  // same origin as a <script type="application/json" data-oppos-payload="<id>"> tag; this page is served from the
+  // app's own host so the licence can validate, and the URL carries only the payload id (never the content).
+  const pid = new URLSearchParams(location.search).get('p');
+  const findPayload = () => {
+    try {
+      for (const f of window.parent.document.querySelectorAll('iframe')) {
+        try {
+          const el = f.contentDocument && f.contentDocument.querySelector('script[data-oppos-payload="' + pid + '"]');
+          if (el) return el.textContent;
+        } catch (_) { /* cross-origin frame — not ours */ }
+      }
+    } catch (_) { /* parent not reachable */ }
+    return null;
+  };
+  let cfg = null;
+  for (let i = 0; i < 100 && !cfg; i++) {   // the sibling may render a moment after us
+    const raw = findPayload();
+    if (raw) { try { cfg = JSON.parse(raw); } catch (e) { status.textContent = 'Bad document payload: ' + e.message; return; } }
+    else await new Promise(r => setTimeout(r, 100));
+  }
+  if (!cfg) { status.textContent = 'No document payload found — reload the page.'; return; }
   await new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = 'https://document-authoring.cdn.nutrient.io/releases/document-authoring-' + cfg.version + '-umd.js';

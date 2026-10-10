@@ -7,12 +7,12 @@ client-side; only the CDN bundle and fonts are fetched.
 The editor page is served from ``oppos/dashboard/static/docauth.html`` (Streamlit static serving,
 ``server.enableStaticServing = true``) rather than as a ``srcdoc`` component: a srcdoc iframe
 has an empty hostname, and a Document Authoring license is bound to the app's domain. The payload
-travels in the URL fragment, which the browser never sends to the server.
+is handed over through a same-origin sibling component (see response_editor), never through the URL.
 """
 
 from __future__ import annotations
 
-import base64
+import hashlib
 import json
 
 import streamlit as st
@@ -35,12 +35,17 @@ def _streamlit_version() -> tuple[int, ...]:
 
 
 def response_editor(markdown: str, file_stem: str, license_key: str = "", height: int = 760) -> None:
-    """Mount the Document Authoring editor with `markdown` loaded; downloads use `file_stem`."""
+    """Mount the Document Authoring editor with `markdown` loaded; downloads use `file_stem`.
+
+    The payload (Markdown, licence key) is placed in a zero-height sibling component as a JSON script tag
+    and read by the editor page through the shared origin — never in the URL, which browsers cap at ~2 MB
+    while a large RFP's Markdown can exceed that.
+    """
     if _streamlit_version() < MIN_STREAMLIT:
         st.error(f"The response editor needs Streamlit {MIN_STREAMLIT[0]}.{MIN_STREAMLIT[1]}+ (static pages are served as text/html); "
                  f"this is {st.__version__}. Download the Markdown instead, or upgrade Streamlit.")
         return
-    payload = json.dumps({"md": markdown, "stem": file_stem, "licenseKey": license_key or "", "version": DOCAUTH_VERSION},
-                         ensure_ascii=False).encode("utf-8")
-    fragment = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
-    components.iframe(f"{EDITOR_PATH}?v={DOCAUTH_VERSION}#{fragment}", height=height, scrolling=False)
+    payload = json.dumps({"md": markdown, "stem": file_stem, "licenseKey": license_key or "", "version": DOCAUTH_VERSION}, ensure_ascii=False)
+    payload_id = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+    components.html(f'<script type="application/json" data-oppos-payload="{payload_id}">{payload.replace("</", "<\\/")}</script>', height=0)
+    components.iframe(f"{EDITOR_PATH}?v={DOCAUTH_VERSION}&p={payload_id}", height=height, scrolling=False)

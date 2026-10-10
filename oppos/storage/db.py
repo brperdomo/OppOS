@@ -232,6 +232,7 @@ _MIGRATIONS = [
     "ALTER TABLE opportunities ADD COLUMN submitted_by TEXT",
     "ALTER TABLE pursuits ADD COLUMN draft_json TEXT",
     "ALTER TABLE pursuits ADD COLUMN drafted_at TEXT",
+    "ALTER TABLE pursuits ADD COLUMN details_saved_at TEXT",  # set once the SDR has saved Pursuit details; then those values are authoritative
 ]
 
 
@@ -539,7 +540,7 @@ def get_lob_counts(statuses: tuple[str, ...] = ("new", "qualified", "expiring_so
 
 _PURSUIT_FIELDS = (
     "owner_email", "owner_name", "lob", "reason", "status", "qa_deadline", "submission_deadline",
-    "submission_method", "portal", "registration_status", "checklist_json", "next_action",
+    "submission_method", "portal", "registration_status", "checklist_json", "next_action", "details_saved_at",
     "notion_page_id", "slack_channel_id", "slack_channel_name", "created_by", "closed_at",
     "draft_json", "drafted_at",
 )

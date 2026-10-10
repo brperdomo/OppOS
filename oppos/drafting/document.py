@@ -172,10 +172,14 @@ def _cite(r: dict[str, Any]) -> str:
 
 
 def file_stem(opp: dict[str, Any]) -> str:
-    """`Nutrient-response-<agency-or-title>` as a safe file name stem."""
-    base = str(opp.get("agency") or opp.get("title") or opp.get("source_id") or "rfp")
-    slug = re.sub(r"[^A-Za-z0-9]+", "-", base).strip("-")[:60] or "rfp"
-    return f"Nutrient-response-{slug}"
+    """`Nutrient-response-<agency>-<solicitation or title>` as a safe file name stem — distinct per RFP, so two
+    responses to the same agency never share a download name."""
+    def slug(x: Any, n: int) -> str:
+        return re.sub(r"[^A-Za-z0-9]+", "-", str(x or "")).strip("-")[:n]
+    agency = slug(opp.get("agency"), 40)
+    specific = slug(opp.get("solicitation_number"), 30) or slug(opp.get("title"), 50) or slug(opp.get("source_id"), 30)
+    parts = [x for x in (agency, specific) if x] or ["rfp"]
+    return "Nutrient-response-" + "-".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -271,16 +275,25 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
     # Submission details
     w("## Submission details")
     w("")
-    method = _known(pursuit.get("submission_method")) or _known(sub.get("method")) or _known(opp.get("submission_method")) or "unknown"
+    # Once the SDR has saved Pursuit details, those values are the truth — an explicit "unknown" method or a
+    # cleared Q&A date is a decision, not a gap to fill from the draft. Before that, the draft / extraction /
+    # opportunity fill in what the pursuit never supplied.
+    authoritative = bool(pursuit.get("details_saved_at"))
+    if authoritative:
+        method = str(pursuit.get("submission_method") or "unknown").strip()
+        deadline = _known(pursuit.get("submission_deadline")) or _known(opp.get("response_deadline")) or "unknown"
+        q_deadline = _known(pursuit.get("qa_deadline"))
+    else:
+        method = _known(pursuit.get("submission_method")) or _known(sub.get("method")) or _known(opp.get("submission_method")) or "unknown"
+        deadline = _known(pursuit.get("submission_deadline")) or _known(sub.get("deadline")) or _known(opp.get("response_deadline")) or "unknown"
+        q_deadline = _known(pursuit.get("qa_deadline")) or _known(sub.get("questions_deadline"))
     # The pursuit's `portal` is the acquisition source key (set for every pursuit); it only names the
     # submission destination when the SDR chose a portal submission.
     portal = _known(pursuit.get("portal_name")) or _known(pursuit.get("portal"))
     if method.lower() == "portal" and portal and portal.lower() not in method.lower():
         method = f"portal ({portal.replace('_', ' ')})"
-    deadline = _known(pursuit.get("submission_deadline")) or _known(sub.get("deadline")) or _known(opp.get("response_deadline")) or "unknown"
     w(f"- **Method:** {method}")
     w(f"- **Deadline:** {deadline}")
-    q_deadline = _known(pursuit.get("qa_deadline")) or _known(sub.get("questions_deadline"))
     if q_deadline:
         w(f"- **Questions due:** {q_deadline}")
     for f in sub.get("format_requirements") or []:
