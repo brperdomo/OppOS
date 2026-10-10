@@ -22,7 +22,7 @@ from typing import Any
 import copy
 
 from oppos.drafting.drafter import (NOT_DRAFTED_MARK, SALES_MARK, SECURITY_MARK, TEAM_MARK, TRUST_CENTER_ANSWER,
-                                    TRUST_CENTER_URL, _gate_compliance_prose, compliance_status)
+                                    TRUST_CENTER_URL, _gate_compliance_prose, _scope_terms, compliance_status)
 from oppos.scoring.lobs import DEFAULT_LOB, LOBS, get_lob
 from oppos.scoring.lobs.base import _FRONTMATTER_RE
 from oppos.scoring.schema import lob_label
@@ -72,16 +72,45 @@ def boilerplate(lob_key: str) -> dict[str, str]:
     return out
 
 
-def public_fact_text(facts: str) -> str:
-    """Approved facts minus internal sections ("Standard answers we must NOT give")."""
+# Product scope words (as _scope_terms canonicalises them) that belong to each LOB. A fact naming a product
+# outside the response's LOB is about something we are not proposing and must not appear in its appendix.
+_LOB_PRODUCTS: dict[str, set[str]] = {
+    "workflow": {"workflow"},
+    "low_code": {"lowcode", "documentconverter", "documentautomationserver", "documentsearchability", "documenteditor",
+                 "documentsforsalesforce"},
+    "sdk": {"sdk", "websdk", "iossdk", "androidsdk", "netsdk", "javasdk", "flutter", "reactnative", "documentengine", "gdpicture",
+            "documentauthoring", "aiassistant", "docuvieware"},
+    "dws": {"dws", "processor", "dataextraction", "nudocs"},
+}
+_ALL_PRODUCTS: set[str] = set().union(*_LOB_PRODUCTS.values())
+
+
+def public_fact_text(facts: str, lob_key: str | None = None) -> str:
+    """Approved facts minus internal sections ("Standard answers we must NOT give") and — when `lob_key` is
+    given — minus facts scoped to another LOB's products. Company-wide facts (no product named) stay."""
+    allowed = _LOB_PRODUCTS.get(lob_key or "", set())
     out: list[str] = []
     skipping = False
     for line in (facts or "").splitlines():
         if line.startswith("## "):
             skipping = bool(_INTERNAL_FACT_SECTION_RE.search(line))
-        if not skipping:
-            out.append(line)
-    return "\n".join(out).strip()
+            if not skipping:
+                out.append(line)
+            continue
+        if skipping:
+            continue
+        if lob_key:
+            products = _scope_terms(line) & _ALL_PRODUCTS
+            if products and not products & allowed:
+                continue  # about a product this response does not propose
+        out.append(line)
+    # drop headings left with no facts under them
+    cleaned: list[str] = []
+    for i, line in enumerate(out):
+        if line.startswith("## ") and (i + 1 >= len(out) or out[i + 1].startswith("## ")):
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +279,9 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
     deadline = _known(pursuit.get("submission_deadline")) or _known(sub.get("deadline")) or _known(opp.get("response_deadline")) or "unknown"
     w(f"- **Method:** {method}")
     w(f"- **Deadline:** {deadline}")
+    q_deadline = _known(pursuit.get("qa_deadline")) or _known(sub.get("questions_deadline"))
+    if q_deadline:
+        w(f"- **Questions due:** {q_deadline}")
     for f in sub.get("format_requirements") or []:
         if draft.get("required_forms") and str(f).startswith("Required form/attachment:"):
             continue  # listed once, below
@@ -304,7 +336,7 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
     w("")
     w(bp.get(_EVIDENCE_SECTION) or TRUST_CENTER_ANSWER)
     w("")
-    public_facts = public_fact_text(comp["facts"]) if comp["approved"] else ""
+    public_facts = public_fact_text(comp["facts"], lob.key) if comp["approved"] else ""
     if public_facts:
         w(f"Approved statements (compliance answers version {comp['version']}, approved {comp['approved_at']}):")
         w("")
