@@ -2010,7 +2010,7 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
     if _draft:
         from oppos.dashboard.docauth import DOCAUTH_VERSION, response_editor
         from oppos.drafting.document import render_markdown, file_stem
-        _md = render_markdown(_draft, opp, author=CURRENT_USER.get("name", ""))
+        _md = render_markdown(_draft, opp, author=CURRENT_USER.get("name", ""), pursuit=pursuit)
         _stem = file_stem(opp)
         with st.expander("Response document  ·  edit and export"):
             st.caption("The draft laid into our submitted-response skeleton: executive summary, answers under the RFP's own sections, "

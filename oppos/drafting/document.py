@@ -19,8 +19,10 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import copy
+
 from oppos.drafting.drafter import (NOT_DRAFTED_MARK, SALES_MARK, SECURITY_MARK, TEAM_MARK, TRUST_CENTER_ANSWER,
-                                    TRUST_CENTER_URL, compliance_status)
+                                    TRUST_CENTER_URL, _gate_compliance_prose, compliance_status)
 from oppos.scoring.lobs import DEFAULT_LOB, LOBS, get_lob
 from oppos.scoring.lobs.base import _FRONTMATTER_RE
 from oppos.scoring.schema import lob_label
@@ -148,9 +150,56 @@ def file_stem(opp: dict[str, Any]) -> str:
 # Renderer
 # ---------------------------------------------------------------------------
 
-def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = "", today: date | None = None) -> str:
-    """The full response document for `draft` in the team's skeleton, as Markdown."""
+def revalidate_compliance(draft: dict[str, Any], comp: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Re-gate a saved draft against the *current* compliance approval.
+
+    A draft generated under an approved compliance version keeps its answers verbatim in the database;
+    if Security has since revoked or replaced that version, every stored claim is re-checked against
+    the current facts (or fully gated when approval is withdrawn) before anything is exported.
+    Returns (draft copy, note) — note is empty when nothing changed.
+    """
+    src = draft.get("compliance_source") or {}
+    if not src.get("approved"):
+        return draft, ""  # drafted without approval: all claims already carry markers
+    if comp["approved"] and str(src.get("version")) == str(comp["version"]):
+        return draft, ""
+    facts = comp["facts"] if comp["approved"] else None
+    out = copy.deepcopy(draft)
+    changed = 0
+    for r in out.get("requirements") or []:
+        controls = r.get("category") == "security_compliance"
+        resp, gated = _gate_compliance_prose(str(r.get("response") or ""), facts, controls=controls)
+        if gated:
+            r["response"], r["basis"], r["confidence"] = resp, ["needs_human"], "low"
+            r["human_todo"] = r.get("human_todo") or "Compliance answers changed after this draft — security team to re-confirm."
+            changed += 1
+    for key in ("executive_summary",):
+        text, gated = _gate_compliance_prose(str(out.get(key) or ""), facts)
+        if gated:
+            out[key] = text; changed += 1
+    for key in ("win_themes", "assumptions"):
+        items = []
+        for t in out.get(key) or []:
+            text, gated = _gate_compliance_prose(str(t), facts)
+            changed += int(gated); items.append(text)
+        out[key] = items
+    now = f"v{comp['version']}" if comp["approved"] else "approval withdrawn"
+    note = (f"Compliance answers changed since this draft was generated (drafted against v{src.get('version')}, now {now}): "
+            f"{changed} statement(s) re-marked [SECURITY TO CONFIRM]. Regenerate the draft before submission.")
+    return out, note
+
+
+def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = "", today: date | None = None,
+                    pursuit: dict[str, Any] | None = None) -> str:
+    """The full response document for `draft` in the team's skeleton, as Markdown.
+
+    `pursuit` (the SDR-maintained record) wins for submission deadline / method / portal over what
+    the draft or extraction captured — it is the current truth the team is working to.
+    """
     today = today or date.today()
+    comp = compliance_status()
+    draft, stale_note = revalidate_compliance(draft, comp)
+    pursuit = pursuit or {}
     lob = get_lob(str(draft.get("lob") or opp.get("lob") or DEFAULT_LOB)) or LOBS[DEFAULT_LOB]
     lob_name = lob_label(lob.key)
     agency = str(opp.get("agency") or "").strip()
@@ -168,6 +217,9 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
     w("")
     w(f"*Prepared for {buyer} · {lob_name} · draft of {today.isoformat()}*")
     w("")
+    if stale_note:
+        w(f"> ⚠️ {stale_note}")
+        w("")
 
     # Executive summary + win themes
     w("## Executive summary")
@@ -185,8 +237,12 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
     # Submission details
     w("## Submission details")
     w("")
-    w(f"- **Method:** {_known(sub.get('method')) or opp.get('submission_method') or 'unknown'}")
-    w(f"- **Deadline:** {_known(sub.get('deadline')) or opp.get('response_deadline') or 'unknown'}")
+    method = _known(pursuit.get("submission_method")) or _known(sub.get("method")) or _known(opp.get("submission_method")) or "unknown"
+    if _known(pursuit.get("portal")) and pursuit["portal"].lower() not in method.lower():
+        method = f"{method} ({pursuit['portal']})"
+    deadline = _known(pursuit.get("submission_deadline")) or _known(sub.get("deadline")) or _known(opp.get("response_deadline")) or "unknown"
+    w(f"- **Method:** {method}")
+    w(f"- **Deadline:** {deadline}")
     for f in sub.get("format_requirements") or []:
         if draft.get("required_forms") and str(f).startswith("Required form/attachment:"):
             continue  # listed once, below
@@ -241,7 +297,6 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
     w("")
     w(bp.get(_EVIDENCE_SECTION) or TRUST_CENTER_ANSWER)
     w("")
-    comp = compliance_status()
     public_facts = public_fact_text(comp["facts"]) if comp["approved"] else ""
     if public_facts:
         w(f"Approved statements (compliance answers version {comp['version']}, approved {comp['approved_at']}):")
@@ -272,9 +327,10 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
     if ex.get("files"):
         w(f"- Requirements extracted with the Nutrient Data Extraction API ({ex.get('mode')}) from {ex.get('pages')} pages across "
           f"{len(ex['files'])} file(s); {ex.get('credits_cost')} credits.")
-    comp = draft.get("compliance_source") or {}
+    src = draft.get("compliance_source") or {}
     w("- Security items use the Trust Center standard answer; explicit asks are "
-      + ("validated against the approved compliance file." if comp.get("approved") else "marked [SECURITY TO CONFIRM] until the compliance file is approved."))
+      + ("validated against the approved compliance file." if src.get("approved") else "marked [SECURITY TO CONFIRM] until the compliance file is approved.")
+      + (f" {stale_note}" if stale_note else ""))
     for label, key in (("Open questions for Q&A", "open_questions"), ("Assumptions", "assumptions"), ("Do not claim", "do_not_claim")):
         items = [x for x in (draft.get(key) or []) if x]
         if items:
