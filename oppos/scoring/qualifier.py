@@ -400,7 +400,8 @@ def _tier_for(score: int) -> int:
 # only an RFI", "market research phase, no award") is context, never a risk — but a requirement an
 # RFI states ("the RFI mandates an Oracle Forms integration") is still a risk when quoted.
 _SPECULATIVE_RISK_RE = re.compile(
-    r"\bnot (confirmed|stated|specified|named|yet)\b|\bunknown\b|\bunclear\b|\bneeds? (investigation|verification|confirmation)\b"
+    r"\bnot (confirmed|stated|specified|named|yet)\b|\b(is|are|remains?|still|currently) unknown\b|\bunknown (whether|if|at this (time|stage|point))\b"
+    r"|\bunclear\b|\bneeds? (investigation|verification|confirmation)\b"
     r"|\bno (direct|named|known|existing)?\s*(customer|parole|public[- ]sector|vertical)?\s*reference\b"
     r"|\bnot a (named|proven|listed) (vertical|pattern|industry)\b"
     r"|\b(this|it) is (only |just |merely )?(an? |the )?(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b"
@@ -416,7 +417,10 @@ _DEADLINE_RISK_RE = re.compile(
     r"\b(deadline|due date|response (window|period|time|timeline)|turnaround|time ?frame|timeline|submission window|days? (to|until) (respond|submit|the deadline))\b"
     r".{0,80}\b(tight|short|compressed|aggressive|limited|insufficient|little time|only \d+ (business |calendar )?days|\d+ (business |calendar )?days (away|out|remaining|left)|constrain|pressure|risk)"
     r"|\b(tight|short|compressed|aggressive|limited) (response |submission )?(deadline|window|timeline|time ?frame|turnaround)\b"
-    r"|\bonly \d+ (business |calendar )?days\b|\b\d+ (business |calendar )?days? (remain|remaining|left|until|before|away|to (respond|submit|prepare))\b",
+    r"|\b\d+ (business |calendar )?days? to (respond|submit|prepare)\b"
+    r"|\b(only )?\d+ (business |calendar )?days? (remain|remaining|left|until|before|away)\b.{0,40}\b(deadline|due|respond|submit|response|submission|proposal|bid)\b"
+    r"|\b(deadline|due date|due|respond|submit|response|submission|proposal)\b.{0,60}\b(only )?\d+ (business |calendar )?days? (remain|remaining|left)\b"
+    r"|\b(deadline|due date|due|respond|submit|response|submission|proposal)\b.{0,60}\bonly \d+ (business |calendar )?days\b",
     re.I,
 )
 # Conditional wording is speculation when the model wrote it, but a stated condition the RFP
@@ -525,8 +529,8 @@ def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "",
             speculative = not _CONDITIONAL_RISK_RE.search(ev)
         if ungrounded or speculative:
             gap = claim.rstrip(".")
-            if gap and gap not in gaps and gap not in demoted:
-                demoted.append(gap)
+            if gap and gap not in demoted:
+                demoted.append(gap)  # a copy already in gaps is dropped below so it joins the protected prefix
         else:
             kept.append(r)
     # Demoted claims lead the list so a cap on knowledge gaps can never silently drop them.
