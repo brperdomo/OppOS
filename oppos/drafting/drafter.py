@@ -87,13 +87,15 @@ _COMMERCIAL_TERMS_RE = re.compile(
     r"\bpayment terms?\b|\bnet[- ]?\d{2,3}\b|\binvoic(?:e|ing) (?:terms|schedule|frequency)\b|\bwarrant(?:y|ies)\b|\bservice[- ]level (?:credits?|agreements?|guarantee)|\bSLA credits?\b"
     r"|\b(?:limitation|cap) (?:of|on) liability\b|\bliability (?:cap|limit)\b|\bindemnif\w+|\btermination for convenience\b|\bauto(?:matic)?[- ]renew\w*|\brenewal terms?\b"
     r"|\bcontract (?:term|duration|length) (?:of|is|will be)\b|\bminimum (?:commitment|term|purchase)\b|\blate (?:fees?|payment (?:fees?|penalt\w+))\b|\brefund\w*|\bescrow\b"
-    r"|\bmost[- ]favou?red\b|\bprice (?:escalation|increase|protection)\b|\bcredit terms?\b|\bpurchase order terms?\b",
+    r"|\bmost[- ]favou?red\b|\bprice (?:escalation|increase|protection)\b|\bcredit terms?\b|\bpurchase order terms?\b"
+    r"|\b\d{2}(?:\.\d+)?\s?% ?(?:uptime|availability)\b|\b(?:uptime|availability) (?:sla|guarantee|commitment|target)s?\b|\b(?:guarantee|guaranteed|commit to|committed to) \d{2}(?:\.\d+)?\s?%"
+    r"|\bsla (?:is|of|target|commitment|guarantee|terms?)\b|\bservice[- ]level agreements?\b|\bguaranteed (?:uptime|availability|response time|resolution time)s?\b",
     re.I,
 )
 TEAM_MARK = "[TEAM TO PROVIDE]"
 _SECURITY_ASK_RE = re.compile(
     r"\b(SOC ?[123]|ISO ?\d{4,5}|FedRAMP|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|GDPR|CCPA|CMMC|ITAR|SOX|CJIS|PCI(?:[- ]DSS)?|FIPS|NIST|IRS ?1075|FERPA|GLBA"
-    r"|Section ?508|WCAG|VPAT|ACR|encrypt\w*|data residency|data (?:center|centre)|penetration|vulnerabilit\w*|incident response|breach"
+    r"|Section ?508|WCAG|VPAT|ACR|encrypt\w*|data (?:residency|sovereignty|location)|data (?:center|centre)s?|hosted (?:in|within)|(?:reside|remain|stored|processed) (?:in|within)|penetration|vulnerabilit\w*|incident response|breach"
     r"|disaster recovery|business continuity|backup|multi-?factor|MFA|single sign-on|SSO|SAML|audit (?:log|trail)|security (?:controls?|polic|questionnaire|assessment|certif|audit|standard|requirement)"
     r"|privacy|confidentialit\w*|background check|insurance certificate|cyber ?(?:security|liability))\b",
     re.I,
@@ -139,9 +141,9 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z\[\"'(])")
 # The RFP explicitly demands a specific security statement or artifact *in the response* (not just "be secure").
 _EXPLICIT_SECURITY_ASK_RE = re.compile(
     r"\b(provide|attach|submit|include|furnish|supply|enclose)\b.{0,80}\b(SOC|ISO|report|certificat|attestation|audit|questionnaire|VPAT|ACR|policy|policies|evidence|documentation)"
-    r"|\b(describe|detail|explain|document|demonstrate|confirm|certify|state|specify|list)\b.{0,60}\b(security|encrypt|authentication|access control|incident|vulnerab|penetration|data (?:residency|retention|center)|backup|disaster|business continuity|SOC|ISO|HIPAA|FedRAMP|StateRAMP|CJIS|PCI|NIST|FIPS|508|WCAG|privacy)"
+    r"|\b(describe|detail|explain|document|demonstrate|confirm|certify|state|specify|list|identify|indicate)\b.{0,60}\b(security|encrypt|authentication|access control|incident|vulnerab|penetration|data (?:residency|retention|center|centre|location|sovereignty)|where (?:customer |the )?data|hosted|hosting|backup|disaster|business continuity|SOC|ISO|HIPAA|FedRAMP|StateRAMP|CJIS|PCI|NIST|FIPS|508|WCAG|privacy)"
     r"|\b(must|shall|required to|is required|mandatory|comply|compliance with|in accordance with|adhere)\b.{0,40}\b(SOC ?[123]|ISO ?\d{4,5}|FedRAMP|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|CJIS|PCI|FIPS|NIST|IRS ?1075|FERPA|GLBA|SOX|GDPR|CCPA|CMMC|ITAR|Section ?508|WCAG|VPAT"
-    r"|encrypt\w*|AES|TLS|data residency|data (?:center|centre)s?|US-based|onshore|MFA|multi-?factor|2FA|SSO|single sign-on|SAML|OIDC|OAuth|RBAC|role-based|least privilege|SIEM|WAF|key management|HSM|audit (?:log|trail)s?|penetration|vulnerability|backup|disaster recovery"
+    r"|encrypt\w*|AES|TLS|data (?:residency|sovereignty|location)|data (?:center|centre)s?|US-based|onshore|hosted (?:in|within)|(?:reside|remain|stored|processed) (?:in|within)|MFA|multi-?factor|2FA|SSO|single sign-on|SAML|OIDC|OAuth|RBAC|role-based|least privilege|SIEM|WAF|key management|HSM|audit (?:log|trail)s?|penetration|vulnerability|backup|disaster recovery"
     r"|business continuity|retention|breach|incident|background check|cyber ?(?:security|liability)|insurance)\b",
     re.I,
 )
@@ -220,27 +222,61 @@ def _term_polarity(sentence: str, start: int, end: int | None = None) -> str:
     return "neg" if _PRED_NEG_RE.search(after) else "pos"
 
 
+# Known regions are case-insensitive; an unknown place name must be capitalised (the regex is compiled WITHOUT re.I
+# so "offer cloud deployment" cannot be read as the region "offer").
+# Known regions are case-insensitive; an unknown place name must be capitalised and is accepted only in a strong
+# position — after "in/within" or before "data centers/servers/facilities" — so a sentence-initial verb ("Configure
+# hosting …") or "offer cloud deployment" is never read as a region. Compiled WITHOUT re.I on purpose.
+_KNOWN_REGION = (r"(?i:US|U\.S\.|USA|United States|CONUS|EU|European Union|UK|United Kingdom|Germany|France|Canada|Australia|India|Japan|Singapore"
+                 r"|Switzerland|Ireland|Netherlands|Europe|North America|the Americas|APAC|EMEA|Frankfurt|Dublin|London|Virginia|Oregon|Ohio|Texas)")
+_ANY_REGION = r"(?:" + _KNOWN_REGION + r"|[A-Z][a-z]{3,})"
+_REGION = _ANY_REGION
 _RESIDENCY_RE = re.compile(
-    r"\b(?:US|U\.S\.|United States|domestic|CONUS|US-based|onshore)[- ]?(?:based |only |hosted )?(?:data ?cent(?:er|re)s?|hosting|regions?|servers?|cloud|facilit(?:y|ies))\b"
-    r"|\b(?:data ?cent(?:er|re)s?|hosted|hosting|servers?|data (?:resides|is stored|residency|stays))\s+(?:in|within|located in|inside) the (?:US|U\.S\.|United States|continental US|CONUS)\b"
-    r"|\bUS[- ]based\b|\bonshore\b", re.I)
-# Quantities attached to a control ("RTO of 24 hours", "99.9% uptime", "30-day retention") are part of the claim.
-_QUANTITY_RE = re.compile(r"\b(\d+(?:[.,]\d+)?)[- ]?(hours?|hrs?|minutes?|mins?|seconds?|secs?|days?|weeks?|months?|years?|%|percent|bits?|GB|TB|MB)\b", re.I)
+    r"\b" + _KNOWN_REGION + r"(?i:[- ]?(?:based |only |hosted )?(?:data ?cent(?:er|re)s?|hosting|regions?|servers?|cloud|facilit(?:y|ies)))\b"
+    r"|\b[A-Z][a-z]{3,}(?i:[- ]?(?:based |only |hosted )?(?:data ?cent(?:er|re)s?|servers?|facilit(?:y|ies)))\b"
+    r"|(?i:\b(?:data ?cent(?:er|re)s?|hosted|hosting|servers?|data|information|customer data|all data)\s+(?:is |are |remains? |stays? |resides? |stored |kept |processed |held )*"
+    r"(?:exclusively |only |solely |entirely )?(?:in|within|located in|inside) (?:the )?)" + _ANY_REGION + r"\b"
+    r"|(?i:\bUS[- ]based\b|\bonshore\b)")
+_REGION_CANON = {"us": "us", "u.s.": "us", "usa": "us", "unitedstates": "us", "conus": "us", "onshore": "us", "usbased": "us",
+                 "eu": "eu", "europeanunion": "eu", "europe": "eu", "uk": "uk", "unitedkingdom": "uk", "theamericas": "americas"}
+
+
+def _residency_term(match_text: str) -> str:
+    m = re.search(_REGION, match_text[match_text.lower().find("in ") + 3:] if re.search(r"\b(in|within|inside)\b", match_text, re.I) else match_text)
+    region = (m.group(0) if m else match_text).lower().replace(" ", "").replace("-", "")
+    region = _REGION_CANON.get(region, region)
+    if region in ("data", "customer", "all", "information", "hosted", "hosting", "servers", "server"):
+        region = "unspecified"
+    return f"residency:{region}"
+
+
+# Quantities attached to a control ("RTO of 24 hours", "99.9% uptime", "30-day retention") are part of the claim,
+# bound to the nearest preceding control in the same clause ("q:rto:24hour"); spelled numbers count too.
+_NUM_WORDS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+              "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+              "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
+_NUM_WORD_RE = "|".join(_NUM_WORDS)
+_QUANTITY_RE = re.compile(
+    r"\b(\d+(?:[.,]\d+)?|(?:" + _NUM_WORD_RE + r")(?:[- ](?:" + _NUM_WORD_RE + r"))?)[- ]?(hours?|hrs?|minutes?|mins?|seconds?|secs?|days?|weeks?|months?|years?|percent|bits?|GB|TB|MB|%)(?!\w)", re.I)
 _UNIT_CANON = {"hr": "hour", "hrs": "hour", "min": "minute", "mins": "minute", "sec": "second", "secs": "second", "%": "percent"}
-# Verbs that start a new predicate: a coordinated noun list without one of these inherits the governing negation.
 _VERB_RE = re.compile(
     r"\b(is|are|was|were|be|been|has|have|had|does|do|did|will|can|must|shall|may|should|supports?|provides?|offers?|holds?|includes?"
     r"|maintains?|uses?|encrypts?|requires?|performs?|conducts?|undergoes|signs?|claims?|operates?|runs?|stores?|hosts?|keeps?|retains?)\b", re.I)
 _HARD_BREAK_RE = re.compile(r"[;:.]|\b(but|while|although|whereas|except|however|yet)\b", re.I)
 
 
-def _quantity_token(num: str, unit: str) -> str:
-    n = num.replace(",", "")
-    if "." in n:
-        n = n.rstrip("0").rstrip(".")
+def _num_value(raw: str) -> str:
+    raw = raw.lower().replace(",", "")
+    if raw.replace(".", "", 1).isdigit():
+        return raw.rstrip("0").rstrip(".") if "." in raw else raw
+    parts = re.split(r"[- ]", raw)
+    return str(sum(_NUM_WORDS.get(w, 0) for w in parts))
+
+
+def _quantity_token(num: str, unit: str, control: str | None) -> str:
     u = unit.lower()
-    u = _UNIT_CANON.get(u, u.rstrip("s") if u not in ("%",) else "percent")
-    return f"q:{n}{u}"
+    u = _UNIT_CANON.get(u, "percent" if u == "%" else u.rstrip("s"))
+    return f"q:{control or '-'}:{_num_value(num)}{u}"
 
 
 def _claim_terms_pol(sentence: str, controls: bool = False) -> set[tuple[str, str]]:
@@ -269,7 +305,7 @@ def _claim_terms_pol(sentence: str, controls: bool = False) -> set[tuple[str, st
         if base and base.group(1) != full:
             entries.append((base.group(1), m.start(), m.end()))
     for m in _RESIDENCY_RE.finditer(sentence):
-        entries.append(("usdatacenter", m.start(), m.end()))
+        entries.append((_residency_term(m.group(0)), m.start(), m.end()))
     specific_present = bool({t for t, _, _ in entries} - _GENERIC_COMPLIANCE_TERMS)
     if specific_present:
         for m in _STATUS_RE.finditer(sentence):
@@ -278,8 +314,13 @@ def _claim_terms_pol(sentence: str, controls: bool = False) -> set[tuple[str, st
                 if w.startswith(prefix):
                     entries.append((f"s:{canon}", m.start(), m.end()))
                     break
+        controls_pos = sorted((st, en, t) for t, st, en in entries if not t.startswith(("s:", "q:")))
         for m in _QUANTITY_RE.finditer(sentence):
-            entries.append((_quantity_token(m.group(1), m.group(2)), m.start(), m.end()))
+            owner = None
+            for st, en, t in controls_pos:  # nearest preceding term in the same clause owns the quantity
+                if en <= m.start() and not _HARD_BREAK_RE.search(sentence[en:m.start()]):
+                    owner = t
+            entries.append((_quantity_token(m.group(1), m.group(2), owner), m.start(), m.end()))
     entries.sort(key=lambda e: (e[1], e[2]))
     out: set[tuple[str, str]] = set()
     prev_end: int | None = None
@@ -522,7 +563,7 @@ You have a documentation search tool connected to Nutrient's product docs. Use i
 Respond with ONLY valid JSON matching this schema:
 {{
   "rfp_type": "<RFI | RFP | RFQ | sources_sought | other>",
-  "submission": {{"method": "<portal | email | mail | unknown>", "deadline": "<as stated or unknown>", "format_requirements": ["<page limits, forms, sections required>"]}},
+  "submission": {{"method": "<portal | email | mail | unknown>", "deadline": "<as stated or unknown>", "questions_deadline": "<Q&A cutoff as stated, or ''>", "format_requirements": ["<page limits, forms, sections required>"]}},
   "executive_summary": "<2–3 paragraphs we could open the response with>",
   "win_themes": ["<3–5 themes to carry through the response>"],
   "requirements": [
@@ -576,6 +617,12 @@ def _norm_list(v: Any, limit: int = 30) -> list[str]:
     return [str(x).strip() for x in v if str(x).strip()][:limit]
 
 
+def _superseded_text(e: dict[str, Any], by_ext: dict[str, dict[str, Any]]) -> str:
+    new = by_ext.get(e.get("superseded_by") or "") or {}
+    where = " · ".join(x for x in (new.get("file", ""), f"§{new['section']}" if new.get("section") else "") if x)
+    return f"Superseded by {e.get('superseded_by')}" + (f" ({where})" if where else "") + " — see that item; this original requirement is no longer answered."
+
+
 def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | None, truncated: bool,
                extracted: dict[str, Any] | None = None) -> dict[str, Any]:
     comp = compliance_status()
@@ -597,6 +644,17 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
         response = str(r.get("response") or "").strip()
         todo = str(r.get("human_todo") or "").strip()
         req_text = str((ext or {}).get("text") or r.get("text") or "").strip()
+        if ext and ext.get("superseded_by"):
+            # An amendment replaced this item: it is not answered, it points at its replacement (a human confirms the link).
+            r = dict(r, response=_superseded_text(ext, by_ext), basis=["rfp"], confidence="high", human_todo="", category=ext.get("category") or cat)
+            response, basis, conf, todo = r["response"], ["rfp"], "high", ""
+            cat = r["category"] if r["category"] in _CATEGORIES else "other"
+            rid = str(r.get("id") or f"R{i}").strip()
+            if rid not in seen_ids:
+                seen_ids.add(rid)
+                reqs_out.append({"id": rid, "file": str(ext.get("file") or "")[:120], "section": str(ext.get("section") or "")[:80], "page": ext.get("page"),
+                                 "text": req_text[:1500], "category": cat, "response": response, "confidence": conf, "basis": basis, "sources": [], "human_todo": ""})
+            continue
         # The requirement's own words decide whether it is a security/compliance item, not the model's label.
         if cat != "security_compliance" and (_SECURITY_ASK_RE.search(req_text)
                                              or (_CONTROL_RE.search(req_text) and is_explicit_security_ask(req_text))):
@@ -673,6 +731,11 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
     # Every extracted requirement must be answered; synthesize a needs_human entry for any the model dropped.
     missing = [e for rid, e in by_ext.items() if rid not in seen_ids]
     for e in missing:
+        if e.get("superseded_by"):
+            reqs_out.append({"id": e["id"], "file": e.get("file") or "", "section": e.get("section") or "", "page": e.get("page"),
+                             "text": e.get("text", "")[:1500], "category": e.get("category") or "other", "response": _superseded_text(e, by_ext),
+                             "confidence": "high", "basis": ["rfp"], "sources": [], "human_todo": ""})
+            continue
         reqs_out.append({
             "id": e["id"], "file": e.get("file") or "", "section": e.get("section") or "", "page": e.get("page"),
             "text": e.get("text", "")[:1500], "category": e.get("category") or "other",
@@ -727,6 +790,8 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
         "requirements": reqs_out,
         "open_questions": [_gate_pricing_prose(_gate_compliance_prose(q, approved_body, controls=True)[0])[0]
                            for q in _norm_list(raw.get("open_questions"), 20)] + [
+            f"Confirm that {sp['new']} ({sp.get('new_file', '')}) supersedes {sp['old']} ({sp.get('basis', '')}); only the amendment item is answered."
+            for sp in ((extracted or {}).get("supersessions") or [])][:10] + [
             f"Conflicting {c['field'].replace('_', ' ')} across files — {c['kept_file']} says \"{c['kept']}\" but {c['other_file']} says \"{c['other']}\"; confirm which applies."
             for c in ((extracted or {}).get("solicitation_conflicts") or [])][:5],
         "assumptions": assumptions,
