@@ -73,7 +73,9 @@ _COMPLIANCE_RE = re.compile(
 # Actual price language only — procurement vocabulary ("submit a quote", "bid opening", "cost schedule attached")
 # must not trip this, or every portal instruction becomes a sales item.
 _PRICING_RE = re.compile(
-    r"\$\s?\d|\d\s?(?:USD|EUR|GBP)\b|\b(?:our|the|nutrient'?s?) pric(?:e|es|ing)\b|\bpric(?:e|es|ing) (?:is|are|starts?|begins?|ranges?|model|structure|tiers?)\b"
+    r"[$€£¥]\s?\d|\d\s?(?:USD|EUR|GBP|CAD|AUD|CHF|dollars|euros|pounds)\b|\b(?:our|the|nutrient'?s?) pric(?:e|es|ing)\b|\bpric(?:e|es|ing) (?:is|are|starts?|begins?|ranges?|model|structure|tiers?)\b"
+    r"|\b(?:annual|yearly|monthly|quarterly|one[- ]time|recurring|implementation|setup|set-up|onboarding|licen[cs]e|licen[cs]ing|subscription|maintenance|support|hosting|training|professional services|total|estimated|all-in) (?:cost|costs|fee|fees|price|prices|pricing|charge|charges)\b"
+    r"|\b(?:cost|costs|fee|fees|price|prices) (?:of|is|are|for|per|will be|would be|starts? at)\b|\bno (?:additional|extra|hidden) (?:cost|costs|fee|fees|charge|charges)\b|\bfree of charge\b|\bat no (?:cost|charge)\b"
     r"|\bper[- ](?:user|seat|named user|page|document|transaction)(?: per (?:month|year))?\b|\blicen[cs]e fee|\bsubscription fee|\bdiscount(?:s|ed|ing)?\b|\bTCO\b"
     r"|\bunit (?:cost|price)s?\b|\b(?:cost|price|pricing|rate) (?:schedule|sheet|proposal|breakdown)\b|\bbid (?:price|amount)s?\b|\bfreight (?:charge|cost)s?\b|\bhourly rate|\bnot[- ]to[- ]exceed\b",
     re.I,
@@ -257,10 +259,37 @@ _CONFIDENCE = ("high", "medium", "low")
 # Compliance source (approved file only)
 # ---------------------------------------------------------------------------
 
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+_INSTRUCTION_SECTIONS = ("how to fill",)
+
+
+def approved_fact_text(body: str) -> str:
+    """Only the populated fact bullets of compliance.md — template prose, instructions and HTML-comment
+    examples are never facts, even once `approved: true` is set. Section headings are kept for context."""
+    text = _HTML_COMMENT_RE.sub("", body or "")
+    out: list[str] = []
+    section = ""
+    keep_section = False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            section = line[3:].strip()
+            keep_section = not section.lower().startswith(_INSTRUCTION_SECTIONS)
+            continue
+        if not section or not keep_section:
+            continue  # preamble before the first section, or an instructions section
+        m = re.match(r"^\s*(?:[-*•]|\d+[.)])\s+(.*\S)\s*$", line)
+        if m:
+            if not any(o.startswith(f"## {section}") for o in out):
+                out.append(f"## {section}")
+            out.append(f"- {m.group(1)}")
+    return "\n".join(out)
+
+
 def compliance_status() -> dict[str, Any]:
-    """{"approved": bool, "version", "approved_by", "approved_at", "body"}"""
+    """{"approved": bool, "version", "approved_by", "approved_at", "body", "facts"} — `facts` is the
+    populated fact bullets only (see approved_fact_text); gating and the prompt use `facts`, never `body`."""
     if not COMPLIANCE_PATH.is_file():
-        return {"approved": False, "version": 0, "approved_by": "", "approved_at": "", "body": ""}
+        return {"approved": False, "version": 0, "approved_by": "", "approved_at": "", "body": "", "facts": ""}
     text = COMPLIANCE_PATH.read_text(encoding="utf-8")
     meta: dict[str, str] = {}
     m = _FRONTMATTER_RE.match(text)
@@ -273,7 +302,7 @@ def compliance_status() -> dict[str, Any]:
         body = text[m.end():]
     approved = str(meta.get("approved", "false")).lower() in ("true", "yes", "1")
     return {"approved": approved, "version": meta.get("version", "0"), "approved_by": meta.get("approved_by", ""),
-            "approved_at": meta.get("approved_at", ""), "body": body.strip()}
+            "approved_at": meta.get("approved_at", ""), "body": body.strip(), "facts": approved_fact_text(body)}
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +316,7 @@ def _system(lob_key: str, grounded: bool) -> str:
         compliance_block = f"""## Approved compliance answers (version {comp['version']}, approved by {comp['approved_by']} on {comp['approved_at']})
 Default for security, certification, hosting, privacy, accessibility or insurance items is still the Trust Center pointer ({TRUST_CENTER_URL}) — documentation is shared under NDA on the prospect's request. When the RFP explicitly demands a specific statement or artifact in the response, answer it ONLY with the approved facts below (basis ["compliance"]); if the fact is not listed, write "[SECURITY TO CONFIRM]" and set basis to needs_human.
 
-{comp['body']}
+{comp['facts']}
 """
     else:
         compliance_block = f"""## Security & compliance answers
@@ -407,7 +436,7 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
             elif explicit and comp["approved"]:
                 # Every claim must be backed by the approved file — a model-supplied basis ["compliance"] proves nothing.
                 # Inside a security answer, controls (MFA, SSO, backups, TLS …) are claims too.
-                response, gated = _gate_compliance_prose(response, comp["body"], controls=True)
+                response, gated = _gate_compliance_prose(response, comp["facts"], controls=True)
                 if gated:
                     basis, conf = ["needs_human"], "low"
                     todo = todo or "Security team to confirm the claim(s) not covered by the approved compliance answers."
@@ -415,7 +444,7 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
                 # Not an explicit ask → the standard Trust Center answer; nothing to verify.
                 response, basis, conf, todo = TRUST_CENTER_ANSWER, ["standard"], "high", ""
         else:
-            response, gated = _gate_compliance_prose(response, comp["body"] if comp["approved"] else None)
+            response, gated = _gate_compliance_prose(response, comp["facts"] if comp["approved"] else None)
             if gated:
                 basis, conf = ["needs_human"], "low"
                 todo = todo or "Security team to confirm the compliance statement in this answer, or remove it."
@@ -468,7 +497,7 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
     exec_summary = str(raw.get("executive_summary") or "").strip()
     win_themes = _norm_list(raw.get("win_themes"), 8)
     assumptions = _norm_list(raw.get("assumptions"), 20)
-    approved_body = comp["body"] if comp["approved"] else None
+    approved_body = comp["facts"] if comp["approved"] else None
     exec_summary, _ = _gate_compliance_prose(exec_summary, approved_body)
     win_themes = [_gate_compliance_prose(t, approved_body)[0] for t in win_themes]
     assumptions = [_gate_compliance_prose(a, approved_body)[0] for a in assumptions]
@@ -503,7 +532,9 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
         "executive_summary": exec_summary,
         "win_themes": win_themes,
         "requirements": reqs_out,
-        "open_questions": _norm_list(raw.get("open_questions"), 20),
+        "open_questions": _norm_list(raw.get("open_questions"), 20) + [
+            f"Conflicting {c['field'].replace('_', ' ')} across files — {c['kept_file']} says \"{c['kept']}\" but {c['other_file']} says \"{c['other']}\"; confirm which applies."
+            for c in ((extracted or {}).get("solicitation_conflicts") or [])][:5],
         "assumptions": assumptions,
         "do_not_claim": _norm_list(raw.get("do_not_claim"), 20),
         "stats": {

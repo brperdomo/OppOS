@@ -171,7 +171,8 @@ def extract_rfp_requirements(
              "credits_remaining": ..., "skipped": [...], "errors": [...]}
     """
     mode = mode or EXTRACTION_MODE
-    result: dict[str, Any] = {"mode": mode, "requirements": [], "solicitation": {}, "evaluation_criteria": [],
+    result: dict[str, Any] = {"mode": mode, "requirements": [], "solicitation": {}, "solicitation_sources": {},
+                              "solicitation_conflicts": [], "evaluation_criteria": [],
                               "required_forms": [], "files": [], "pages": 0, "credits_cost": 0,
                               "credits_remaining": None, "skipped": [], "errors": []}
     if not extraction_available():
@@ -220,10 +221,25 @@ def extract_rfp_requirements(
         doc_type = str(sol.get("document_type") or "other").strip().lower().replace(" ", "_")
         result["files"][-1]["document_type"] = doc_type
         for k, v in sol.items():
-            if k == "document_type":
+            if k == "document_type" or not v:
                 continue
-            if v and not result["solicitation"].get(k):
+            have = result["solicitation"].get(k)
+            src = result.setdefault("solicitation_sources", {})
+            if not have:
                 result["solicitation"][k] = v
+                src[k] = {"file": path.name, "document_type": doc_type}
+            elif str(have).strip() != str(v).strip():
+                # Later documents in a package usually amend earlier ones: an amendment overrides; otherwise the
+                # first value stands and the disagreement is surfaced for a human (never silently averaged).
+                prev = src.get(k) or {}
+                if doc_type == "amendment" and prev.get("document_type") != "amendment":
+                    result.setdefault("solicitation_conflicts", []).append(
+                        {"field": k, "kept": v, "kept_file": path.name, "other": have, "other_file": prev.get("file", "?"), "reason": "amendment overrides"})
+                    result["solicitation"][k] = v
+                    src[k] = {"file": path.name, "document_type": doc_type}
+                else:
+                    result.setdefault("solicitation_conflicts", []).append(
+                        {"field": k, "kept": have, "kept_file": prev.get("file", "?"), "other": v, "other_file": path.name, "reason": "first document kept"})
 
         req_meta = meta.get("requirements") if isinstance(meta.get("requirements"), list) else []
         for i, item in enumerate(data.get("requirements") or []):
