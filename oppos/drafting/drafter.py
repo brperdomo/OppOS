@@ -1,0 +1,943 @@
+"""Stage 3 — draft a response to a pursued RFP.
+
+One grounded call: extract the RFP's requirements/questions, map each to the LOB
+positioning profile (and Nutrient docs via Kapa when configured), and draft an
+answer per item with an explicit basis and confidence. Compliance claims come
+only from oppos/drafting/compliance.md once the security team has approved it;
+until then they are marked [SECURITY TO CONFIRM]. Pricing is never invented.
+"""
+
+from __future__ import annotations
+
+import json
+from functools import lru_cache
+import logging
+import os
+import re
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import anthropic
+
+from oppos.config import SCORING_MODEL_STAGE2
+from oppos.drafting.extraction import format_for_prompt
+from oppos.scoring.lobs import DEFAULT_LOB, LOBS, get_lob
+from oppos.scoring.lobs.base import _FRONTMATTER_RE
+from oppos.scoring.qualifier import (
+    _KAPA_SERVER_NAME,
+    _MCP_BETA,
+    KAPA_API_KEY,
+    KAPA_MCP_URL,
+    _final_text,
+    _get_client,
+    _grounding_summary,
+    _repair_and_parse_json,
+    _track,
+    kapa_enabled,
+)
+
+logger = logging.getLogger(__name__)
+
+# Drafting is rare (one call per pursued RFP) and quality matters more than cost.
+DRAFT_MODEL = (os.environ.get("DRAFT_MODEL") or "").strip() or "claude-opus-5"
+DRAFT_MAX_TOKENS = int((os.environ.get("DRAFT_MAX_TOKENS") or "24000").strip() or 24000)
+# Large RFPs are drafted in chunks of this many pre-extracted requirements so no single call overflows.
+DRAFT_CHUNK_SIZE = int((os.environ.get("DRAFT_CHUNK_SIZE") or "15").strip() or 15)
+TRUST_CENTER_URL = (os.environ.get("TRUST_CENTER_URL") or "https://trust.nutrient.io").strip()
+# Default answer for security / compliance items: documentation is shared under NDA via the Trust Center,
+# and it is the prospect who requests access. We only verify specifics when the RFP explicitly demands them.
+TRUST_CENTER_ANSWER = (
+    "Nutrient's security and compliance documentation — including independent audit reports, policies, "
+    "and completed security questionnaires — is available under NDA through the Nutrient Trust Center "
+    f"({TRUST_CENTER_URL}). We will grant the evaluation team access on request so this requirement can be "
+    "reviewed against current documentation rather than a summary."
+)
+MAX_RFP_CHARS = 150_000           # description + attachment text passed to the model
+COMPLIANCE_PATH = Path(__file__).resolve().parent / "compliance.md"
+
+_CATEGORIES = ("functional", "technical", "security_compliance", "commercial", "company", "implementation", "other")
+
+SECURITY_MARK = "[SECURITY TO CONFIRM]"
+SALES_MARK = "[SALES TO PROVIDE]"
+NOT_DRAFTED_MARK = "[NOT DRAFTED]"
+
+# Any sentence making one of these claims is a compliance claim and is gated when compliance.md is unapproved.
+_COMPLIANCE_RE = re.compile(
+    r"\b(SOC ?[123](?: Type ?(?:II|I|2|1))?|ISO ?\d{4,5}|FedRAMP(?: (?:Low|Moderate|High))?|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|GDPR|CCPA|CMMC|ITAR|CJIS|PCI(?:[- ]DSS)?|FIPS(?:[ -]?140)?"
+    r"|NIST(?: ?(?:800-53|800-171|CSF))?|IRS ?1075|FERPA|GLBA|SOX|Section ?508|WCAG(?: ?2\.[0-9](?: ?AA?)?)?|VPAT|ACR|penetration[- ]test(?:s|ing)?|pen[- ]test(?:s|ing)?"
+    r"|data residency|encrypt(?:s|ed|ion|ing)?(?: (?:data |all data )?(?:at rest|in transit))?|certif(?:ied|ication|icate)s?|accredit(?:ed|ation)|attestation"
+    r"|audit report|compliant|compliance|GovCloud|GCC(?: High)?|data (?:center|centre) location)\b",
+    re.I,
+)
+# Actual price language only — procurement vocabulary ("submit a quote", "bid opening", "cost schedule attached")
+# must not trip this, or every portal instruction becomes a sales item.
+_PRICING_RE = re.compile(
+    r"[$€£¥]\s?\d|\d\s?(?:USD|EUR|GBP|CAD|AUD|CHF|dollars|euros|pounds)\b|\b(?:our|the|nutrient'?s?) pric(?:e|es|ing)\b|\bpric(?:e|es|ing) (?:is|are|starts?|begins?|ranges?|model|structure|tiers?)\b"
+    r"|\b(?:annual|yearly|monthly|quarterly|one[- ]time|recurring|implementation|setup|set-up|onboarding|licen[cs]e|licen[cs]ing|subscription|maintenance|support|hosting|training|professional services|total|estimated|all-in) (?:cost|costs|fee|fees|price|prices|pricing|charge|charges)\b"
+    r"|\b(?:cost|costs|fee|fees|price|prices) (?:of|is|are|for|per|will be|would be|starts? at)\b|\bno (?:additional|extra|hidden) (?:cost|costs|fee|fees|charge|charges)\b|\bfree of charge\b|\bat no (?:cost|charge)\b"
+    r"|\bper[- ](?:user|seat|named user|page|document|transaction)(?: per (?:month|year))?\b|\blicen[cs]e fee|\bsubscription fee|\bdiscount(?:s|ed|ing)?\b|\bTCO\b"
+    r"|\bunit (?:cost|price)s?\b|\b(?:cost|price|pricing|rate) (?:schedule|sheet|proposal|breakdown)\b|\bbid (?:price|amount)s?\b|\bfreight (?:charge|cost)s?\b|\bnot[- ]to[- ]exceed\b"
+    r"|\b(?:hourly|daily|weekly|monthly|annual|blended|consultant|consulting|labou?r|billing|billable|standard|professional[- ]services|day|per[- ]day|per[- ]hour) rates?\b"
+    r"|\brate cards?\b|\bper[- ]diem\b|\btime[- ]and[- ]materials\b|\bT&M\b",
+    re.I,
+)
+# Substantive commercial conditions that sales / legal set — never drafted, even without a price.
+_COMMERCIAL_TERMS_RE = re.compile(
+    r"\bpayment terms?\b|\bnet[- ]?\d{2,3}\b|\binvoic(?:e|ing) (?:terms|schedule|frequency)\b|\bwarrant(?:y|ies)\b|\bservice[- ]level (?:credits?|agreements?|guarantee)|\bSLA credits?\b"
+    r"|\b(?:limitation|cap) (?:of|on) liability\b|\bliability (?:cap|limit)\b|\bindemnif\w+|\btermination for convenience\b|\bauto(?:matic)?[- ]renew\w*|\brenewal terms?\b"
+    r"|\bcontract (?:term|duration|length) (?:of|is|will be)\b|\bminimum (?:commitment|term|purchase)\b|\blate (?:fees?|payment (?:fees?|penalt\w+))\b|\brefund\w*|\bescrow\b"
+    r"|\bmost[- ]favou?red\b|\bprice (?:escalation|increase|protection)\b|\bcredit terms?\b|\bpurchase order terms?\b"
+    r"|\b\d{2}(?:\.\d+)?\s?% ?(?:uptime|availability)\b|\b(?:uptime|availability) (?:sla|guarantee|commitment|target)s?\b|\b(?:guarantee|guaranteed|commit to|committed to) \d{2}(?:\.\d+)?\s?%"
+    r"|\bsla (?:is|of|target|commitment|guarantee|terms?)\b|\bservice[- ]level agreements?\b|\bguaranteed (?:uptime|availability|response time|resolution time)s?\b",
+    re.I,
+)
+TEAM_MARK = "[TEAM TO PROVIDE]"
+_SECURITY_ASK_RE = re.compile(
+    r"\b(SOC ?[123]|ISO ?\d{4,5}|FedRAMP|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|GDPR|CCPA|CMMC|ITAR|SOX|CJIS|PCI(?:[- ]DSS)?|FIPS|NIST|IRS ?1075|FERPA|GLBA"
+    r"|Section ?508|WCAG|VPAT|ACR|encrypt\w*|data (?:residency|sovereignty|location)|data (?:center|centre)s?|hosted (?:in|within)|(?:reside|remain|stored|processed) (?:in|within)|penetration|vulnerabilit\w*|incident response|breach"
+    r"|disaster recovery|business continuity|backup|multi-?factor|MFA|single sign-on|SSO|SAML|audit (?:log|trail)|security (?:controls?|polic|questionnaire|assessment|certif|audit|standard|requirement)"
+    r"|privacy|confidentialit\w*|background check|insurance certificate|cyber ?(?:security|liability))\b",
+    re.I,
+)
+
+
+# "SSO is required", "Required: SOC 2 Type II", "MFA must be supported" — requirement-first phrasing.
+_REQUIREMENT_FIRST_RE = re.compile(
+    r"\b(is|are|shall be|must be|will be|to be) (required|mandatory|supported|provided|enforced|in place|available|maintained|implemented|certified|compliant)\b"
+    r"|\b(required|mandatory|requirement)\s*[:\-–]", re.I)
+
+
+def is_explicit_security_ask(req_text: str) -> bool:
+    """Does the requirement explicitly demand a specific security statement, artifact or control in the response?
+
+    Verb-forward asks ("provide your SOC 2 report", "shall encrypt at rest"), direct questions
+    ("Are you SOC 2 Type II certified?", "Does the solution support MFA?") and requirement-first forms
+    ("MFA is required.") all count; "the system must be secure" does not.
+    """
+    text = req_text or ""
+    if _EXPLICIT_SECURITY_ASK_RE.search(text):
+        return True
+    for sent in re.split(r"(?<=[.?!])\s+", text):
+        if not (_SECURITY_ASK_RE.search(sent) or _CONTROL_RE.search(sent)):
+            continue
+        if "?" in sent or _REQUIREMENT_FIRST_RE.search(sent):
+            return True
+    return False
+
+
+def _gate_pricing_prose(text: str) -> tuple[str, bool]:
+    """Replace any sentence containing price language or commercial terms with the sales placeholder (summary, themes, assumptions)."""
+    if not text:
+        return text, False
+    out, flagged = [], False
+    for sent in _SENTENCE_SPLIT.split(text.strip()):
+        if (_PRICING_RE.search(sent) or _COMMERCIAL_TERMS_RE.search(sent)) and not sent.lstrip().startswith(SALES_MARK):
+            sent = f"{SALES_MARK} — pricing / commercial statement removed from draft."
+            flagged = True
+        out.append(sent)
+    return " ".join(out), flagged
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z\[\"'(])")
+# The RFP explicitly demands a specific security statement or artifact *in the response* (not just "be secure").
+_EXPLICIT_SECURITY_ASK_RE = re.compile(
+    r"\b(provide|attach|submit|include|furnish|supply|enclose)\b.{0,80}\b(SOC|ISO|report|certificat|attestation|audit|questionnaire|VPAT|ACR|policy|policies|evidence|documentation)"
+    r"|\b(describe|detail|explain|document|demonstrate|confirm|certify|state|specify|list|identify|indicate)\b.{0,60}\b(security|encrypt|authentication|access control|incident|vulnerab|penetration|data (?:residency|retention|center|centre|location|sovereignty)|where (?:customer |the )?data|hosted|hosting|backup|disaster|business continuity|SOC|ISO|HIPAA|FedRAMP|StateRAMP|CJIS|PCI|NIST|FIPS|508|WCAG|privacy)"
+    r"|\b(must|shall|required to|is required|mandatory|comply|compliance with|in accordance with|adhere)\b.{0,40}\b(SOC ?[123]|ISO ?\d{4,5}|FedRAMP|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|CJIS|PCI|FIPS|NIST|IRS ?1075|FERPA|GLBA|SOX|GDPR|CCPA|CMMC|ITAR|Section ?508|WCAG|VPAT"
+    r"|encrypt\w*|AES|TLS|data (?:residency|sovereignty|location)|data (?:center|centre)s?|US-based|onshore|hosted (?:in|within)|(?:reside|remain|stored|processed) (?:in|within)|MFA|multi-?factor|2FA|SSO|single sign-on|SAML|OIDC|OAuth|RBAC|role-based|least privilege|SIEM|WAF|key management|HSM|audit (?:log|trail)s?|penetration|vulnerability|backup|disaster recovery"
+    r"|business continuity|retention|breach|incident|background check|cyber ?(?:security|liability)|insurance)\b",
+    re.I,
+)
+
+
+_STANDARD_SENTENCES = {s.strip().lower() for s in _SENTENCE_SPLIT.split(TRUST_CENTER_ANSWER)}
+# Generic words that only say *that* something is a compliance topic; they carry no fact to verify.
+_GENERIC_COMPLIANCE_TERMS = {"compliant", "compliance", "certified", "certification", "certifications", "certificate",
+                             "certificates", "accredited", "accreditation", "attestation", "auditreport"}
+
+
+_NEGATION_RE = re.compile(
+    r"\b(not|no|never|none|without|cannot|neither|nor|lacks?|lacking|do not|does not|is not|are not|has no|have no"
+    r"|don't|doesn't|isn't|aren't|can't|won't|un(?:certified|accredited|supported|available))\b", re.I)
+
+
+# Security controls: not certifications, so general prose may mention them as product features, but inside
+# the answer to a security requirement they are claims that must come from the approved file.
+_CONTROL_RE = re.compile(
+    r"\b(MFA|multi-?factor(?: authentication)?|2FA|SSO|single sign-on|SAML(?: ?2\.0)?|OIDC|OAuth|RBAC|role-based access(?: control)?|access controls?"
+    r"|least privilege|backups?|disaster recovery|business continuity|RPO|RTO|incident response|breach notification|data retention|retention (?:period|policy)"
+    r"|vulnerability (?:scan|scanning|management)|audit (?:log|logging|trail)s?|SIEM|intrusion detection|WAF|DDoS|TLS(?: ?1\.[0-9])?|AES(?:-?(?:128|256))?"
+    r"|key management|KMS|HSM|US-based|onshore|background checks?|security (?:awareness )?training|cyber ?(?:security|liability) insurance|insurance)\b",
+    re.I,
+)
+
+
+# Status attached to a standard: holding a *report* is not being *certified*, so the status word a claim
+# uses must appear in the approved fact as well (tokens "s:<canonical>").
+_STATUS_RE = re.compile(
+    r"\b(certif(?:ied|ication|icate)s?|accredit(?:ed|ation)|attest(?:ation|ed)|audit(?:ed)?(?: report)?|reports?|compliant|compliance"
+    r"|validated|authoriz(?:ed|ation)|authorised|authorisation|in[- ]process|ready|aligned|bridge letter|letter|assessed|assessment)\b", re.I)
+_STATUS_CANON = {"certif": "certified", "accredit": "accredited", "attest": "attested", "audit": "report", "report": "report",
+                 "compli": "compliant", "validated": "validated", "authori": "authorized", "inprocess": "inprocess", "ready": "ready",
+                 "aligned": "aligned", "bridge": "report", "letter": "letter", "assess": "assessed"}
+
+
+def _status_tokens(sentence: str) -> set[str]:
+    out: set[str] = set()
+    for m in _STATUS_RE.finditer(sentence):
+        w = re.sub(r"[\s-]+", "", m.group(0).lower())
+        for prefix, canon in _STATUS_CANON.items():
+            if w.startswith(prefix):
+                out.add(f"s:{canon}")
+                break
+    return out
+
+
+# "nor" is deliberately not a break: in "neither FedRAMP nor StateRAMP" the negation carries across it.
+_CLAUSE_BREAK_RE = re.compile(r"[,;:()]|\b(and|but|while|although|whereas|except|however)\b", re.I)
+
+
+# A negated predicate after the term ("FedRAMP authorization is not held", "a BAA is not offered") also
+# negates it — but only predicate forms, so "SOC 2 report has no exceptions" keeps SOC 2 positive.
+_PRED_NEG_RE = re.compile(
+    r"\b(is|are|was|were|be|been|being)\s+(not|no longer|never)\b|\b(isn't|aren't|wasn't|weren't)\b"
+    r"|\bnot (held|offered|available|supported|provided|in place|applicable|covered|included|maintained|certified|authori[sz]ed"
+    r"|accredited|attested|signed|enabled|enforced|required|possible|planned|pursued|obtained)\b", re.I)
+
+
+def _term_polarity(sentence: str, start: int, end: int | None = None) -> str:
+    """Polarity of the term at [start, end): "neg" when a negation word precedes it within the same clause
+    (up to 60 chars back) or a negated predicate follows it within the clause ("… is not held for …").
+    "SOC 2 report has no exceptions" keeps SOC 2 positive; "does not hold FedRAMP", "No HIPAA BAA is
+    offered", "do not claim FedRAMP" and "FedRAMP authorization is not held" are negative."""
+    before = sentence[max(0, start - 60):start]
+    cut = [m.end() for m in _CLAUSE_BREAK_RE.finditer(before)]
+    if cut:
+        before = before[cut[-1]:]
+    if _NEGATION_RE.search(before):
+        return "neg"
+    after = sentence[(end if end is not None else start):(end if end is not None else start) + 80]
+    brk = _CLAUSE_BREAK_RE.search(after)
+    if brk:
+        after = after[:brk.start()]
+    return "neg" if _PRED_NEG_RE.search(after) else "pos"
+
+
+# Known regions are case-insensitive; an unknown place name must be capitalised (the regex is compiled WITHOUT re.I
+# so "offer cloud deployment" cannot be read as the region "offer").
+# Known regions are case-insensitive; an unknown place name must be capitalised and is accepted only in a strong
+# position — after "in/within" or before "data centers/servers/facilities" — so a sentence-initial verb ("Configure
+# hosting …") or "offer cloud deployment" is never read as a region. Compiled WITHOUT re.I on purpose.
+_KNOWN_REGION = (r"(?i:US|U\.S\.|USA|United States|CONUS|EU|European Union|UK|United Kingdom|Germany|France|Canada|Australia|India|Japan|Singapore"
+                 r"|Switzerland|Ireland|Netherlands|Europe|North America|the Americas|APAC|EMEA|Frankfurt|Dublin|London|Virginia|Oregon|Ohio|Texas)")
+_ANY_REGION = r"(?:" + _KNOWN_REGION + r"|[A-Z][a-z]{3,})"
+_REGION = _ANY_REGION
+_RESIDENCY_RE = re.compile(
+    r"\b" + _KNOWN_REGION + r"(?i:[- ]?(?:based |only |hosted )?(?:data ?cent(?:er|re)s?|hosting|regions?|servers?|cloud|facilit(?:y|ies)))\b"
+    r"|\b[A-Z][a-z]{3,}(?i:[- ]?(?:based |only |hosted )?(?:data ?cent(?:er|re)s?|servers?|facilit(?:y|ies)))\b"
+    r"|(?i:\b(?:data ?cent(?:er|re)s?|hosted|hosting|servers?|data|information|customer data|all data)\s+(?:is |are |remains? |stays? |resides? |stored |kept |processed |held )*"
+    r"(?:exclusively |only |solely |entirely )?(?:in|within|located in|inside) (?:the )?)" + _ANY_REGION + r"\b"
+    r"|(?i:\bUS[- ]based\b|\bonshore\b)")
+_REGION_CANON = {"us": "us", "u.s.": "us", "usa": "us", "unitedstates": "us", "conus": "us", "onshore": "us", "usbased": "us",
+                 "eu": "eu", "europeanunion": "eu", "europe": "eu", "uk": "uk", "unitedkingdom": "uk", "theamericas": "americas"}
+
+
+def _residency_term(match_text: str) -> str:
+    m = re.search(_REGION, match_text[match_text.lower().find("in ") + 3:] if re.search(r"\b(in|within|inside)\b", match_text, re.I) else match_text)
+    region = (m.group(0) if m else match_text).lower().replace(" ", "").replace("-", "")
+    region = _REGION_CANON.get(region, region)
+    if region in ("data", "customer", "all", "information", "hosted", "hosting", "servers", "server"):
+        region = "unspecified"
+    return f"residency:{region}"
+
+
+# Quantities attached to a control ("RTO of 24 hours", "99.9% uptime", "30-day retention") are part of the claim,
+# bound to the nearest preceding control in the same clause ("q:rto:24hour"); spelled numbers count too.
+_NUM_WORDS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+              "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+              "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
+_NUM_WORD_RE = "|".join(_NUM_WORDS)
+_QUANTITY_RE = re.compile(
+    r"\b(\d+(?:[.,]\d+)?|(?:" + _NUM_WORD_RE + r")(?:[- ](?:" + _NUM_WORD_RE + r"))?)[- ]?(hours?|hrs?|minutes?|mins?|seconds?|secs?|days?|weeks?|months?|years?|percent|bits?|GB|TB|MB|%)(?!\w)", re.I)
+_UNIT_CANON = {"hr": "hour", "hrs": "hour", "min": "minute", "mins": "minute", "sec": "second", "secs": "second", "%": "percent"}
+_VERB_RE = re.compile(
+    r"\b(is|are|was|were|be|been|has|have|had|does|do|did|will|can|must|shall|may|should|supports?|provides?|offers?|holds?|includes?"
+    r"|maintains?|uses?|encrypts?|requires?|performs?|conducts?|undergoes|signs?|claims?|operates?|runs?|stores?|hosts?|keeps?|retains?)\b", re.I)
+_HARD_BREAK_RE = re.compile(r"[;:.]|\b(but|while|although|whereas|except|however|yet)\b", re.I)
+
+
+def _num_value(raw: str) -> str:
+    raw = raw.lower().replace(",", "")
+    if raw.replace(".", "", 1).isdigit():
+        return raw.rstrip("0").rstrip(".") if "." in raw else raw
+    parts = re.split(r"[- ]", raw)
+    return str(sum(_NUM_WORDS.get(w, 0) for w in parts))
+
+
+def _quantity_token(num: str, unit: str, control: str | None) -> str:
+    u = unit.lower()
+    u = _UNIT_CANON.get(u, "percent" if u == "%" else u.rstrip("s"))
+    return f"q:{control or '-'}:{_num_value(num)}{u}"
+
+
+def _claim_terms_pol(sentence: str, controls: bool = False) -> set[tuple[str, str]]:
+    """{(term, polarity)} for the concrete compliance terms a sentence asserts (SOC 2, FedRAMP, HIPAA,
+    encryption, US data centers, …), normalised, plus — when a concrete standard or control is named — the
+    status words ("s:certified", "s:report") and quantities ("q:24hour", "q:99.9percent") attached to it.
+    A qualified term yields its base too ("SOC 2 Type II" → soc2typeii + soc2) so a fact that states the
+    type supports a claim that omits it, never the reverse. With `controls`, security controls (MFA, SSO,
+    backups, audit logs, TLS …) count as claims as well.
+    Polarity is bound per term (own clause, preceding negation or negated predicate), and a coordinated
+    list inherits the governing negation: "does not support FedRAMP and StateRAMP" leaves both negative."""
+    entries: list[tuple[str, int, int]] = []
+    if controls:
+        for m in _CONTROL_RE.finditer(sentence):
+            entries.append((re.sub(r"[\s.-]+", "", m.group(0).lower()), m.start(), m.end()))
+    for m in _COMPLIANCE_RE.finditer(sentence):
+        full = re.sub(r"[\s.-]+", "", m.group(0).lower())
+        if full.startswith("encrypt"):  # encrypts / encrypted / encryption → one base term + the qualifier
+            entries.append(("encryption", m.start(), m.end()))
+            for q in ("atrest", "intransit"):
+                if full.endswith(q):
+                    entries.append(("encryption" + q, m.start(), m.end()))
+            continue
+        entries.append((full, m.start(), m.end()))
+        base = re.match(r"(soc[123]|fedramp|wcag)", full)
+        if base and base.group(1) != full:
+            entries.append((base.group(1), m.start(), m.end()))
+    for m in _RESIDENCY_RE.finditer(sentence):
+        entries.append((_residency_term(m.group(0)), m.start(), m.end()))
+    specific_present = bool({t for t, _, _ in entries} - _GENERIC_COMPLIANCE_TERMS)
+    if specific_present:
+        for m in _STATUS_RE.finditer(sentence):
+            w = re.sub(r"[\s-]+", "", m.group(0).lower())
+            for prefix, canon in _STATUS_CANON.items():
+                if w.startswith(prefix):
+                    entries.append((f"s:{canon}", m.start(), m.end()))
+                    break
+        controls_pos = sorted((st, en, t) for t, st, en in entries if not t.startswith(("s:", "q:")))
+        for m in _QUANTITY_RE.finditer(sentence):
+            owner = None
+            for st, en, t in controls_pos:  # nearest preceding term in the same clause owns the quantity
+                if en <= m.start() and not _HARD_BREAK_RE.search(sentence[en:m.start()]):
+                    owner = t
+            entries.append((_quantity_token(m.group(1), m.group(2), owner), m.start(), m.end()))
+    entries.sort(key=lambda e: (e[1], e[2]))
+    out: set[tuple[str, str]] = set()
+    prev_end: int | None = None
+    prev_pol = "pos"
+    for term, start, end in entries:
+        pol = _term_polarity(sentence, start, end)
+        if pol == "pos" and prev_end is not None and prev_pol == "neg":
+            gap = sentence[prev_end:start]
+            if start >= prev_end and len(gap) <= 60 and not _VERB_RE.search(gap) and not _HARD_BREAK_RE.search(gap):
+                pol = "neg"  # "neither FedRAMP nor StateRAMP", "not FedRAMP and StateRAMP authorization"
+        out.add((term, pol))
+        if prev_end is None or end >= prev_end:
+            prev_end, prev_pol = end, pol
+    return out
+
+
+def _claim_terms(sentence: str, controls: bool = False) -> set[str]:
+    """The terms of _claim_terms_pol without polarity (used to check an answer covers what was asked)."""
+    return {t for t, _ in _claim_terms_pol(sentence, controls)}
+
+
+# Product / deployment scope words: an approved fact scoped to one product does not cover another.
+_SCOPE_RE = re.compile(
+    r"\b(Nutrient Workflow|Workflow(?: Automation)?|Low[- ]Code|Document Converter|Document Automation Server|Document Searchability"
+    r"|Document Editor|Documents for Salesforce|Web SDK|iOS SDK|Android SDK|\.NET SDK|Java SDK|Flutter|React Native|SDK|Document Engine"
+    r"|DWS|Document Web Services|Processor|Data Extraction|Document Authoring|AI Assistant|GdPicture|Nudocs|DocuVieware|Trust Center"
+    r"|Enhanced Cloud|SaaS|self[- ]managed|on[- ]prem(?:ises)?|cloud|Kubernetes|hosted|managed)\b", re.I)
+_YEAR_RE = re.compile(r"\b(20\d{2})\b")
+_MONTHS = {m: i for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
+_DATE_ISO_RE = re.compile(r"\b(20\d{2})-(\d{1,2})-(\d{1,2})\b")
+_DATE_US_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(20\d{2})\b")
+_DATE_MDY_RE = re.compile(r"\b([A-Za-z]{3,9})\.? (\d{1,2})(?:st|nd|rd|th)?,? (20\d{2})\b")
+_DATE_DMY_RE = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)? ([A-Za-z]{3,9})\.? (20\d{2})\b")
+
+
+def _date_terms(sentence: str) -> set[str]:
+    """Years and complete dates in a sentence, normalised ("y:2026", "d:2026-03-01"), so an approved
+    "report dated 2026-03-01" does not back a claim "dated 2026-09-01" just because the year matches."""
+    out = {f"y:{y}" for y in _YEAR_RE.findall(sentence)}
+    for y, m, d in _DATE_ISO_RE.findall(sentence):
+        out.add(f"d:{y}-{int(m):02d}-{int(d):02d}")
+    for m, d, y in _DATE_US_RE.findall(sentence):
+        out.add(f"d:{y}-{int(m):02d}-{int(d):02d}")
+    for mon, d, y in _DATE_MDY_RE.findall(sentence):
+        if mon[:3].lower() in _MONTHS:
+            out.add(f"d:{y}-{_MONTHS[mon[:3].lower()]:02d}-{int(d):02d}")
+    for d, mon, y in _DATE_DMY_RE.findall(sentence):
+        if mon[:3].lower() in _MONTHS:
+            out.add(f"d:{y}-{_MONTHS[mon[:3].lower()]:02d}-{int(d):02d}")
+    return out
+
+
+_SCOPE_CANON = {"nutrientworkflow": "workflow", "workflowautomation": "workflow", "documentwebservices": "dws", "onpremises": "onprem",
+                "lowcode": "lowcode", "trustcenter": None}
+
+
+def _scope_terms(sentence: str) -> set[str]:
+    """Product / deployment scope words, canonicalised ("Nutrient Workflow" and "Workflow" are one product)."""
+    out: set[str] = set()
+    for m in _SCOPE_RE.finditer(sentence):
+        t = re.sub(r"[\s.-]+", "", m.group(0).lower())
+        t = _SCOPE_CANON.get(t, t)
+        if t:
+            out.add(t)
+    return out
+
+
+def _polarity(sentence: str) -> str:
+    """"neg" when the sentence denies something, otherwise "pos"."""
+    return "neg" if _NEGATION_RE.search(sentence) else "pos"
+
+
+@lru_cache(maxsize=4)
+def _approved_facts(body: str) -> tuple[tuple[frozenset[tuple[str, str]], frozenset[str], frozenset[str]], ...]:
+    """One entry per sentence of the approved file: ({(term, polarity)}, scope terms, dates).
+    "Nutrient Workflow (Enhanced Cloud): SOC 2 Type II report dated 2026-03-01" →
+    ({(soc2typeii, pos), (soc2, pos), (s:report, pos)}, {workflow, enhancedcloud}, {y:2026, d:2026-03-01})."""
+    facts = []
+    for line in body.splitlines():
+        for sent in _SENTENCE_SPLIT.split(line.strip()):
+            pairs = {(t, p) for t, p in _claim_terms_pol(sent, controls=True) if t not in _GENERIC_COMPLIANCE_TERMS}
+            if {t for t, _ in pairs if not t.startswith("s:")}:
+                facts.append((frozenset(pairs), frozenset(_scope_terms(sent)), frozenset(_date_terms(sent))))
+    return tuple(facts)
+
+
+def _unsupported_terms(sentence: str, approved_body: str | None, controls: bool = False) -> set[str]:
+    """Compliance terms in `sentence` that no single approved fact backs (all of them when unapproved).
+
+    A claim is backed only when it *restates one approved fact*: same polarity, every concrete
+    compliance term, status word ("certified" vs "report"), date and year in the claim also appear in
+    that fact, and the claim's product / deployment scope equals the fact's. So with "Nutrient Workflow
+    (Enhanced Cloud): SOC 2 Type II report …" approved, "Nutrient Workflow (Enhanced Cloud) has a SOC 2
+    Type II report" passes, while "Nutrient Workflow has a SOC 2 report" (deployment dropped),
+    "…is SOC 2 Type II certified" (report ≠ certified), "Nutrient SDK is SOC 2 certified", "SOC 2 Type I"
+    and "We do not hold …" (polarity) are all gated. Presence of a word elsewhere is never support.
+    """
+    pairs = _claim_terms_pol(sentence, controls=controls)
+    terms = {t for t, _ in pairs}
+    if not terms:
+        return set()
+    if not approved_body:
+        return terms
+    checked = {(t, p) for t, p in pairs if t not in _GENERIC_COMPLIANCE_TERMS}
+    specific = {t for t, _ in checked if not t.startswith("s:")}
+    if not specific:
+        # Only generic words ("we are fully compliant") — nothing checkable, so a human must look.
+        return terms
+    scope, years = _scope_terms(sentence), _date_terms(sentence)
+    for f_pairs, f_scope, f_years in _approved_facts(approved_body):
+        # Every (term, polarity) the claim asserts must be stated the same way in one fact: "does not have a
+        # SOC 2 report" is not backed by "SOC 2 report has no exceptions" (that SOC 2 is positive).
+        if not checked <= f_pairs or not years <= f_years:
+            continue
+        # Scope must match exactly: a claim may neither add a product/deployment the fact does not cover
+        # nor drop one the fact is limited to ("Nutrient Workflow (Enhanced Cloud)" ≠ "Nutrient Workflow").
+        if scope != f_scope:
+            continue
+        return set()
+    return specific
+
+
+def _gate_compliance_prose(text: str, approved_body: str | None = None, controls: bool = False) -> tuple[str, bool]:
+    """Prefix every sentence that makes an unsupported compliance claim with SECURITY_MARK.
+
+    Unapproved (`approved_body` None): every compliance claim is unsupported. Approved: a claim is
+    allowed only when each concrete term it names appears in the approved compliance body — the
+    model's own `basis` label is never trusted. Only the sentences of the fixed standard Trust
+    Center answer are exempt; arbitrary prose that merely mentions the Trust Center is not.
+    A sentence counts as gated only if it *starts* with the marker, so compound sentences
+    like "We are SOC 2 certified; [SECURITY TO CONFIRM] residency" are still flagged.
+    """
+    if not text:
+        return text, False
+    out, flagged = [], False
+    for sent in _SENTENCE_SPLIT.split(text.strip()):
+        if sent.strip().lower() in _STANDARD_SENTENCES:  # the fixed standard answer is always allowed
+            out.append(sent)
+            continue
+        if _unsupported_terms(sent, approved_body, controls) and not sent.lstrip().startswith(SECURITY_MARK):
+            sent = f"{SECURITY_MARK} {sent.strip()}"
+            flagged = True
+        out.append(sent)
+    return " ".join(out), flagged
+
+_BASIS = ("rfp", "profile", "docs", "compliance", "standard", "needs_human")
+_CONFIDENCE = ("high", "medium", "low")
+
+
+# ---------------------------------------------------------------------------
+# Compliance source (approved file only)
+# ---------------------------------------------------------------------------
+
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+_INSTRUCTION_SECTIONS = ("how to fill",)
+
+
+def approved_fact_text(body: str) -> str:
+    """Only the populated fact bullets of compliance.md — template prose, instructions and HTML-comment
+    examples are never facts, even once `approved: true` is set. Section headings are kept for context."""
+    text = _HTML_COMMENT_RE.sub("", body or "")
+    out: list[str] = []
+    section = ""
+    keep_section = False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            section = line[3:].strip()
+            keep_section = not section.lower().startswith(_INSTRUCTION_SECTIONS)
+            continue
+        if not section or not keep_section:
+            continue  # preamble before the first section, or an instructions section
+        m = re.match(r"^\s*(?:[-*•]|\d+[.)])\s+(.*\S)\s*$", line)
+        if m:
+            if not any(o.startswith(f"## {section}") for o in out):
+                out.append(f"## {section}")
+            out.append(f"- {m.group(1)}")
+    return "\n".join(out)
+
+
+def compliance_status() -> dict[str, Any]:
+    """{"approved": bool, "version", "approved_by", "approved_at", "body", "facts"} — `facts` is the
+    populated fact bullets only (see approved_fact_text); gating and the prompt use `facts`, never `body`."""
+    if not COMPLIANCE_PATH.is_file():
+        return {"approved": False, "version": 0, "approved_by": "", "approved_at": "", "body": "", "facts": ""}
+    text = COMPLIANCE_PATH.read_text(encoding="utf-8")
+    meta: dict[str, str] = {}
+    m = _FRONTMATTER_RE.match(text)
+    body = text
+    if m:
+        for line in m.group(1).splitlines():
+            if ":" in line:
+                k, _, v = line.partition(":")
+                meta[k.strip()] = v.strip()
+        body = text[m.end():]
+    approved = str(meta.get("approved", "false")).lower() in ("true", "yes", "1")
+    return {"approved": approved, "version": meta.get("version", "0"), "approved_by": meta.get("approved_by", ""),
+            "approved_at": meta.get("approved_at", ""), "body": body.strip(), "facts": approved_fact_text(body)}
+
+
+# ---------------------------------------------------------------------------
+# Prompt
+# ---------------------------------------------------------------------------
+
+def _system(lob_key: str, grounded: bool) -> str:
+    lob = get_lob(lob_key) or LOBS[DEFAULT_LOB]
+    comp = compliance_status()
+    if comp["approved"]:
+        compliance_block = f"""## Approved compliance answers (version {comp['version']}, approved by {comp['approved_by']} on {comp['approved_at']})
+Default for security, certification, hosting, privacy, accessibility or insurance items is still the Trust Center pointer ({TRUST_CENTER_URL}) — documentation is shared under NDA on the prospect's request. When the RFP explicitly demands a specific statement or artifact in the response, answer it ONLY with the approved facts below (basis ["compliance"]); if the fact is not listed, write "[SECURITY TO CONFIRM]" and set basis to needs_human.
+
+{comp['facts']}
+"""
+    else:
+        compliance_block = f"""## Security & compliance answers
+Default: Nutrient shares security documentation under NDA through the Trust Center ({TRUST_CENTER_URL}), and it is the prospect who requests access. For a security, certification, hosting, privacy, accessibility or insurance item, answer with that standard pointer (basis ["standard"], confidence "high") — do NOT assert any certification, attestation, BAA, FedRAMP/StateRAMP status, encryption detail or data-residency guarantee yourself.
+Exception — ONLY when the RFP explicitly demands a specific statement or artifact in the response itself (e.g. "provide a copy of your SOC 2 report", "describe your encryption at rest", "vendor must hold FedRAMP Moderate"): write "[SECURITY TO CONFIRM] — <exactly what must be confirmed or supplied>", set confidence "low", basis ["needs_human"] and human_todo accordingly.
+"""
+    docs_block = ""
+    if grounded:
+        docs_block = """## Documentation grounding
+You have a documentation search tool connected to Nutrient's product docs. Use it (up to 8 searches) to confirm specific technical capabilities before asserting them, and add the doc URL to `sources` with basis "docs". If the docs do not confirm a capability, do not claim it — use needs_human.
+"""
+    thin = "" if lob.depth == "full" else "\nNOTE: this LOB profile is THIN (description only). Be conservative: prefer needs_human over confident claims about wins, verticals, or competitive position.\n"
+    return f"""You are drafting Nutrient's response to a public-sector or enterprise RFP/RFI for the **Nutrient {lob.label}** line of business. The reader is the SDR/SE who will finish and submit it; your job is a strong, honest first draft that maps every requirement to what we can actually offer.
+
+{lob.profile}
+{thin}
+{compliance_block}
+{docs_block}
+## Drafting rules
+- Extract EVERY requirement, question, or evaluation criterion the RFP states (functional, technical, security/compliance, commercial, company, implementation). Keep the RFP's own numbering/section labels in `section` when present and quote or closely paraphrase the requirement in `text`.
+- If a PRE-EXTRACTED REQUIREMENTS block is present, it came from Nutrient's Data Extraction API with page citations: respond to every item in it, reuse its ids (E1, E2 …) and copy its `page` and `file`; add anything it missed with new ids (R1, R2 …). Do not drop or merge pre-extracted items.
+- Draft each `response` in first person plural ("we", "Nutrient"), 2–6 sentences, concrete: name the capability, how it meets the requirement, and any configuration or integration involved. No marketing filler.
+- `basis` lists where the answer comes from: "rfp" (restating facts in the RFP), "profile" (the profile above), "docs" (documentation you searched), "compliance" (the approved compliance section), "needs_human" (a person must supply or verify it). `sources` names the profile section or doc URL used.
+- Never invent customers, certifications, pricing, SLAs, or capabilities. We do not discuss pricing in RFI/RFP responses at all — do not volunteer prices, discounts, TCO or commercial terms anywhere (summary, themes, answers). Only when the RFP explicitly asks for a pricing model, cost schedule or rates, answer with "[SALES TO PROVIDE] — <what is asked>" and basis needs_human. Blanks that only a person can fill (contact names, addresses, phone numbers, signatures, tax IDs, insurance certificates) → "[TEAM TO PROVIDE] — <what>" with basis needs_human. References/case studies → only those named in the profile.
+- Portal instructions and form mechanics (how to log in, which tab to use, acknowledge amendments) are not requirements to sell against: answer "Acknowledged — <how we will comply>" with basis ["rfp"].
+- Where we genuinely cannot meet a requirement, say so plainly in the response (and list it in `do_not_claim`) — a credible partial answer beats an overclaim.
+- `open_questions` are questions worth submitting during the RFP's Q&A period. `assumptions` are the assumptions your draft relies on.
+
+Respond with ONLY valid JSON matching this schema:
+{{
+  "rfp_type": "<RFI | RFP | RFQ | sources_sought | other>",
+  "submission": {{"method": "<portal | email | mail | unknown>", "deadline": "<as stated or unknown>", "questions_deadline": "<Q&A cutoff as stated, or ''>", "format_requirements": ["<page limits, forms, sections required>"]}},
+  "executive_summary": "<2–3 paragraphs we could open the response with>",
+  "win_themes": ["<3–5 themes to carry through the response>"],
+  "requirements": [
+    {{"id": "E1 or R1", "section": "<RFP section/number or ''>", "page": <page number or null>, "file": "<source PDF name or ''>", "text": "<the requirement or question>",
+      "category": "<functional | technical | security_compliance | commercial | company | implementation | other>",
+      "response": "<draft answer>", "confidence": "<high | medium | low>",
+      "basis": ["<rfp | profile | docs | compliance | needs_human>"], "sources": ["<profile section or URL>"],
+      "human_todo": "<what a person must add or verify, or ''>"}}
+  ],
+  "open_questions": ["<question for Q&A>"],
+  "assumptions": ["<assumption>"],
+  "do_not_claim": ["<requirement we cannot honestly claim to meet>"]
+}}"""
+
+
+def _rfp_text(opp: dict[str, Any], attachment_text: str, extracted: dict[str, Any] | None = None) -> str:
+    parts = [
+        f"Title: {opp.get('title', '')}",
+        f"Agency: {opp.get('agency', '')}",
+        f"Solicitation: {opp.get('solicitation_number', '') or ''}",
+        f"Notice type: {opp.get('notice_type', '') or ''}",
+        f"Response deadline: {opp.get('response_deadline', '') or 'unknown'}",
+        f"Place of performance: {opp.get('place_of_performance', '') or ''}",
+        f"URL: {opp.get('url', '') or ''}",
+        f"Contact: {opp.get('contact_name', '') or ''} {opp.get('contact_email', '') or ''}".strip(),
+        "",
+        "=== RFP DESCRIPTION ===",
+        (opp.get("description") or "").strip(),
+    ]
+    pre = format_for_prompt(extracted) if extracted else ""
+    att = (attachment_text or opp.get("attachment_text") or "").strip()
+    # The pre-extracted requirements are what the model must answer, so they are never cut; only the
+    # free-form description + attachment text is truncated to fit the budget that remains.
+    head = "\n".join(parts[:-1])
+    desc = parts[-1]
+    budget = MAX_RFP_CHARS - len(head) - len(pre) - 400
+    free = desc + ("\n\n=== RFP DOCUMENTS (extracted text) ===\n" + att if att else "")
+    if len(free) > budget:
+        free = free[:max(budget, 0)] + "\n\n[... RFP text truncated for length ...]"
+    text = head + "\n" + free + (("\n\n" + pre) if pre else "")
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Normalisation
+# ---------------------------------------------------------------------------
+
+def _norm_list(v: Any, limit: int = 30) -> list[str]:
+    if not isinstance(v, list):
+        return []
+    return [str(x).strip() for x in v if str(x).strip()][:limit]
+
+
+def _superseded_text(e: dict[str, Any], by_ext: dict[str, dict[str, Any]]) -> str:
+    new = by_ext.get(e.get("superseded_by") or "") or {}
+    where = " · ".join(x for x in (new.get("file", ""), f"§{new['section']}" if new.get("section") else "") if x)
+    return f"Superseded by {e.get('superseded_by')}" + (f" ({where})" if where else "") + " — see that item; this original requirement is no longer answered."
+
+
+def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | None, truncated: bool,
+               extracted: dict[str, Any] | None = None) -> dict[str, Any]:
+    comp = compliance_status()
+    reqs_out: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    by_ext: dict[str, dict[str, Any]] = {e["id"]: e for e in ((extracted or {}).get("requirements") or [])}
+    for i, r in enumerate(raw.get("requirements") or [], 1):
+        if not isinstance(r, dict):
+            continue
+        basis = [b for b in _norm_list(r.get("basis"), 5) if b in _BASIS] or ["needs_human"]
+        rid_probe = str(r.get("id") or "").strip()
+        ext = by_ext.get(rid_probe)  # authoritative source for extracted items — the model may not rewrite these
+        cat = str(r.get("category") or "other").strip()
+        cat = cat if cat in _CATEGORIES else "other"
+        if ext and ext.get("category") in _CATEGORIES and ext["category"] != "other":
+            cat = ext["category"]
+        conf = str(r.get("confidence") or "low").strip().lower()
+        conf = conf if conf in _CONFIDENCE else "low"
+        response = str(r.get("response") or "").strip()
+        todo = str(r.get("human_todo") or "").strip()
+        req_text = str((ext or {}).get("text") or r.get("text") or "").strip()
+        if ext and ext.get("superseded_by"):
+            # An amendment replaced this item: it is not answered, it points at its replacement (a human confirms the link).
+            r = dict(r, response=_superseded_text(ext, by_ext), basis=["rfp"], confidence="high", human_todo="", category=ext.get("category") or cat)
+            response, basis, conf, todo = r["response"], ["rfp"], "high", ""
+            cat = r["category"] if r["category"] in _CATEGORIES else "other"
+            rid = str(r.get("id") or f"R{i}").strip()
+            if rid not in seen_ids:
+                seen_ids.add(rid)
+                reqs_out.append({"id": rid, "file": str(ext.get("file") or "")[:120], "section": str(ext.get("section") or "")[:80], "page": ext.get("page"),
+                                 "text": req_text[:1500], "category": cat, "response": response, "confidence": conf, "basis": basis, "sources": [], "human_todo": ""})
+            continue
+        # The requirement's own words decide whether it is a security/compliance item, not the model's label.
+        if cat != "security_compliance" and (_SECURITY_ASK_RE.search(req_text)
+                                             or (_CONTROL_RE.search(req_text) and is_explicit_security_ask(req_text))):
+            cat = "security_compliance"  # a control asked about explicitly (RBAC? OAuth? TLS 1.3?) is a security item
+        # Hard gates, applied to EVERY category — the model's category and markers are not trusted.
+        if cat == "security_compliance":
+            explicit = is_explicit_security_ask(req_text)
+            if explicit and not comp["approved"]:
+                # The RFP demands a specific statement/artifact in the response → a human must confirm it.
+                if not response.lstrip().startswith(SECURITY_MARK):
+                    response = f"{SECURITY_MARK} {response}".strip() if response else SECURITY_MARK
+                basis, conf = ["needs_human"], "low"
+                todo = todo or "Security team to confirm or supply what this requirement explicitly asks for."
+            elif explicit and comp["approved"]:
+                # Every claim must be backed by the approved file — a model-supplied basis ["compliance"] proves nothing.
+                # Inside a security answer, controls (MFA, SSO, backups, TLS …) are claims too.
+                response, gated = _gate_compliance_prose(response, comp["facts"], controls=True)
+                # A term-free "Yes, we fully meet this requirement" asserts everything the ask names while naming
+                # nothing checkable: the answer must address each specific term of the requirement itself.
+                asked = _claim_terms(req_text, controls=True) - _GENERIC_COMPLIANCE_TERMS
+                answered = _claim_terms(response, controls=True)
+                if not gated and asked and not asked <= answered:
+                    missing = ", ".join(sorted(asked - answered))
+                    response = f"{SECURITY_MARK} {response}".strip() if not response.lstrip().startswith(SECURITY_MARK) else response
+                    gated = True
+                    todo = todo or f"Security team to answer the specific terms this requirement names ({missing}) from the approved compliance answers."
+                if gated:
+                    basis, conf = ["needs_human"], "low"
+                    todo = todo or "Security team to confirm the claim(s) not covered by the approved compliance answers."
+            else:
+                # Not an explicit ask → the standard Trust Center answer; nothing to verify.
+                response, basis, conf, todo = TRUST_CENTER_ANSWER, ["standard"], "high", ""
+        else:
+            response, gated = _gate_compliance_prose(response, comp["facts"] if comp["approved"] else None)
+            if gated:
+                basis, conf = ["needs_human"], "low"
+                todo = todo or "Security team to confirm the compliance statement in this answer, or remove it."
+        # Pricing: replace the whole answer only when price language is actually present (in the ask or the answer);
+        # a "commercial" label alone is not enough — bid validity days or opening dates are not pricing.
+        commercial_ask = cat == "commercial" and (_PRICING_RE.search(req_text) or _COMMERCIAL_TERMS_RE.search(req_text))
+        if _PRICING_RE.search(response) or _COMMERCIAL_TERMS_RE.search(response) or commercial_ask:
+            response = f"{SALES_MARK} — pricing / commercial terms for: {req_text[:160] or 'this requirement'}"
+            basis, conf = ["needs_human"], "low"
+            todo = "Sales to provide pricing and commercial terms."
+        elif response.lstrip().startswith(SALES_MARK) and cat != "commercial":
+            # The model reached for the sales marker on a non-pricing blank (contact name, address, signature…).
+            response = TEAM_MARK + response.lstrip()[len(SALES_MARK):]
+            basis, conf = ["needs_human"], "low"
+            todo = todo or "Team to supply this company / contact detail."
+        page = r.get("page")
+        try:
+            page = int(page) if page not in (None, "", "null") else None
+        except (TypeError, ValueError):
+            page = None
+        rid = str(r.get("id") or f"R{i}").strip()
+        if rid in seen_ids:
+            continue  # duplicate id from the model — keep the first answer
+        seen_ids.add(rid)
+        # For an extracted id the citation is the extraction's — if it has no page/section, the answer has none;
+        # a model-invented page number must never fill the gap.
+        reqs_out.append({
+            "id": rid,
+            "file": str(ext.get("file") if ext else r.get("file") or "").strip()[:120],
+            "section": str(ext.get("section") if ext else r.get("section") or "").strip()[:80],
+            "page": ext.get("page") if ext else page,
+            "text": req_text[:1500],
+            "category": cat,
+            "response": response[:4000],
+            "confidence": conf,
+            "basis": basis,
+            "sources": _norm_list(r.get("sources"), 8),
+            "human_todo": todo[:500],
+        })
+    # Every extracted requirement must be answered; synthesize a needs_human entry for any the model dropped.
+    missing = [e for rid, e in by_ext.items() if rid not in seen_ids]
+    for e in missing:
+        if e.get("superseded_by"):
+            reqs_out.append({"id": e["id"], "file": e.get("file") or "", "section": e.get("section") or "", "page": e.get("page"),
+                             "text": e.get("text", "")[:1500], "category": e.get("category") or "other", "response": _superseded_text(e, by_ext),
+                             "confidence": "high", "basis": ["rfp"], "sources": [], "human_todo": ""})
+            continue
+        reqs_out.append({
+            "id": e["id"], "file": e.get("file") or "", "section": e.get("section") or "", "page": e.get("page"),
+            "text": e.get("text", "")[:1500], "category": e.get("category") or "other",
+            "response": f"{NOT_DRAFTED_MARK} — the model did not return an answer for this extracted requirement; draft it manually.",
+            "confidence": "low", "basis": ["needs_human"], "sources": [], "human_todo": "Draft this answer.",
+        })
+
+    exec_summary = str(raw.get("executive_summary") or "").strip()
+    win_themes = _norm_list(raw.get("win_themes"), 8)
+    assumptions = _norm_list(raw.get("assumptions"), 20)
+    approved_body = comp["facts"] if comp["approved"] else None
+    # Overview prose is customer-facing with no requirement context, so security controls count as claims here.
+    exec_summary, _ = _gate_compliance_prose(exec_summary, approved_body, controls=True)
+    win_themes = [_gate_compliance_prose(t, approved_body, controls=True)[0] for t in win_themes]
+    assumptions = [_gate_compliance_prose(a, approved_body, controls=True)[0] for a in assumptions]
+    exec_summary, _ = _gate_pricing_prose(exec_summary)
+    win_themes = [_gate_pricing_prose(t)[0] for t in win_themes]
+    assumptions = [_gate_pricing_prose(a)[0] for a in assumptions]
+
+    sub = raw.get("submission") if isinstance(raw.get("submission"), dict) else {}
+    ext_sol = (extracted or {}).get("solicitation") or {}  # Data Extraction's page-cited facts beat the model's retelling
+    ext_fmt_raw = ext_sol.get("format_requirements")
+    ext_fmt = _norm_list(ext_fmt_raw if isinstance(ext_fmt_raw, list) else re.split(r"\s*(?:;|\n|\u2022)\s*", str(ext_fmt_raw or "")), 15)
+    fmt = list(ext_fmt)  # extracted response-format rules first, then whatever the model added
+    for f in _norm_list(sub.get("format_requirements"), 15):
+        if f.lower() not in {x.lower() for x in fmt}:
+            fmt.append(f)
+    ext_forms = _norm_list((extracted or {}).get("required_forms"), 20)
+    ext_criteria = [c for c in ((extracted or {}).get("evaluation_criteria") or []) if isinstance(c, dict) and c.get("criterion")]
+    for frm in ext_forms:  # mandatory attachments from Data Extraction always survive, model or not
+        line = f"Required form/attachment: {frm}"
+        if not any(frm.lower() in f.lower() for f in fmt):
+            fmt.append(line)
+    return {
+        "lob": lob_key,
+        "model": DRAFT_MODEL,
+        "generated_at": datetime.utcnow().isoformat(timespec="seconds"),
+        "compliance_source": {"approved": comp["approved"], "version": comp["version"]},
+        "grounding": grounding,
+        "extraction": ({k: extracted.get(k) for k in ("mode", "files", "pages", "credits_cost", "credits_remaining", "skipped", "errors", "stats")}
+                       if extracted else None),
+        "truncated": truncated,
+        "rfp_type": str(raw.get("rfp_type") or "other"),
+        "submission": {"method": str(ext_sol.get("submission_method") or sub.get("method") or "unknown")[:200],
+                       "deadline": str(ext_sol.get("submission_deadline") or sub.get("deadline") or "unknown")[:120],
+                       "questions_deadline": str(ext_sol.get("questions_deadline") or sub.get("questions_deadline") or "")[:120],
+                       "format_requirements": fmt[:30]},
+        "required_forms": ext_forms,
+        "evaluation_criteria": [{"criterion": str(c["criterion"])[:300], "weight": str(c.get("weight") or "")[:40]} for c in ext_criteria][:20],
+        "executive_summary": exec_summary,
+        "win_themes": win_themes,
+        "requirements": reqs_out,
+        "open_questions": [_gate_pricing_prose(_gate_compliance_prose(q, approved_body, controls=True)[0])[0]
+                           for q in _norm_list(raw.get("open_questions"), 20)] + [
+            f"Confirm that {sp['new']} ({sp.get('new_file', '')}) supersedes {sp['old']} ({sp.get('basis', '')}); only the amendment item is answered."
+            for sp in ((extracted or {}).get("supersessions") or [])][:10] + [
+            f"Conflicting {c['field'].replace('_', ' ')} across files — {c['kept_file']} says \"{c['kept']}\" but {c['other_file']} says \"{c['other']}\"; confirm which applies."
+            for c in ((extracted or {}).get("solicitation_conflicts") or [])][:5],
+        "assumptions": assumptions,
+        "do_not_claim": _norm_list(raw.get("do_not_claim"), 20),
+        "stats": {
+            "requirements": len(reqs_out),
+            "needs_human": sum(1 for r in reqs_out if "needs_human" in r["basis"]),
+            "high_confidence": sum(1 for r in reqs_out if r["confidence"] == "high"),
+            "missing_from_model": len(missing),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# API calls (streaming — the output is long)
+# ---------------------------------------------------------------------------
+
+def _call_plain(client: anthropic.Anthropic, system: str, user_text: str) -> Any:
+    with client.messages.stream(
+        model=DRAFT_MODEL,
+        max_tokens=DRAFT_MAX_TOKENS,
+        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": user_text}],
+    ) as stream:
+        resp = stream.get_final_message()
+    _track(resp)
+    return resp
+
+
+class _Collected:
+    def __init__(self, content: list[Any], stop_reason: str):
+        self.content, self.stop_reason = content, stop_reason
+
+
+def _call_grounded(client: anthropic.Anthropic, system: str, user_text: str) -> _Collected | None:
+    messages: list[dict[str, Any]] = [{"role": "user", "content": user_text}]
+    kwargs = dict(
+        model=DRAFT_MODEL, max_tokens=DRAFT_MAX_TOKENS + 2000,
+        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+        betas=[_MCP_BETA],
+        mcp_servers=[{"type": "url", "url": KAPA_MCP_URL, "name": _KAPA_SERVER_NAME, "authorization_token": KAPA_API_KEY}],
+        tools=[{"type": "mcp_toolset", "mcp_server_name": _KAPA_SERVER_NAME}],
+    )
+    collected: list[Any] = []
+    stop = ""
+    for _ in range(6):
+        with client.beta.messages.stream(messages=messages, **kwargs) as stream:
+            resp = stream.get_final_message()
+        _track(resp)
+        collected.extend(resp.content)
+        stop = getattr(resp, "stop_reason", "") or ""
+        if stop != "pause_turn":
+            break
+        messages.append({"role": "assistant", "content": resp.content})
+    else:
+        logger.warning("Kapa-grounded drafting still paused after 6 continuations — drafting ungrounded")
+        return None
+    if not any(getattr(b, "type", "") == "text" and getattr(b, "text", "") for b in collected):
+        return None
+    return _Collected(collected, stop)
+
+
+def _one_call(client: anthropic.Anthropic, lob: str, user_text: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """One drafting call (grounded when Kapa is configured). Returns (raw_json, grounding_summary)."""
+    grounding = None
+    resp: Any = None
+    if kapa_enabled():
+        try:
+            resp = _call_grounded(client, _system(lob, grounded=True), user_text)
+            if resp is not None:
+                grounding = _grounding_summary(resp)
+        except anthropic.APIError as e:
+            logger.warning("Grounded drafting failed (%s); drafting without docs", e)
+            resp = None
+    if resp is None:
+        resp = _call_plain(client, _system(lob, grounded=False), user_text)
+    if getattr(resp, "stop_reason", "") == "max_tokens":
+        # A repaired prefix would silently drop trailing requirements / do-not-claim items. Refuse it.
+        raise RuntimeError(f"Draft hit the {DRAFT_MAX_TOKENS}-token output limit and was discarded — raise DRAFT_MAX_TOKENS "
+                           f"or lower DRAFT_CHUNK_SIZE (currently {DRAFT_CHUNK_SIZE})")
+    try:
+        return _repair_and_parse_json(_final_text(resp)), grounding
+    except (json.JSONDecodeError, IndexError, KeyError, AttributeError) as e:
+        raise RuntimeError(f"Draft could not be parsed: {e}") from e
+
+
+def draft_response(opp: dict[str, Any], attachment_text: str = "", lob_key: str | None = None,
+                   extracted: dict[str, Any] | None = None,
+                   on_progress: Any = None) -> dict[str, Any]:
+    """Produce the structured draft for one opportunity. Raises anthropic.APIError on hard failure.
+
+    `extracted` is the optional output of extraction.extract_rfp_requirements — page-cited
+    requirements from Nutrient's Data Extraction API that the model must answer item by item.
+    When there are more than DRAFT_CHUNK_SIZE of them, the draft is produced in chunks: the first
+    call also writes the overview (summary, themes, questions…); later calls answer only their
+    slice of requirements. Results are merged before normalisation.
+    """
+    lob = (get_lob(lob_key or opp.get("lob")) or LOBS[DEFAULT_LOB]).key
+    client = _get_client()
+    reqs = (extracted or {}).get("requirements") or []
+
+    if len(reqs) <= DRAFT_CHUNK_SIZE:
+        user_text = "Draft our response to this RFP.\n\n" + _rfp_text(opp, attachment_text, extracted)
+        if on_progress:
+            on_progress("Drafting the full response")
+        raw, grounding = _one_call(client, lob, user_text)
+        return _normalize(raw, lob, grounding, False, extracted)
+
+    chunks = [reqs[i:i + DRAFT_CHUNK_SIZE] for i in range(0, len(reqs), DRAFT_CHUNK_SIZE)]
+    merged: dict[str, Any] | None = None
+    groundings: list[dict[str, Any]] = []
+    for n, chunk in enumerate(chunks, 1):
+        sub = dict(extracted); sub["requirements"] = chunk
+        ids = f"{chunk[0]['id']}–{chunk[-1]['id']}"
+        if n == 1:
+            lead = (f"Draft our response to this RFP. This is part 1 of {len(chunks)}: write the executive summary, win themes, "
+                    f"submission details, open questions, assumptions and do-not-claim list, and answer pre-extracted items {ids} "
+                    f"(other items are drafted separately — do not answer them here).")
+        else:
+            lead = (f"This is part {n} of {len(chunks)} of our response to this RFP. Answer ONLY pre-extracted items {ids} in "
+                    f"`requirements`. Leave executive_summary empty, and win_themes, open_questions, assumptions and do_not_claim "
+                    f"as empty lists unless something in these items changes them.")
+        catch_all = ""
+        if n == len(chunks):
+            # Extraction can skip a file or miss an item; the final part is the one call allowed to add them.
+            covered = "\n".join(f"- {e['id']}: {str(e.get('text', ''))[:110]}" for e in reqs)
+            lead += (" After those, add — with new ids R1, R2 … — every requirement or question in the RFP text below that "
+                     "no item in ALREADY COVERED addresses (mandatory items, forms, submission instructions, questions). "
+                     "Do not re-answer covered items.")
+            catch_all = f"\n\nALREADY COVERED (all pre-extracted items, for reference only):\n{covered}"
+        if on_progress:
+            on_progress(f"Drafting part {n}/{len(chunks)} ({ids})" + (" + anything the extraction missed" if n == len(chunks) else ""))
+        raw, grounding = _one_call(client, lob, lead + "\n\n" + _rfp_text(opp, attachment_text, sub) + catch_all)
+        if grounding:
+            groundings.append(grounding)
+        if merged is None:
+            merged = raw
+            merged["requirements"] = list(raw.get("requirements") or [])
+        else:
+            merged["requirements"].extend(raw.get("requirements") or [])
+            for key in ("open_questions", "assumptions", "do_not_claim", "win_themes"):
+                extra = [x for x in (raw.get(key) or []) if x and x not in (merged.get(key) or [])]
+                if extra:
+                    merged[key] = list(merged.get(key) or []) + extra
+    grounding = ({"provider": "kapa", "queries": [q for g in groundings for q in g.get("queries", [])],
+                  "results": sum(g.get("results", 0) for g in groundings)} if groundings else None)
+    out = _normalize(merged or {}, lob, grounding, False, extracted)
+    out["chunks"] = len(chunks)
+    return out
