@@ -541,6 +541,14 @@ def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int 
             children += [_bullet(x) for x in items]
     batches = [children[i:i + 100] for i in range(0, len(children), 100)]
     done = start_batch
+    if done >= len(batches) and on_batch:
+        # Resuming after the final batch already landed but its checkpoint did not: persist completion now,
+        # otherwise the UI keeps offering Append/Resume and a later click would duplicate the draft.
+        try:
+            on_batch(len(batches), len(batches))
+        except Exception as e:
+            return {"ok": False, "done": len(batches), "total": len(batches), "checkpoint_failed": True,
+                    "error": f"all {len(batches)} batches are appended but completion could not be saved ({str(e)[:160]})"}
     for batch in batches[start_batch:]:
         try:
             client.blocks.children.append(block_id=page_id, children=batch)

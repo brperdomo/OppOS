@@ -437,6 +437,15 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
                 # Every claim must be backed by the approved file — a model-supplied basis ["compliance"] proves nothing.
                 # Inside a security answer, controls (MFA, SSO, backups, TLS …) are claims too.
                 response, gated = _gate_compliance_prose(response, comp["facts"], controls=True)
+                # A term-free "Yes, we fully meet this requirement" asserts everything the ask names while naming
+                # nothing checkable: the answer must address each specific term of the requirement itself.
+                asked = _claim_terms(req_text, controls=True) - _GENERIC_COMPLIANCE_TERMS
+                answered = _claim_terms(response, controls=True)
+                if not gated and asked and not asked <= answered:
+                    missing = ", ".join(sorted(asked - answered))
+                    response = f"{SECURITY_MARK} {response}".strip() if not response.lstrip().startswith(SECURITY_MARK) else response
+                    gated = True
+                    todo = todo or f"Security team to answer the specific terms this requirement names ({missing}) from the approved compliance answers."
                 if gated:
                     basis, conf = ["needs_human"], "low"
                     todo = todo or "Security team to confirm the claim(s) not covered by the approved compliance answers."
