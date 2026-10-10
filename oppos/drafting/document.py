@@ -87,7 +87,8 @@ _ALL_PRODUCTS: set[str] = set().union(*_LOB_PRODUCTS.values())
 
 def public_fact_text(facts: str, lob_key: str | None = None) -> str:
     """Approved facts minus internal sections ("Standard answers we must NOT give") and — when `lob_key` is
-    given — minus facts scoped to another LOB's products. Company-wide facts (no product named) stay."""
+    given — minus any fact naming a product outside the response's LOB, including mixed bullets that also
+    name one of ours. Company-wide facts (no product named) stay."""
     allowed = _LOB_PRODUCTS.get(lob_key or "", set())
     out: list[str] = []
     skipping = False
@@ -101,8 +102,8 @@ def public_fact_text(facts: str, lob_key: str | None = None) -> str:
             continue
         if lob_key:
             products = _scope_terms(line) & _ALL_PRODUCTS
-            if products and not products & allowed:
-                continue  # about a product this response does not propose
+            if products and not products <= allowed:
+                continue  # names a product this response does not propose (even alongside one it does) — omit, never partially
         out.append(line)
     # drop headings left with no facts under them
     cleaned: list[str] = []
