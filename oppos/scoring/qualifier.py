@@ -449,7 +449,12 @@ _CONDITIONAL_RISK_RE = re.compile(
 )
 
 
-_HTML_TAG_RE = re.compile(r"<[^>]{1,200}>")
+# Only real HTML tags are markup: a known tag name directly after "<" (no space), optional attributes, ">".
+# "Latency < 200 ms and throughput > 10 MB/s" is text and stays text.
+_HTML_TAG_RE = re.compile(
+    r"</?(?:p|br|div|span|strong|b|em|i|u|s|ul|ol|li|a|h[1-6]|table|thead|tbody|tfoot|tr|td|th|img|hr|blockquote|pre|code"
+    r"|font|sup|sub|small|big|section|article|header|footer|nav|label|input|button|form|style|script|html|head|body|title|meta|link)"
+    r"\b[^<>]{0,300}>", re.I)
 
 
 def _norm_text(t: str) -> str:
@@ -457,6 +462,7 @@ def _norm_text(t: str) -> str:
     v8.21) while dropping sentence punctuation, so "C++" cannot match "C#" or "C". HTML markup in
     portal descriptions is removed and entities decoded first, so tags never become corpus tokens."""
     t = html.unescape(_HTML_TAG_RE.sub(" ", t or "")).lower()
+    t = re.sub(r"[\"'“”‘’()\[\]{}«»]", " ", t)  # quotes and brackets first, so "SAML.”" ends with a sentence period
     t = re.sub(r"\.(?=\s|$)", " ", t)          # sentence-ending periods are punctuation, not part of a token
     t = re.sub(r"[^a-z0-9+#.]+", " ", t)        # keep + # . inside tokens
     return re.sub(r"\s+", " ", t).strip()
@@ -594,7 +600,14 @@ def _normalize_stage2(result: dict[str, Any], lob: LOB, title: str = "", corpus:
     out["fit_score"] = score
     out["recommended_action"] = action
     out["profile_depth"] = lob.depth
-    out["fit_tier"] = _tier_for(score)  # always from the final score — the thin cap may have lowered it
+    # Tier comes from the final score (the thin cap may have lowered it) — but the model may express material
+    # unknowns through a *lower* tier without lowering the score, as the prompt instructs, so keep a valid
+    # model tier when it is worse than the score implies. It can never be better.
+    try:
+        model_tier = int(result.get("fit_tier")) if result and result.get("fit_tier") is not None else None
+    except (TypeError, ValueError):
+        model_tier = None
+    out["fit_tier"] = max(_tier_for(score), model_tier) if model_tier in (1, 2, 3) else _tier_for(score)
     out["summary"] = str(out.get("summary", "") or "")
     out["industry"] = str(out.get("industry", "") or "")
     out["competitive_notes"] = str(out.get("competitive_notes", "") or "")
