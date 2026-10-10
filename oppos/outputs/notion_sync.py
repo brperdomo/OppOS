@@ -603,8 +603,12 @@ def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int 
 
     # Where our section starts is re-derived from the page itself (the draft header is unique per generated_at),
     # so a lost pre-count, a lost response or blocks someone else added can neither hide nor fake our batches.
+    present: list[bool] = [False] * total
     try:
-        base_children = _section_base(_page_blocks(client, page_id), children)
+        page = _page_blocks(client, page_id)
+        base_children = _section_base(page, children)
+        # Every batch already on the page (lost response, lost checkpoint, identical re-run) is skipped, not re-sent.
+        present = [_batch_present(page, base_children, b) for b in batches]
     except Exception as e:  # reading is best effort — without it we fall back to the checkpoint alone
         logger.warning("Notion: could not read page children (%s); proceeding without reconciliation", e)
         base_children = None
@@ -636,9 +640,9 @@ def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int 
         return failed or {"ok": True, "done": total, "total": total, "base": base_children, "error": None}
 
     for i in range(start_batch, total):
-        # The first batch of ANY run is checked before writing: a previous attempt may have landed it without
-        # the response (or the checkpoint) surviving — including a run that is restarting from batch 0.
-        if i == start_batch and _landed(i) is True:
+        # Any batch already on the page is skipped: a previous attempt may have landed it without the response
+        # (or the checkpoint) surviving — including a run restarting from batch 0 or an identical re-run.
+        if present[i] or (i == start_batch and base_children is None and _landed(i) is True):
             logger.info("Notion: batch %d/%d already on the page (reconciled) — skipping", i + 1, total)
         else:
             try:
