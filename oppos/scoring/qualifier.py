@@ -400,7 +400,8 @@ def _tier_for(score: int) -> int:
 # only an RFI", "market research phase, no award") is context, never a risk — but a requirement an
 # RFI states ("the RFI mandates an Oracle Forms integration") is still a risk when quoted.
 _SPECULATIVE_RISK_RE = re.compile(
-    r"\bnot (confirmed|stated|specified|named|yet)\b|\b(is|are|remains?|still|currently) unknown\b|\bunknown (whether|if|at this (time|stage|point))\b"
+    r"\bnot (confirmed|stated|specified|named)\b|\bnot yet (known|confirmed|stated|specified|determined|defined|decided|published|announced|available|clear)\b"
+    r"|\b(is|are|remains?|still|currently) unknown\b|\bunknown (whether|if|at this (time|stage|point))\b"
     r"|\b(is|are|remains?|still|currently) unclear\b|\bunclear (whether|if|how|what|which|at this (time|stage|point))\b|\bneeds? (investigation|verification|confirmation)\b"
     r"|\bno (direct|named|known|existing)?\s*(customer|parole|public[- ]sector|vertical)?\s*reference\b"
     r"|\bnot a (named|proven|listed) (vertical|pattern|industry)\b"
