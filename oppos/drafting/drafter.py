@@ -98,6 +98,30 @@ _SECURITY_ASK_RE = re.compile(
 )
 
 
+# "SSO is required", "Required: SOC 2 Type II", "MFA must be supported" — requirement-first phrasing.
+_REQUIREMENT_FIRST_RE = re.compile(
+    r"\b(is|are|shall be|must be|will be|to be) (required|mandatory|supported|provided|enforced|in place|available|maintained|implemented|certified|compliant)\b"
+    r"|\b(required|mandatory|requirement)\s*[:\-–]", re.I)
+
+
+def is_explicit_security_ask(req_text: str) -> bool:
+    """Does the requirement explicitly demand a specific security statement, artifact or control in the response?
+
+    Verb-forward asks ("provide your SOC 2 report", "shall encrypt at rest"), direct questions
+    ("Are you SOC 2 Type II certified?", "Does the solution support MFA?") and requirement-first forms
+    ("MFA is required.") all count; "the system must be secure" does not.
+    """
+    text = req_text or ""
+    if _EXPLICIT_SECURITY_ASK_RE.search(text):
+        return True
+    for sent in re.split(r"(?<=[.?!])\s+", text):
+        if not _SECURITY_ASK_RE.search(sent):
+            continue
+        if "?" in sent or _REQUIREMENT_FIRST_RE.search(sent):
+            return True
+    return False
+
+
 def _gate_pricing_prose(text: str) -> tuple[str, bool]:
     """Replace any sentence containing price language with the sales placeholder (summary, themes, assumptions)."""
     if not text:
@@ -174,6 +198,28 @@ _SCOPE_RE = re.compile(
     r"|DWS|Document Web Services|Processor|Data Extraction|Document Authoring|AI Assistant|GdPicture|Nudocs|DocuVieware|Trust Center"
     r"|Enhanced Cloud|SaaS|self[- ]managed|on[- ]prem(?:ises)?|cloud|Kubernetes|hosted|managed)\b", re.I)
 _YEAR_RE = re.compile(r"\b(20\d{2})\b")
+_MONTHS = {m: i for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
+_DATE_ISO_RE = re.compile(r"\b(20\d{2})-(\d{1,2})-(\d{1,2})\b")
+_DATE_US_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(20\d{2})\b")
+_DATE_MDY_RE = re.compile(r"\b([A-Za-z]{3,9})\.? (\d{1,2})(?:st|nd|rd|th)?,? (20\d{2})\b")
+_DATE_DMY_RE = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)? ([A-Za-z]{3,9})\.? (20\d{2})\b")
+
+
+def _date_terms(sentence: str) -> set[str]:
+    """Years and complete dates in a sentence, normalised ("y:2026", "d:2026-03-01"), so an approved
+    "report dated 2026-03-01" does not back a claim "dated 2026-09-01" just because the year matches."""
+    out = {f"y:{y}" for y in _YEAR_RE.findall(sentence)}
+    for y, m, d in _DATE_ISO_RE.findall(sentence):
+        out.add(f"d:{y}-{int(m):02d}-{int(d):02d}")
+    for m, d, y in _DATE_US_RE.findall(sentence):
+        out.add(f"d:{y}-{int(m):02d}-{int(d):02d}")
+    for mon, d, y in _DATE_MDY_RE.findall(sentence):
+        if mon[:3].lower() in _MONTHS:
+            out.add(f"d:{y}-{_MONTHS[mon[:3].lower()]:02d}-{int(d):02d}")
+    for d, mon, y in _DATE_DMY_RE.findall(sentence):
+        if mon[:3].lower() in _MONTHS:
+            out.add(f"d:{y}-{_MONTHS[mon[:3].lower()]:02d}-{int(d):02d}")
+    return out
 
 
 def _scope_terms(sentence: str) -> set[str]:
@@ -195,7 +241,7 @@ def _approved_facts(body: str) -> tuple[tuple[str, frozenset[str], frozenset[str
         for sent in _SENTENCE_SPLIT.split(line.strip()):
             terms = _claim_terms(sent, controls=True) - _GENERIC_COMPLIANCE_TERMS
             if terms:
-                facts.append((_polarity(sent), frozenset(terms), frozenset(_scope_terms(sent)), frozenset(_YEAR_RE.findall(sent))))
+                facts.append((_polarity(sent), frozenset(terms), frozenset(_scope_terms(sent)), frozenset(_date_terms(sent))))
     return tuple(facts)
 
 
@@ -218,7 +264,7 @@ def _unsupported_terms(sentence: str, approved_body: str | None, controls: bool 
     if not specific:
         # Only generic words ("we are fully compliant") — nothing checkable, so a human must look.
         return terms
-    pol, scope, years = _polarity(sentence), _scope_terms(sentence), set(_YEAR_RE.findall(sentence))
+    pol, scope, years = _polarity(sentence), _scope_terms(sentence), _date_terms(sentence)
     for f_pol, f_terms, f_scope, f_years in _approved_facts(approved_body):
         if f_pol != pol or not specific <= f_terms or not scope <= f_scope or not years <= f_years:
             continue
@@ -426,7 +472,7 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
             cat = "security_compliance"
         # Hard gates, applied to EVERY category — the model's category and markers are not trusted.
         if cat == "security_compliance":
-            explicit = bool(_EXPLICIT_SECURITY_ASK_RE.search(req_text))
+            explicit = is_explicit_security_ask(req_text)
             if explicit and not comp["approved"]:
                 # The RFP demands a specific statement/artifact in the response → a human must confirm it.
                 if not response.lstrip().startswith(SECURITY_MARK):
@@ -516,7 +562,12 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
 
     sub = raw.get("submission") if isinstance(raw.get("submission"), dict) else {}
     ext_sol = (extracted or {}).get("solicitation") or {}  # Data Extraction's page-cited facts beat the model's retelling
-    fmt = _norm_list(sub.get("format_requirements"), 15)
+    ext_fmt_raw = ext_sol.get("format_requirements")
+    ext_fmt = _norm_list(ext_fmt_raw if isinstance(ext_fmt_raw, list) else re.split(r"\s*(?:;|\n|\u2022)\s*", str(ext_fmt_raw or "")), 15)
+    fmt = list(ext_fmt)  # extracted response-format rules first, then whatever the model added
+    for f in _norm_list(sub.get("format_requirements"), 15):
+        if f.lower() not in {x.lower() for x in fmt}:
+            fmt.append(f)
     ext_forms = _norm_list((extracted or {}).get("required_forms"), 20)
     ext_criteria = [c for c in ((extracted or {}).get("evaluation_criteria") or []) if isinstance(c, dict) and c.get("criterion")]
     for frm in ext_forms:  # mandatory attachments from Data Extraction always survive, model or not
