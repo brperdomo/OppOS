@@ -401,7 +401,8 @@ def _tier_for(score: int) -> int:
 # only an RFI", "market research phase, no award") is context, never a risk — but a requirement an
 # RFI states ("the RFI mandates an Oracle Forms integration") is still a risk when quoted.
 _SPECULATIVE_RISK_RE = re.compile(
-    r"\b(is|are|was|were|remains?) not (confirmed|stated|specified|named|provided|given|disclosed|mentioned|identified)\b"
+    r"(?<!\bthat )(?<!\bwhich )(?<!\bwho )\b(is|are|was|were|remains?) not (confirmed|stated|specified|named|provided|given|disclosed|mentioned|identified)\b"
+    r"(?=\s*(?:$|[,.;]|in the (?:rfp|rfi|rfq|solicitation|notice|documents?|attachments?)\b|at this|yet\b|anywhere|by the))"
     r"|\bnot (specified|stated|disclosed|mentioned|identified|named) in the (rfp|rfi|rfq|solicitation|notice|documents?|attachments?)\b"
     r"|\b(budget|volume|volumes|incumbent|timeline|scope|user counts?|page counts?|evaluation criteria|award date|contract term|licen[cs]ing model|deployment model|hosting model)"
     r" (is |are |was |were )?not (confirmed|stated|specified|named|provided|given|disclosed|mentioned|identified)\b"
@@ -411,7 +412,10 @@ _SPECULATIVE_RISK_RE = re.compile(
     r"|\b(it|this|fit|scope|budget|volume|requirements?|timeline|incumbent|eligibility|compatibility|deployment model|hosting model|user counts?|licen[cs]ing model)"
     r" (needs?|requires?|will need|would need) (further |additional )?(investigation|verification|confirmation|clarification)\b"
     r"|\b(needs?|requires?) (further |additional )?(investigation|verification|confirmation|clarification) (with|from|by|during|before|at|via|through) (the |a )?(agency|buyer|customer|state|county|city|procurement|discovery|q&a|q ?and ?a|bid|pursuit|kickoff)\b"
-    r"|\bno (direct|named|known|existing)?\s*(customer|parole|public[- ]sector|vertical)?\s*reference\b"
+    r"|\b(we|nutrient|the profile|profile) (has|have|lacks?|shows?|cites?) no [^.;]{0,30}references?\b"
+    r"|\bno [^.;]{0,30}references? (in|for|from|within) (this|the|a|that) (vertical|industry|sector|segment|state|agency|use case|pattern|domain)\b"
+    r"|\bno [^.;]{0,30}references? (is |are |was |were )?(available|listed|cited|named|provided|known|given|identified)\b"
+    r"|\b(lack|lacks|lacking|without) (a |any |an )?[^.;]{0,30}references?\b"
     r"|\bnot a (named|proven|listed) (vertical|pattern|industry)\b"
     r"|\b(this|it) is (only |just |merely )?(an? |the )?(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b"
     r"|\b(only|just|merely) (an? |the )?(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b"
@@ -564,7 +568,9 @@ def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "",
                 ungrounded = not evidence_in_text(ev, body)
             elif title_n and (ev_n == title_n or ev_n in title_n):
                 ungrounded = True  # no text to check against: a title-only quote proves nothing
-        deadline_only = bool(_DEADLINE_RISK_RE.search(claim)) and not _CONTRACT_TIMING_RE.search(claim)
+        # A deadline claim survives only when the RFP's own words (the evidence) state a contract-performance
+        # constraint — impact wording in the claim ("jeopardizes the delivery schedule") proves nothing.
+        deadline_only = bool(_DEADLINE_RISK_RE.search(claim)) and not _CONTRACT_TIMING_RE.search(ev)
         speculative = bool(_SPECULATIVE_RISK_RE.search(claim)) or deadline_only
         if not speculative and _CONDITIONAL_RISK_RE.search(claim):
             # Model-written condition → speculation; RFP-quoted condition → stated requirement.
