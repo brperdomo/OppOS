@@ -481,16 +481,56 @@ def update_pipeline_status(source_id: str, status: str, notes: str = "") -> bool
         return False
 
 
-def _count_children(client: Any, page_id: str) -> int:
-    """Number of top-level blocks on the page (paginated)."""
-    n, cursor = 0, None
+def _block_sig(block: dict[str, Any]) -> tuple[str, str]:
+    """(type, text) identity of a block — works for blocks we build and blocks Notion returns."""
+    btype = str(block.get("type") or "")
+    body = block.get(btype) or {}
+    parts = []
+    for rt in body.get("rich_text") or []:
+        txt = rt.get("plain_text")
+        if txt is None:
+            txt = ((rt.get("text") or {}).get("content")) or ""
+        parts.append(str(txt))
+    return btype, "".join(parts)[:300]
+
+
+def _page_blocks(client: Any, page_id: str) -> list[tuple[str, str]]:
+    """Identity signatures of every top-level block on the page, in order (paginated)."""
+    sigs: list[tuple[str, str]] = []
+    cursor = None
     while True:
         res = client.blocks.children.list(block_id=page_id, start_cursor=cursor, page_size=100) if cursor else \
             client.blocks.children.list(block_id=page_id, page_size=100)
-        n += len(res.get("results") or [])
+        sigs += [_block_sig(b) for b in (res.get("results") or [])]
         if not res.get("has_more"):
-            return n
+            return sigs
         cursor = res.get("next_cursor")
+
+
+def _count_children(client: Any, page_id: str) -> int:
+    return len(_page_blocks(client, page_id))
+
+
+def _find_seq(hay: list[tuple[str, str]], want: list[tuple[str, str]], start: int = 0) -> int:
+    n = len(want)
+    for i in range(max(start, 0), len(hay) - n + 1):
+        if hay[i:i + n] == want:
+            return i
+    return -1
+
+
+def _batch_present(page: list[tuple[str, str]], base: int, batch: list[dict[str, Any]]) -> bool:
+    """Is this batch's exact block sequence on the page after our section start? Identity, not count."""
+    want = [_block_sig(b) for b in batch]
+    return _find_seq(page, want, base) >= 0 if want else True
+
+
+def _section_base(page: list[tuple[str, str]], children: list[dict[str, Any]]) -> int:
+    """Index where THIS draft's section starts on the page, found by its header (divider + heading + the
+    generated-at paragraph, unique per draft). If nothing of ours is there yet, the end of the page."""
+    head = [_block_sig(b) for b in children[:3]]
+    idx = _find_seq(page, head)
+    return idx if idx >= 0 else len(page)
 
 
 def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int = 0,
@@ -499,10 +539,10 @@ def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int 
 
     Resumable: pass `start_batch` to continue after a partial failure (the caller persists
     progress via `on_batch(done, total, base_children)`), so a retry never re-appends earlier
-    batches. `base_children` is the page's block count before our first batch; with it, an
-    ambiguous failure (Notion accepted the batch but the response was lost) is reconciled by
-    re-counting the page instead of guessing, and a resumed run first checks whether its next
-    batch already landed.
+    batches. Before writing, the page is read and this draft's section located by its unique header;
+    the first batch of every run, and any batch whose append call fails, is reconciled against the
+    page by block identity — so a lost response or a lost checkpoint never duplicates a batch, and
+    unrelated blocks added by people cannot fake one. `base_children` is informational.
     Returns {"ok": bool, "done": batches_appended, "total": batches, "base": base_children, "error": str | None,
              "checkpoint_failed": True when a batch was appended but on_batch raised — resume from `done`,
              "ambiguous": True when the page could not be re-counted after a failed call — check the page}.
@@ -522,7 +562,8 @@ def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int 
         ),
     ]
     sub = draft.get("submission") or {}
-    children.append(_paragraph(f"RFP type: {draft.get('rfp_type', '')} · Submission: {sub.get('method', 'unknown')} · Deadline: {sub.get('deadline', 'unknown')}"))
+    children.append(_paragraph(f"RFP type: {draft.get('rfp_type', '')} · Submission: {sub.get('method', 'unknown')} · Deadline: {sub.get('deadline', 'unknown')}"
+                               + (f" · Questions due: {sub['questions_deadline']}" if sub.get("questions_deadline") else "")))
     for f in sub.get("format_requirements") or []:
         children.append(_bullet(f"Format: {f}"))
     if draft.get("evaluation_criteria"):
@@ -559,23 +600,23 @@ def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int 
     batches = [children[i:i + 100] for i in range(0, len(children), 100)]
     total = len(batches)
     done = start_batch
-    expected_after = [sum(len(b) for b in batches[:i + 1]) for i in range(total)]  # our blocks on the page after batch i
 
-    if base_children is None:
-        try:
-            now = _count_children(client, page_id)
-            base_children = now - (expected_after[start_batch - 1] if start_batch else 0)
-        except Exception as e:  # counting is best effort — without it we fall back to the checkpoint alone
-            logger.warning("Notion: could not count page children (%s); proceeding without reconciliation", e)
+    # Where our section starts is re-derived from the page itself (the draft header is unique per generated_at),
+    # so a lost pre-count, a lost response or blocks someone else added can neither hide nor fake our batches.
+    try:
+        base_children = _section_base(_page_blocks(client, page_id), children)
+    except Exception as e:  # reading is best effort — without it we fall back to the checkpoint alone
+        logger.warning("Notion: could not read page children (%s); proceeding without reconciliation", e)
+        base_children = None
 
     def _landed(i: int) -> bool | None:
-        """True/False if batch i is (not) on the page per a fresh count; None if the page cannot be counted."""
-        if base_children is None:
-            return None
+        """True/False if batch i's blocks are (not) on the page after our section start, by identity; None if
+        the page cannot be read right now."""
         try:
-            return _count_children(client, page_id) >= base_children + expected_after[i]
+            page = _page_blocks(client, page_id)
         except Exception:
             return None
+        return _batch_present(page, _section_base(page, children), batches[i])
 
     def _checkpoint(d: int) -> dict[str, Any] | None:
         if not on_batch:
@@ -595,7 +636,9 @@ def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int 
         return failed or {"ok": True, "done": total, "total": total, "base": base_children, "error": None}
 
     for i in range(start_batch, total):
-        if i == start_batch and start_batch and _landed(i) is True:
+        # The first batch of ANY run is checked before writing: a previous attempt may have landed it without
+        # the response (or the checkpoint) surviving — including a run that is restarting from batch 0.
+        if i == start_batch and _landed(i) is True:
             logger.info("Notion: batch %d/%d already on the page (reconciled) — skipping", i + 1, total)
         else:
             try:

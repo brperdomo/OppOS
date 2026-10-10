@@ -188,7 +188,8 @@ def _status_tokens(sentence: str) -> set[str]:
     return out
 
 
-_CLAUSE_BREAK_RE = re.compile(r"[,;:()]|\b(and|but|while|although|whereas|except|however|nor)\b", re.I)
+# "nor" is deliberately not a break: in "neither FedRAMP nor StateRAMP" the negation carries across it.
+_CLAUSE_BREAK_RE = re.compile(r"[,;:()]|\b(and|but|while|although|whereas|except|however)\b", re.I)
 
 
 # A negated predicate after the term ("FedRAMP authorization is not held", "a BAA is not offered") also
@@ -673,6 +674,7 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
         "rfp_type": str(raw.get("rfp_type") or "other"),
         "submission": {"method": str(ext_sol.get("submission_method") or sub.get("method") or "unknown")[:200],
                        "deadline": str(ext_sol.get("submission_deadline") or sub.get("deadline") or "unknown")[:120],
+                       "questions_deadline": str(ext_sol.get("questions_deadline") or sub.get("questions_deadline") or "")[:120],
                        "format_requirements": fmt[:30]},
         "required_forms": ext_forms,
         "evaluation_criteria": [{"criterion": str(c["criterion"])[:300], "weight": str(c.get("weight") or "")[:40]} for c in ext_criteria][:20],
