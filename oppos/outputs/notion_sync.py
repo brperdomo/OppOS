@@ -481,6 +481,16 @@ def update_pipeline_status(source_id: str, status: str, notes: str = "") -> bool
         return False
 
 
+def draft_id(draft: dict[str, Any]) -> str:
+    """Content hash of the draft (12 hex chars) — unique per generated content, so two drafts generated in the
+    same minute with different answers are different sections on the page."""
+    import hashlib
+    keys = ("generated_at", "model", "executive_summary", "win_themes", "requirements", "open_questions", "assumptions",
+            "do_not_claim", "submission", "required_forms", "evaluation_criteria")
+    payload = json.dumps({k: draft.get(k) for k in keys}, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
 def _block_sig(block: dict[str, Any]) -> tuple[str, str]:
     """(type, text) identity of a block — works for blocks we build and blocks Notion returns."""
     btype = str(block.get("type") or "")
@@ -491,7 +501,7 @@ def _block_sig(block: dict[str, Any]) -> tuple[str, str]:
         if txt is None:
             txt = ((rt.get("text") or {}).get("content")) or ""
         parts.append(str(txt))
-    return btype, "".join(parts)[:300]
+    return btype, "".join(parts)
 
 
 def _page_blocks(client: Any, page_id: str) -> list[tuple[str, str]]:
@@ -555,6 +565,7 @@ def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int 
         _heading(2, "Response Draft (AI — needs review)"),
         _paragraph(
             f"Generated {draft.get('generated_at', '')[:16].replace('T', ' ')} UTC by OppOS ({draft.get('model', '')}). "
+            f"Draft id {draft_id(draft)}. "
             f"{draft['stats']['requirements']} requirements · {draft['stats']['high_confidence']} high confidence · "
             f"{draft['stats']['needs_human']} need a human. Compliance source "
             + ("approved v" + str(draft['compliance_source'].get('version')) if draft['compliance_source'].get('approved') else "NOT approved — all security items marked [SECURITY TO CONFIRM]")
@@ -603,19 +614,21 @@ def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int 
 
     # Where our section starts is re-derived from the page itself (the draft header is unique per generated_at),
     # so a lost pre-count, a lost response or blocks someone else added can neither hide nor fake our batches.
-    present: list[bool] = [False] * total
     try:
         page = _page_blocks(client, page_id)
-        base_children = _section_base(page, children)
-        # Every batch already on the page (lost response, lost checkpoint, identical re-run) is skipped, not re-sent.
-        present = [_batch_present(page, base_children, b) for b in batches]
-    except Exception as e:  # reading is best effort — without it we fall back to the checkpoint alone
-        logger.warning("Notion: could not read page children (%s); proceeding without reconciliation", e)
-        base_children = None
+    except Exception as e:
+        # No write without a read: a previous attempt may have landed a batch whose response was lost, and only the
+        # page can tell. Nothing is written in this state.
+        logger.error("Notion: page %s could not be read (%s); not writing", page_id, e)
+        return {"ok": False, "done": start_batch, "total": total, "base": base_children, "ambiguous": True, "written": 0,
+                "error": f"the Notion page could not be read ({str(e)[:160]}); nothing was written — retry when Notion is reachable"}
+    base_children = _section_base(page, children)
+    # Every batch already on the page (lost response, lost checkpoint, identical re-run) is skipped, not re-sent.
+    present = [_batch_present(page, base_children, b) for b in batches]
 
     def _landed(i: int) -> bool | None:
         """True/False if batch i's blocks are (not) on the page after our section start, by identity; None if
-        the page cannot be read right now."""
+        the page cannot be read right now (then nothing further is written)."""
         try:
             page = _page_blocks(client, page_id)
         except Exception:
@@ -642,7 +655,7 @@ def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int 
     for i in range(start_batch, total):
         # Any batch already on the page is skipped: a previous attempt may have landed it without the response
         # (or the checkpoint) surviving — including a run restarting from batch 0 or an identical re-run.
-        if present[i] or (i == start_batch and base_children is None and _landed(i) is True):
+        if present[i]:
             logger.info("Notion: batch %d/%d already on the page (reconciled) — skipping", i + 1, total)
         else:
             try:
@@ -652,9 +665,10 @@ def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int 
                 if landed is True:
                     logger.warning("Notion append raised but batch %d/%d is on the page (%s) — continuing", i + 1, total, e)
                 elif landed is None:
-                    logger.error("Notion draft append failed at batch %d/%d and the page could not be re-counted: %s", i + 1, total, e)
-                    return {"ok": False, "done": done, "total": total, "base": base_children, "ambiguous": True,
-                            "error": f"{str(e)[:200]} — the page could not be re-counted, so batch {i + 1} may or may not be there"}
+                    logger.error("Notion draft append failed at batch %d/%d and the page could not be re-read: %s", i + 1, total, e)
+                    return {"ok": False, "done": done, "total": total, "base": base_children, "ambiguous": True, "written": done - start_batch,
+                            "error": f"{str(e)[:200]} — the page could not be re-read, so batch {i + 1} may or may not be there; "
+                                     f"the next attempt reads the page before writing anything"}
                 else:
                     logger.error("Notion draft append failed at batch %d/%d: %s", i + 1, total, e)
                     return {"ok": False, "done": done, "total": total, "base": base_children, "error": str(e)[:300]}

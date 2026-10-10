@@ -43,6 +43,8 @@ REQUIREMENTS_SCHEMA: dict[str, Any] = {
                 "submission_method": {"type": "string", "description": "portal name, email address, mail, or in person"},
                 "submission_deadline": {"type": "string", "description": "date and time responses are due, with time zone if printed"},
                 "questions_deadline": {"type": "string", "description": "deadline for vendor questions, if any"},
+                "amendment_number": {"type": "string", "description": "for an amendment/addendum: its number as printed (e.g. 2), else empty"},
+                "amendment_date": {"type": "string", "description": "for an amendment/addendum: its issue date as printed, else empty"},
                 "contact_name": {"type": "string"},
                 "contact_email": {"type": "string"},
                 "format_requirements": {"type": "string", "description": "page limits, fonts, required sections, copies, file formats"},
@@ -153,6 +155,42 @@ def _extract_one(path: Path, mode: str) -> dict[str, Any]:
     }
 
 
+_AMEND_NUM_RE = re.compile(r"(?:amend\w*|addend\w*|modif\w*|mod)[\s_#.-]*(?:no\.?\s*)?(\d{1,3})\b", re.I)
+
+
+def _amend_rank(sol: dict[str, Any], filename: str) -> tuple[str, int]:
+    """(iso date or '', number or -1) for an amendment — from the printed metadata, then the file name."""
+    date = ""
+    raw_date = str(sol.get("amendment_date") or "").strip()
+    if raw_date:
+        try:
+            from dateutil import parser as _dp  # optional
+            date = _dp.parse(raw_date, fuzzy=True).date().isoformat()
+        except Exception:
+            m = re.search(r"(20\d{2})-(\d{1,2})-(\d{1,2})", raw_date)
+            date = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}" if m else ""
+    num = -1
+    m = re.search(r"\d{1,3}", str(sol.get("amendment_number") or ""))
+    if m:
+        num = int(m.group(0))
+    else:
+        m = _AMEND_NUM_RE.search(filename)
+        if m:
+            num = int(m.group(1))
+    return date, num
+
+
+def _amend_newer(a: tuple[str, int] | None, b: tuple[str, int] | None) -> bool | None:
+    """Is amendment `a` newer than `b`? None when the order cannot be established."""
+    if not a or not b:
+        return None
+    if a[0] and b[0] and a[0] != b[0]:
+        return a[0] > b[0]
+    if a[1] >= 0 and b[1] >= 0 and a[1] != b[1]:
+        return a[1] > b[1]
+    return None
+
+
 def extract_rfp_requirements(
     file_paths: list[Path],
     mode: str | None = None,
@@ -214,29 +252,37 @@ def extract_rfp_requirements(
         sol = data.get("solicitation") or {}
         doc_type = str(sol.get("document_type") or "other").strip().lower().replace(" ", "_")
         result["files"][-1]["document_type"] = doc_type
+        rank = _amend_rank(sol, path.name) if doc_type == "amendment" else None
         for k, v in sol.items():
-            if k == "document_type" or not v:
+            if k in ("document_type", "amendment_number", "amendment_date") or not v:
                 continue
             have = result["solicitation"].get(k)
             src = result.setdefault("solicitation_sources", {})
             if not have:
                 result["solicitation"][k] = v
-                src[k] = {"file": path.name, "document_type": doc_type}
+                src[k] = {"file": path.name, "document_type": doc_type, "rank": rank}
             elif str(have).strip() != str(v).strip():
-                # Later documents in a package usually amend earlier ones: an amendment overrides; otherwise the
-                # first value stands and the disagreement is surfaced for a human (never silently averaged).
+                # An amendment overrides the original; between amendments the newer one (by printed date, then
+                # number, then a number in the file name) wins. When the order cannot be established nothing is
+                # guessed: the first value stands and the disagreement is surfaced for a human.
                 prev = src.get(k) or {}
-                if doc_type == "amendment":
-                    # An amendment overrides the original, and a later amendment (files are processed in name order)
-                    # overrides an earlier one — the newest revision is the one in force.
-                    reason = "later amendment overrides" if prev.get("document_type") == "amendment" else "amendment overrides"
-                    result.setdefault("solicitation_conflicts", []).append(
-                        {"field": k, "kept": v, "kept_file": path.name, "other": have, "other_file": prev.get("file", "?"), "reason": reason})
+                conflicts = result.setdefault("solicitation_conflicts", [])
+                if doc_type == "amendment" and prev.get("document_type") != "amendment":
+                    conflicts.append({"field": k, "kept": v, "kept_file": path.name, "other": have, "other_file": prev.get("file", "?"), "reason": "amendment overrides"})
                     result["solicitation"][k] = v
-                    src[k] = {"file": path.name, "document_type": doc_type}
+                    src[k] = {"file": path.name, "document_type": doc_type, "rank": rank}
+                elif doc_type == "amendment":
+                    newer = _amend_newer(rank, prev.get("rank"))
+                    if newer is True:
+                        conflicts.append({"field": k, "kept": v, "kept_file": path.name, "other": have, "other_file": prev.get("file", "?"), "reason": "later amendment overrides"})
+                        result["solicitation"][k] = v
+                        src[k] = {"file": path.name, "document_type": doc_type, "rank": rank}
+                    elif newer is False:
+                        conflicts.append({"field": k, "kept": have, "kept_file": prev.get("file", "?"), "other": v, "other_file": path.name, "reason": "earlier amendment superseded"})
+                    else:
+                        conflicts.append({"field": k, "kept": have, "kept_file": prev.get("file", "?"), "other": v, "other_file": path.name, "reason": "amendment order unknown — confirm which is current"})
                 else:
-                    result.setdefault("solicitation_conflicts", []).append(
-                        {"field": k, "kept": have, "kept_file": prev.get("file", "?"), "other": v, "other_file": path.name, "reason": "first document kept"})
+                    conflicts.append({"field": k, "kept": have, "kept_file": prev.get("file", "?"), "other": v, "other_file": path.name, "reason": "first document kept"})
 
         req_meta = meta.get("requirements") if isinstance(meta.get("requirements"), list) else []
         for i, item in enumerate(data.get("requirements") or []):

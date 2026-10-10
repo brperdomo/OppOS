@@ -1943,8 +1943,8 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
                         if res.get("base") is not None:
                             _on_batch(res["done"], res["total"], res["base"])  # keep the page baseline so the retry can reconcile
                         st.error(f"Notion append stopped at batch {res['done'] + 1}/{res['total']}: {res['error']}. "
-                                 "Open the Notion page and check whether the last section is complete before clicking again — "
-                                 "the next attempt re-counts the page first and skips the batch if it is already there.")
+                                 "Nothing further is written until the page can be read; the next attempt reads it first and "
+                                 "skips any batch that is already there.")
                     elif res.get("checkpoint_failed"):
                         st.session_state[_sess_key] = {"page_id": str(npid), "generated_at": _draft.get("generated_at"), "done": res["done"]}
                         st.error(f"Notion append paused after batch {res['done']}/{res['total']}: {res['error']}. "
