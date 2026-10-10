@@ -9,6 +9,7 @@ investigate/skip until a vetted profile exists.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
@@ -402,7 +403,10 @@ def _tier_for(score: int) -> int:
 _SPECULATIVE_RISK_RE = re.compile(
     r"\bnot (confirmed|stated|specified|named)\b|\bnot yet (known|confirmed|stated|specified|determined|defined|decided|published|announced|available|clear)\b"
     r"|\b(is|are|remains?|still|currently) unknown\b|\bunknown (whether|if|at this (time|stage|point))\b"
-    r"|\b(is|are|remains?|still|currently) unclear\b|\bunclear (whether|if|how|what|which|at this (time|stage|point))\b|\bneeds? (investigation|verification|confirmation)\b"
+    r"|\b(is|are|remains?|still|currently) unclear\b|\bunclear (whether|if|how|what|which|at this (time|stage|point))\b"
+    r"|\b(it|this|fit|scope|budget|volume|requirements?|timeline|incumbent|eligibility|compatibility|deployment model|hosting model|user counts?|licen[cs]ing model)"
+    r" (needs?|requires?|will need|would need) (further |additional )?(investigation|verification|confirmation|clarification)\b"
+    r"|\b(needs?|requires?) (further |additional )?(investigation|verification|confirmation|clarification) (with|from|by|during|before|at|via|through) (the |a )?(agency|buyer|customer|state|county|city|procurement|discovery|q&a|q ?and ?a|bid|pursuit|kickoff)\b"
     r"|\bno (direct|named|known|existing)?\s*(customer|parole|public[- ]sector|vertical)?\s*reference\b"
     r"|\bnot a (named|proven|listed) (vertical|pattern|industry)\b"
     r"|\b(this|it) is (only |just |merely )?(an? |the )?(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b"
@@ -445,10 +449,14 @@ _CONDITIONAL_RISK_RE = re.compile(
 )
 
 
+_HTML_TAG_RE = re.compile(r"<[^>]{1,200}>")
+
+
 def _norm_text(t: str) -> str:
     """Lower-case token text. Keeps the symbols that distinguish technology names (C++, C#, .NET,
-    v8.21) while dropping sentence punctuation, so "C++" cannot match "C#" or "C"."""
-    t = (t or "").lower()
+    v8.21) while dropping sentence punctuation, so "C++" cannot match "C#" or "C". HTML markup in
+    portal descriptions is removed and entities decoded first, so tags never become corpus tokens."""
+    t = html.unescape(_HTML_TAG_RE.sub(" ", t or "")).lower()
     t = re.sub(r"\.(?=\s|$)", " ", t)          # sentence-ending periods are punctuation, not part of a token
     t = re.sub(r"[^a-z0-9+#.]+", " ", t)        # keep + # . inside tokens
     return re.sub(r"\s+", " ", t).strip()

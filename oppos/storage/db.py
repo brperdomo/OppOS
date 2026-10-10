@@ -446,7 +446,10 @@ def expire_stale_undated(stale_days: int | None = None) -> int:
     from oppos.config import STALE_NO_DEADLINE_DAYS
     days = STALE_NO_DEADLINE_DAYS if stale_days is None else stale_days
     cutoff = datetime.utcnow() - timedelta(days=days)
-    placeholders = ", ".join("?" for _ in _DEADLINE_CHECK_STATUSES)
+    # in_progress is excluded: it is either an active pursuit (already shielded below) or a legacy row the
+    # dashboard surfaces for adoption — a heuristic sweep must not expire either before a person decides.
+    sweep_statuses = tuple(s for s in _DEADLINE_CHECK_STATUSES if s != "in_progress")
+    placeholders = ", ".join("?" for _ in sweep_statuses)
     open_ph = ", ".join("?" for _ in _OPEN_PURSUIT_STATUSES)
     # A heuristic sweep must not touch work someone has claimed: an open pursuit (claimed or pursuing)
     # keeps its opportunity out of the stale rule, unlike a real deadline that has genuinely passed.
@@ -455,7 +458,7 @@ def expire_stale_undated(stale_days: int | None = None) -> int:
             WHERE pipeline_status IN ({placeholders})
               AND (response_deadline IS NULL OR response_deadline = '')
               AND source_id NOT IN (SELECT source_id FROM pursuits WHERE status IN ({open_ph}))""",
-        tuple(_DEADLINE_CHECK_STATUSES) + tuple(_OPEN_PURSUIT_STATUSES),
+        sweep_statuses + tuple(_OPEN_PURSUIT_STATUSES),
     )
     n = 0
     for r in rows:
