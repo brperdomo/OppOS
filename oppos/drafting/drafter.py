@@ -115,7 +115,7 @@ def is_explicit_security_ask(req_text: str) -> bool:
     if _EXPLICIT_SECURITY_ASK_RE.search(text):
         return True
     for sent in re.split(r"(?<=[.?!])\s+", text):
-        if not _SECURITY_ASK_RE.search(sent):
+        if not (_SECURITY_ASK_RE.search(sent) or _CONTROL_RE.search(sent)):
             continue
         if "?" in sent or _REQUIREMENT_FIRST_RE.search(sent):
             return True
@@ -139,7 +139,7 @@ _EXPLICIT_SECURITY_ASK_RE = re.compile(
     r"\b(provide|attach|submit|include|furnish|supply|enclose)\b.{0,80}\b(SOC|ISO|report|certificat|attestation|audit|questionnaire|VPAT|ACR|policy|policies|evidence|documentation)"
     r"|\b(describe|detail|explain|document|demonstrate|confirm|certify|state|specify|list)\b.{0,60}\b(security|encrypt|authentication|access control|incident|vulnerab|penetration|data (?:residency|retention|center)|backup|disaster|business continuity|SOC|ISO|HIPAA|FedRAMP|StateRAMP|CJIS|PCI|NIST|FIPS|508|WCAG|privacy)"
     r"|\b(must|shall|required to|is required|mandatory|comply|compliance with|in accordance with|adhere)\b.{0,40}\b(SOC ?[123]|ISO ?\d{4,5}|FedRAMP|StateRAMP|TX-RAMP|HIPAA|BAA|HITRUST|CJIS|PCI|FIPS|NIST|IRS ?1075|FERPA|GLBA|SOX|GDPR|CCPA|CMMC|ITAR|Section ?508|WCAG|VPAT"
-    r"|encrypt\w*|AES|TLS|data residency|data (?:center|centre)s?|US-based|onshore|MFA|multi-?factor|SSO|single sign-on|SAML|audit (?:log|trail)s?|penetration|vulnerability|backup|disaster recovery"
+    r"|encrypt\w*|AES|TLS|data residency|data (?:center|centre)s?|US-based|onshore|MFA|multi-?factor|2FA|SSO|single sign-on|SAML|OIDC|OAuth|RBAC|role-based|least privilege|SIEM|WAF|key management|HSM|audit (?:log|trail)s?|penetration|vulnerability|backup|disaster recovery"
     r"|business continuity|retention|breach|incident|background check|cyber ?(?:security|liability)|insurance)\b",
     re.I,
 )
@@ -188,31 +188,57 @@ def _status_tokens(sentence: str) -> set[str]:
     return out
 
 
-def _claim_terms(sentence: str, controls: bool = False) -> set[str]:
-    """The concrete compliance terms a sentence asserts (SOC 2, FedRAMP, HIPAA, encryption, …), normalised,
-    plus — when a concrete standard is named — the status words attached to it ("s:certified", "s:report").
-    A qualified term yields its base too ("SOC 2 Type II" → soc2typeii + soc2) so a fact that states
-    the type supports a claim that omits it, but never the other way round. With `controls`, security
-    controls (MFA, SSO, backups, audit logs, TLS …) count as claims as well."""
-    out: set[str] = set()
+_CLAUSE_BREAK_RE = re.compile(r"[,;:()]|\b(and|but|while|although|whereas|except|however|nor)\b", re.I)
+
+
+def _term_polarity(sentence: str, start: int) -> str:
+    """Polarity of the term starting at `start`: "neg" only when a negation word precedes it within the
+    same clause (up to 60 chars back). "SOC 2 report has no exceptions" keeps SOC 2 positive; "does not
+    hold FedRAMP", "No HIPAA BAA is offered" and "do not claim FedRAMP" are negative."""
+    window = sentence[max(0, start - 60):start]
+    cut = [m.end() for m in _CLAUSE_BREAK_RE.finditer(window)]
+    if cut:
+        window = window[cut[-1]:]
+    return "neg" if _NEGATION_RE.search(window) else "pos"
+
+
+def _claim_terms_pol(sentence: str, controls: bool = False) -> set[tuple[str, str]]:
+    """{(term, polarity)} for the concrete compliance terms a sentence asserts (SOC 2, FedRAMP, HIPAA,
+    encryption, …), normalised, plus — when a concrete standard is named — the status words attached to
+    it ("s:certified", "s:report"). A qualified term yields its base too ("SOC 2 Type II" → soc2typeii +
+    soc2) so a fact that states the type supports a claim that omits it, never the reverse. With
+    `controls`, security controls (MFA, SSO, backups, audit logs, TLS …) count as claims as well.
+    Polarity is bound to each term's own clause, not the whole sentence."""
+    out: set[tuple[str, str]] = set()
     if controls:
         for m in _CONTROL_RE.finditer(sentence):
-            out.add(re.sub(r"[\s.-]+", "", m.group(0).lower()))
+            out.add((re.sub(r"[\s.-]+", "", m.group(0).lower()), _term_polarity(sentence, m.start())))
     for m in _COMPLIANCE_RE.finditer(sentence):
         full = re.sub(r"[\s.-]+", "", m.group(0).lower())
+        pol = _term_polarity(sentence, m.start())
         if full.startswith("encrypt"):  # encrypts / encrypted / encryption → one base term + the qualifier
-            out.add("encryption")
+            out.add(("encryption", pol))
             for q in ("atrest", "intransit"):
                 if full.endswith(q):
-                    out.add("encryption" + q)
+                    out.add(("encryption" + q, pol))
             continue
-        out.add(full)
+        out.add((full, pol))
         base = re.match(r"(soc[123]|fedramp|wcag)", full)
         if base and base.group(1) != full:
-            out.add(base.group(1))
-    if out - _GENERIC_COMPLIANCE_TERMS:
-        out |= _status_tokens(sentence)
+            out.add((base.group(1), pol))
+    if {t for t, _ in out} - _GENERIC_COMPLIANCE_TERMS:
+        for m in _STATUS_RE.finditer(sentence):
+            w = re.sub(r"[\s-]+", "", m.group(0).lower())
+            for prefix, canon in _STATUS_CANON.items():
+                if w.startswith(prefix):
+                    out.add((f"s:{canon}", _term_polarity(sentence, m.start())))
+                    break
     return out
+
+
+def _claim_terms(sentence: str, controls: bool = False) -> set[str]:
+    """The terms of _claim_terms_pol without polarity (used to check an answer covers what was asked)."""
+    return {t for t, _ in _claim_terms_pol(sentence, controls)}
 
 
 # Product / deployment scope words: an approved fact scoped to one product does not cover another.
@@ -267,16 +293,16 @@ def _polarity(sentence: str) -> str:
 
 
 @lru_cache(maxsize=4)
-def _approved_facts(body: str) -> tuple[tuple[str, frozenset[str], frozenset[str], frozenset[str]], ...]:
-    """One entry per sentence of the approved file: (polarity, compliance terms, scope terms, years).
+def _approved_facts(body: str) -> tuple[tuple[frozenset[tuple[str, str]], frozenset[str], frozenset[str]], ...]:
+    """One entry per sentence of the approved file: ({(term, polarity)}, scope terms, dates).
     "Nutrient Workflow (Enhanced Cloud): SOC 2 Type II report dated 2026-03-01" →
-    ("pos", {soc2typeii, soc2}, {nutrientworkflow, enhancedcloud}, {2026})."""
+    ({(soc2typeii, pos), (soc2, pos), (s:report, pos)}, {workflow, enhancedcloud}, {y:2026, d:2026-03-01})."""
     facts = []
     for line in body.splitlines():
         for sent in _SENTENCE_SPLIT.split(line.strip()):
-            terms = _claim_terms(sent, controls=True) - _GENERIC_COMPLIANCE_TERMS
-            if terms:
-                facts.append((_polarity(sent), frozenset(terms), frozenset(_scope_terms(sent)), frozenset(_date_terms(sent))))
+            pairs = {(t, p) for t, p in _claim_terms_pol(sent, controls=True) if t not in _GENERIC_COMPLIANCE_TERMS}
+            if {t for t, _ in pairs if not t.startswith("s:")}:
+                facts.append((frozenset(pairs), frozenset(_scope_terms(sent)), frozenset(_date_terms(sent))))
     return tuple(facts)
 
 
@@ -291,18 +317,22 @@ def _unsupported_terms(sentence: str, approved_body: str | None, controls: bool 
     "…is SOC 2 Type II certified" (report ≠ certified), "Nutrient SDK is SOC 2 certified", "SOC 2 Type I"
     and "We do not hold …" (polarity) are all gated. Presence of a word elsewhere is never support.
     """
-    terms = _claim_terms(sentence, controls=controls)
+    pairs = _claim_terms_pol(sentence, controls=controls)
+    terms = {t for t, _ in pairs}
     if not terms:
         return set()
     if not approved_body:
         return terms
-    specific = {t for t in terms if t not in _GENERIC_COMPLIANCE_TERMS}
+    checked = {(t, p) for t, p in pairs if t not in _GENERIC_COMPLIANCE_TERMS}
+    specific = {t for t, _ in checked if not t.startswith("s:")}
     if not specific:
         # Only generic words ("we are fully compliant") — nothing checkable, so a human must look.
         return terms
-    pol, scope, years = _polarity(sentence), _scope_terms(sentence), _date_terms(sentence)
-    for f_pol, f_terms, f_scope, f_years in _approved_facts(approved_body):
-        if f_pol != pol or not specific <= f_terms or not years <= f_years:
+    scope, years = _scope_terms(sentence), _date_terms(sentence)
+    for f_pairs, f_scope, f_years in _approved_facts(approved_body):
+        # Every (term, polarity) the claim asserts must be stated the same way in one fact: "does not have a
+        # SOC 2 report" is not backed by "SOC 2 report has no exceptions" (that SOC 2 is positive).
+        if not checked <= f_pairs or not years <= f_years:
             continue
         # Scope must match exactly: a claim may neither add a product/deployment the fact does not cover
         # nor drop one the fact is limited to ("Nutrient Workflow (Enhanced Cloud)" ≠ "Nutrient Workflow").
@@ -506,8 +536,9 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
         todo = str(r.get("human_todo") or "").strip()
         req_text = str((ext or {}).get("text") or r.get("text") or "").strip()
         # The requirement's own words decide whether it is a security/compliance item, not the model's label.
-        if cat != "security_compliance" and _SECURITY_ASK_RE.search(req_text):
-            cat = "security_compliance"
+        if cat != "security_compliance" and (_SECURITY_ASK_RE.search(req_text)
+                                             or (_CONTROL_RE.search(req_text) and is_explicit_security_ask(req_text))):
+            cat = "security_compliance"  # a control asked about explicitly (RBAC? OAuth? TLS 1.3?) is a security item
         # Hard gates, applied to EVERY category — the model's category and markers are not trusted.
         if cat == "security_compliance":
             explicit = is_explicit_security_ask(req_text)
