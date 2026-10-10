@@ -401,7 +401,7 @@ def _tier_for(score: int) -> int:
 # RFI states ("the RFI mandates an Oracle Forms integration") is still a risk when quoted.
 _SPECULATIVE_RISK_RE = re.compile(
     r"\bnot (confirmed|stated|specified|named|yet)\b|\b(is|are|remains?|still|currently) unknown\b|\bunknown (whether|if|at this (time|stage|point))\b"
-    r"|\bunclear\b|\bneeds? (investigation|verification|confirmation)\b"
+    r"|\b(is|are|remains?|still|currently) unclear\b|\bunclear (whether|if|how|what|which|at this (time|stage|point))\b|\bneeds? (investigation|verification|confirmation)\b"
     r"|\bno (direct|named|known|existing)?\s*(customer|parole|public[- ]sector|vertical)?\s*reference\b"
     r"|\bnot a (named|proven|listed) (vertical|pattern|industry)\b"
     r"|\b(this|it) is (only |just |merely )?(an? |the )?(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b"
@@ -414,15 +414,21 @@ _SPECULATIVE_RISK_RE = re.compile(
 )
 # A tight deadline is never a risk (scoring rule); the model occasionally writes one anyway.
 _DEADLINE_RISK_RE = re.compile(
-    r"\b(deadline|due date|response (window|period|time|timeline)|turnaround|time ?frame|timeline|submission window|days? (to|until) (respond|submit|the deadline))\b"
+    r"\b((response|submission|proposal|bid|rfp|rfi|rfq|quote) (deadline|due date|window|period|time ?frame|timeline|turnaround)"
+    r"|deadline (to|for) (respond|submit|responses?|proposals?|bids?|submission|quotes?)|due date for (responses?|proposals?|bids?|quotes?)|days? (to|until) (respond|submit|the (response|submission) deadline))\b"
     r".{0,80}\b(tight|short|compressed|aggressive|limited|insufficient|little time|only \d+ (business |calendar )?days|\d+ (business |calendar )?days (away|out|remaining|left)|constrain|pressure|risk)"
-    r"|\b(tight|short|compressed|aggressive|limited) (response |submission )?(deadline|window|timeline|time ?frame|turnaround)\b"
+    r"|\b(tight|short|compressed|aggressive|limited) (response|submission|proposal|bid) (deadline|window|timeline|time ?frame|turnaround)\b"
     r"|\b\d+ (business |calendar )?days? to (respond|submit|prepare)\b"
     r"|\b(only )?\d+ (business |calendar )?days? (remain|remaining|left|until|before|away)\b.{0,40}\b(deadline|due|respond|submit|response|submission|proposal|bid)\b"
     r"|\b(deadline|due date|due|respond|submit|response|submission|proposal)\b.{0,60}\b(only )?\d+ (business |calendar )?days? (remain|remaining|left)\b"
     r"|\b(deadline|due date|due|respond|submit|response|submission|proposal)\b.{0,60}\bonly \d+ (business |calendar )?days\b",
     re.I,
 )
+# Contract-performance timing (remediation, implementation, go-live, SLAs) is a real requirement, not
+# the bid-response window — never demoted by the deadline rule.
+_CONTRACT_TIMING_RE = re.compile(
+    r"\b(remediation|remediate|implementation|implement|go[- ]live|delivery|deliver|cure|SLA|service[- ]level|uptime|resolution|restore|recovery|RTO|RPO"
+    r"|onboarding|migration|cutover|transition|warranty|retention|incident|outage|support|response time)\b", re.I)
 # Conditional wording is speculation when the model wrote it, but a stated condition the RFP
 # itself spells out ("cloud hosting would require FedRAMP High") is a real requirement — such a
 # claim is kept when its evidence quotes the condition.
@@ -523,7 +529,8 @@ def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "",
                 ungrounded = not evidence_in_text(ev, body)
             elif title_n and (ev_n == title_n or ev_n in title_n):
                 ungrounded = True  # no text to check against: a title-only quote proves nothing
-        speculative = bool(_SPECULATIVE_RISK_RE.search(claim)) or bool(_DEADLINE_RISK_RE.search(claim))
+        deadline_only = bool(_DEADLINE_RISK_RE.search(claim)) and not _CONTRACT_TIMING_RE.search(claim)
+        speculative = bool(_SPECULATIVE_RISK_RE.search(claim)) or deadline_only
         if not speculative and _CONDITIONAL_RISK_RE.search(claim):
             # Model-written condition → speculation; RFP-quoted condition → stated requirement.
             speculative = not _CONDITIONAL_RISK_RE.search(ev)
