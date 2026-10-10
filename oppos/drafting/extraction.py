@@ -155,7 +155,7 @@ def _extract_one(path: Path, mode: str) -> dict[str, Any]:
     }
 
 
-_AMEND_NUM_RE = re.compile(r"(?:amend\w*|addend\w*|modif\w*|mod)[\s_#.-]*(?:no\.?\s*)?(\d{1,3})\b", re.I)
+_AMEND_NUM_RE = re.compile(r"(?:amendments?|amend|addend(?:um|a)?|modifications?|mod)[\s_#.-]*(?:no\.?\s*)?(\d{1,3})\b", re.I)
 
 
 def _amend_rank(sol: dict[str, Any], filename: str) -> tuple[str, int]:
