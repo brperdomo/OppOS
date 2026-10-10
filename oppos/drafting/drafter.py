@@ -123,13 +123,13 @@ def is_explicit_security_ask(req_text: str) -> bool:
 
 
 def _gate_pricing_prose(text: str) -> tuple[str, bool]:
-    """Replace any sentence containing price language with the sales placeholder (summary, themes, assumptions)."""
+    """Replace any sentence containing price language or commercial terms with the sales placeholder (summary, themes, assumptions)."""
     if not text:
         return text, False
     out, flagged = [], False
     for sent in _SENTENCE_SPLIT.split(text.strip()):
-        if _PRICING_RE.search(sent) and not sent.lstrip().startswith(SALES_MARK):
-            sent = f"{SALES_MARK} — pricing statement removed from draft."
+        if (_PRICING_RE.search(sent) or _COMMERCIAL_TERMS_RE.search(sent)) and not sent.lstrip().startswith(SALES_MARK):
+            sent = f"{SALES_MARK} — pricing / commercial statement removed from draft."
             flagged = True
         out.append(sent)
     return " ".join(out), flagged
@@ -167,8 +167,30 @@ _CONTROL_RE = re.compile(
 )
 
 
+# Status attached to a standard: holding a *report* is not being *certified*, so the status word a claim
+# uses must appear in the approved fact as well (tokens "s:<canonical>").
+_STATUS_RE = re.compile(
+    r"\b(certif(?:ied|ication|icate)s?|accredit(?:ed|ation)|attest(?:ation|ed)|audit(?:ed)?(?: report)?|reports?|compliant|compliance"
+    r"|validated|authoriz(?:ed|ation)|authorised|authorisation|in[- ]process|ready|aligned|bridge letter|letter|assessed|assessment)\b", re.I)
+_STATUS_CANON = {"certif": "certified", "accredit": "accredited", "attest": "attested", "audit": "report", "report": "report",
+                 "compli": "compliant", "validated": "validated", "authori": "authorized", "inprocess": "inprocess", "ready": "ready",
+                 "aligned": "aligned", "bridge": "report", "letter": "letter", "assess": "assessed"}
+
+
+def _status_tokens(sentence: str) -> set[str]:
+    out: set[str] = set()
+    for m in _STATUS_RE.finditer(sentence):
+        w = re.sub(r"[\s-]+", "", m.group(0).lower())
+        for prefix, canon in _STATUS_CANON.items():
+            if w.startswith(prefix):
+                out.add(f"s:{canon}")
+                break
+    return out
+
+
 def _claim_terms(sentence: str, controls: bool = False) -> set[str]:
-    """The concrete compliance terms a sentence asserts (SOC 2, FedRAMP, HIPAA, encryption, …), normalised.
+    """The concrete compliance terms a sentence asserts (SOC 2, FedRAMP, HIPAA, encryption, …), normalised,
+    plus — when a concrete standard is named — the status words attached to it ("s:certified", "s:report").
     A qualified term yields its base too ("SOC 2 Type II" → soc2typeii + soc2) so a fact that states
     the type supports a claim that omits it, but never the other way round. With `controls`, security
     controls (MFA, SSO, backups, audit logs, TLS …) count as claims as well."""
@@ -188,6 +210,8 @@ def _claim_terms(sentence: str, controls: bool = False) -> set[str]:
         base = re.match(r"(soc[123]|fedramp|wcag)", full)
         if base and base.group(1) != full:
             out.add(base.group(1))
+    if out - _GENERIC_COMPLIANCE_TERMS:
+        out |= _status_tokens(sentence)
     return out
 
 
@@ -222,8 +246,19 @@ def _date_terms(sentence: str) -> set[str]:
     return out
 
 
+_SCOPE_CANON = {"nutrientworkflow": "workflow", "workflowautomation": "workflow", "documentwebservices": "dws", "onpremises": "onprem",
+                "lowcode": "lowcode", "trustcenter": None}
+
+
 def _scope_terms(sentence: str) -> set[str]:
-    return {re.sub(r"[\s.-]+", "", m.group(0).lower()) for m in _SCOPE_RE.finditer(sentence)}
+    """Product / deployment scope words, canonicalised ("Nutrient Workflow" and "Workflow" are one product)."""
+    out: set[str] = set()
+    for m in _SCOPE_RE.finditer(sentence):
+        t = re.sub(r"[\s.-]+", "", m.group(0).lower())
+        t = _SCOPE_CANON.get(t, t)
+        if t:
+            out.add(t)
+    return out
 
 
 def _polarity(sentence: str) -> str:
@@ -249,10 +284,11 @@ def _unsupported_terms(sentence: str, approved_body: str | None, controls: bool 
     """Compliance terms in `sentence` that no single approved fact backs (all of them when unapproved).
 
     A claim is backed only when it *restates one approved fact*: same polarity, every concrete
-    compliance term and every product / deployment scope word and year in the claim also appear
-    in that fact, and — when the fact is scoped to a product — the claim names that product. So
-    with "Nutrient Workflow: SOC 2 Type II report …" approved, "Workflow has a SOC 2 report" passes,
-    while "Nutrient SDK is SOC 2 certified", "Nutrient is SOC 2 certified" (unscoped), "SOC 2 Type I"
+    compliance term, status word ("certified" vs "report"), date and year in the claim also appear in
+    that fact, and the claim's product / deployment scope equals the fact's. So with "Nutrient Workflow
+    (Enhanced Cloud): SOC 2 Type II report …" approved, "Nutrient Workflow (Enhanced Cloud) has a SOC 2
+    Type II report" passes, while "Nutrient Workflow has a SOC 2 report" (deployment dropped),
+    "…is SOC 2 Type II certified" (report ≠ certified), "Nutrient SDK is SOC 2 certified", "SOC 2 Type I"
     and "We do not hold …" (polarity) are all gated. Presence of a word elsewhere is never support.
     """
     terms = _claim_terms(sentence, controls=controls)
@@ -266,10 +302,12 @@ def _unsupported_terms(sentence: str, approved_body: str | None, controls: bool 
         return terms
     pol, scope, years = _polarity(sentence), _scope_terms(sentence), _date_terms(sentence)
     for f_pol, f_terms, f_scope, f_years in _approved_facts(approved_body):
-        if f_pol != pol or not specific <= f_terms or not scope <= f_scope or not years <= f_years:
+        if f_pol != pol or not specific <= f_terms or not years <= f_years:
             continue
-        if f_scope and not scope:
-            continue  # the fact is scoped to a product/deployment; an unscoped claim over-generalises it
+        # Scope must match exactly: a claim may neither add a product/deployment the fact does not cover
+        # nor drop one the fact is limited to ("Nutrient Workflow (Enhanced Cloud)" ≠ "Nutrient Workflow").
+        if scope != f_scope:
+            continue
         return set()
     return specific
 
@@ -553,9 +591,10 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
     win_themes = _norm_list(raw.get("win_themes"), 8)
     assumptions = _norm_list(raw.get("assumptions"), 20)
     approved_body = comp["facts"] if comp["approved"] else None
-    exec_summary, _ = _gate_compliance_prose(exec_summary, approved_body)
-    win_themes = [_gate_compliance_prose(t, approved_body)[0] for t in win_themes]
-    assumptions = [_gate_compliance_prose(a, approved_body)[0] for a in assumptions]
+    # Overview prose is customer-facing with no requirement context, so security controls count as claims here.
+    exec_summary, _ = _gate_compliance_prose(exec_summary, approved_body, controls=True)
+    win_themes = [_gate_compliance_prose(t, approved_body, controls=True)[0] for t in win_themes]
+    assumptions = [_gate_compliance_prose(a, approved_body, controls=True)[0] for a in assumptions]
     exec_summary, _ = _gate_pricing_prose(exec_summary)
     win_themes = [_gate_pricing_prose(t)[0] for t in win_themes]
     assumptions = [_gate_pricing_prose(a)[0] for a in assumptions]
