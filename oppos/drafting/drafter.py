@@ -191,15 +191,30 @@ def _status_tokens(sentence: str) -> set[str]:
 _CLAUSE_BREAK_RE = re.compile(r"[,;:()]|\b(and|but|while|although|whereas|except|however|nor)\b", re.I)
 
 
-def _term_polarity(sentence: str, start: int) -> str:
-    """Polarity of the term starting at `start`: "neg" only when a negation word precedes it within the
-    same clause (up to 60 chars back). "SOC 2 report has no exceptions" keeps SOC 2 positive; "does not
-    hold FedRAMP", "No HIPAA BAA is offered" and "do not claim FedRAMP" are negative."""
-    window = sentence[max(0, start - 60):start]
-    cut = [m.end() for m in _CLAUSE_BREAK_RE.finditer(window)]
+# A negated predicate after the term ("FedRAMP authorization is not held", "a BAA is not offered") also
+# negates it — but only predicate forms, so "SOC 2 report has no exceptions" keeps SOC 2 positive.
+_PRED_NEG_RE = re.compile(
+    r"\b(is|are|was|were|be|been|being)\s+(not|no longer|never)\b|\b(isn't|aren't|wasn't|weren't)\b"
+    r"|\bnot (held|offered|available|supported|provided|in place|applicable|covered|included|maintained|certified|authori[sz]ed"
+    r"|accredited|attested|signed|enabled|enforced|required|possible|planned|pursued|obtained)\b", re.I)
+
+
+def _term_polarity(sentence: str, start: int, end: int | None = None) -> str:
+    """Polarity of the term at [start, end): "neg" when a negation word precedes it within the same clause
+    (up to 60 chars back) or a negated predicate follows it within the clause ("… is not held for …").
+    "SOC 2 report has no exceptions" keeps SOC 2 positive; "does not hold FedRAMP", "No HIPAA BAA is
+    offered", "do not claim FedRAMP" and "FedRAMP authorization is not held" are negative."""
+    before = sentence[max(0, start - 60):start]
+    cut = [m.end() for m in _CLAUSE_BREAK_RE.finditer(before)]
     if cut:
-        window = window[cut[-1]:]
-    return "neg" if _NEGATION_RE.search(window) else "pos"
+        before = before[cut[-1]:]
+    if _NEGATION_RE.search(before):
+        return "neg"
+    after = sentence[(end if end is not None else start):(end if end is not None else start) + 80]
+    brk = _CLAUSE_BREAK_RE.search(after)
+    if brk:
+        after = after[:brk.start()]
+    return "neg" if _PRED_NEG_RE.search(after) else "pos"
 
 
 def _claim_terms_pol(sentence: str, controls: bool = False) -> set[tuple[str, str]]:
@@ -212,10 +227,10 @@ def _claim_terms_pol(sentence: str, controls: bool = False) -> set[tuple[str, st
     out: set[tuple[str, str]] = set()
     if controls:
         for m in _CONTROL_RE.finditer(sentence):
-            out.add((re.sub(r"[\s.-]+", "", m.group(0).lower()), _term_polarity(sentence, m.start())))
+            out.add((re.sub(r"[\s.-]+", "", m.group(0).lower()), _term_polarity(sentence, m.start(), m.end())))
     for m in _COMPLIANCE_RE.finditer(sentence):
         full = re.sub(r"[\s.-]+", "", m.group(0).lower())
-        pol = _term_polarity(sentence, m.start())
+        pol = _term_polarity(sentence, m.start(), m.end())
         if full.startswith("encrypt"):  # encrypts / encrypted / encryption → one base term + the qualifier
             out.add(("encryption", pol))
             for q in ("atrest", "intransit"):
@@ -231,7 +246,7 @@ def _claim_terms_pol(sentence: str, controls: bool = False) -> set[tuple[str, st
             w = re.sub(r"[\s-]+", "", m.group(0).lower())
             for prefix, canon in _STATUS_CANON.items():
                 if w.startswith(prefix):
-                    out.add((f"s:{canon}", _term_polarity(sentence, m.start())))
+                    out.add((f"s:{canon}", _term_polarity(sentence, m.start(), m.end())))
                     break
     return out
 
@@ -493,14 +508,16 @@ def _rfp_text(opp: dict[str, Any], attachment_text: str, extracted: dict[str, An
         (opp.get("description") or "").strip(),
     ]
     pre = format_for_prompt(extracted) if extracted else ""
-    if pre:
-        parts += ["", pre]
     att = (attachment_text or opp.get("attachment_text") or "").strip()
-    if att:
-        parts += ["", "=== RFP DOCUMENTS (extracted text) ===", att]
-    text = "\n".join(parts)
-    if len(text) > MAX_RFP_CHARS:
-        text = text[:MAX_RFP_CHARS] + "\n\n[... RFP text truncated for length ...]"
+    # The pre-extracted requirements are what the model must answer, so they are never cut; only the
+    # free-form description + attachment text is truncated to fit the budget that remains.
+    head = "\n".join(parts[:-1])
+    desc = parts[-1]
+    budget = MAX_RFP_CHARS - len(head) - len(pre) - 400
+    free = desc + ("\n\n=== RFP DOCUMENTS (extracted text) ===\n" + att if att else "")
+    if len(free) > budget:
+        free = free[:max(budget, 0)] + "\n\n[... RFP text truncated for length ...]"
+    text = head + "\n" + free + (("\n\n" + pre) if pre else "")
     return text
 
 
@@ -662,7 +679,8 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
         "executive_summary": exec_summary,
         "win_themes": win_themes,
         "requirements": reqs_out,
-        "open_questions": _norm_list(raw.get("open_questions"), 20) + [
+        "open_questions": [_gate_pricing_prose(_gate_compliance_prose(q, approved_body, controls=True)[0])[0]
+                           for q in _norm_list(raw.get("open_questions"), 20)] + [
             f"Conflicting {c['field'].replace('_', ' ')} across files — {c['kept_file']} says \"{c['kept']}\" but {c['other_file']} says \"{c['other']}\"; confirm which applies."
             for c in ((extracted or {}).get("solicitation_conflicts") or [])][:5],
         "assumptions": assumptions,

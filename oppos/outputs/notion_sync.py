@@ -481,14 +481,31 @@ def update_pipeline_status(source_id: str, status: str, notes: str = "") -> bool
         return False
 
 
+def _count_children(client: Any, page_id: str) -> int:
+    """Number of top-level blocks on the page (paginated)."""
+    n, cursor = 0, None
+    while True:
+        res = client.blocks.children.list(block_id=page_id, start_cursor=cursor, page_size=100) if cursor else \
+            client.blocks.children.list(block_id=page_id, page_size=100)
+        n += len(res.get("results") or [])
+        if not res.get("has_more"):
+            return n
+        cursor = res.get("next_cursor")
+
+
 def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int = 0,
-                          on_batch: Any = None) -> dict[str, Any]:
+                          on_batch: Any = None, base_children: int | None = None) -> dict[str, Any]:
     """Append the AI draft to an existing Notion page in 100-block batches.
 
     Resumable: pass `start_batch` to continue after a partial failure (the caller persists
-    progress via `on_batch(done, total)`), so a retry never re-appends earlier batches.
-    Returns {"ok": bool, "done": batches_appended, "total": batches, "error": str | None,
-             "checkpoint_failed": True when a batch was appended but on_batch raised — resume from `done`}.
+    progress via `on_batch(done, total, base_children)`), so a retry never re-appends earlier
+    batches. `base_children` is the page's block count before our first batch; with it, an
+    ambiguous failure (Notion accepted the batch but the response was lost) is reconciled by
+    re-counting the page instead of guessing, and a resumed run first checks whether its next
+    batch already landed.
+    Returns {"ok": bool, "done": batches_appended, "total": batches, "base": base_children, "error": str | None,
+             "checkpoint_failed": True when a batch was appended but on_batch raised — resume from `done`,
+             "ambiguous": True when the page could not be re-counted after a failed call — check the page}.
     """
     if not page_id:
         return {"ok": False, "done": 0, "total": 0, "error": "no page id"}
@@ -540,30 +557,63 @@ def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int 
             children.append(_heading(3, title))
             children += [_bullet(x) for x in items]
     batches = [children[i:i + 100] for i in range(0, len(children), 100)]
+    total = len(batches)
     done = start_batch
-    if done >= len(batches) and on_batch:
+    expected_after = [sum(len(b) for b in batches[:i + 1]) for i in range(total)]  # our blocks on the page after batch i
+
+    if base_children is None:
+        try:
+            now = _count_children(client, page_id)
+            base_children = now - (expected_after[start_batch - 1] if start_batch else 0)
+        except Exception as e:  # counting is best effort — without it we fall back to the checkpoint alone
+            logger.warning("Notion: could not count page children (%s); proceeding without reconciliation", e)
+
+    def _landed(i: int) -> bool | None:
+        """True/False if batch i is (not) on the page per a fresh count; None if the page cannot be counted."""
+        if base_children is None:
+            return None
+        try:
+            return _count_children(client, page_id) >= base_children + expected_after[i]
+        except Exception:
+            return None
+
+    def _checkpoint(d: int) -> dict[str, Any] | None:
+        if not on_batch:
+            return None
+        try:
+            on_batch(d, total, base_children)
+            return None
+        except Exception as e:
+            logger.error("Notion draft append: batch %d/%d appended but progress could not be saved: %s", d, total, e)
+            return {"ok": False, "done": d, "total": total, "base": base_children, "checkpoint_failed": True,
+                    "error": f"batch {d} was appended but progress could not be saved ({str(e)[:160]})"}
+
+    if done >= total:
         # Resuming after the final batch already landed but its checkpoint did not: persist completion now,
         # otherwise the UI keeps offering Append/Resume and a later click would duplicate the draft.
-        try:
-            on_batch(len(batches), len(batches))
-        except Exception as e:
-            return {"ok": False, "done": len(batches), "total": len(batches), "checkpoint_failed": True,
-                    "error": f"all {len(batches)} batches are appended but completion could not be saved ({str(e)[:160]})"}
-    for batch in batches[start_batch:]:
-        try:
-            client.blocks.children.append(block_id=page_id, children=batch)
-        except Exception as e:
-            logger.error("Notion draft append failed at batch %d/%d: %s", done + 1, len(batches), e)
-            return {"ok": False, "done": done, "total": len(batches), "error": str(e)[:300]}
-        done += 1
-        if on_batch:
+        failed = _checkpoint(total)
+        return failed or {"ok": True, "done": total, "total": total, "base": base_children, "error": None}
+
+    for i in range(start_batch, total):
+        if i == start_batch and start_batch and _landed(i) is True:
+            logger.info("Notion: batch %d/%d already on the page (reconciled) — skipping", i + 1, total)
+        else:
             try:
-                on_batch(done, len(batches))
+                client.blocks.children.append(block_id=page_id, children=batches[i])
             except Exception as e:
-                # The batch IS on the page but the checkpoint was not saved: stop here and tell the caller the true
-                # position, so a blind resume from the stale checkpoint cannot re-append it.
-                logger.error("Notion draft append: batch %d/%d appended but progress could not be saved: %s", done, len(batches), e)
-                return {"ok": False, "done": done, "total": len(batches), "checkpoint_failed": True,
-                        "error": f"batch {done} was appended but progress could not be saved ({str(e)[:160]})"}
-    logger.info("Appended response draft to Notion page %s (%d blocks, %d batches)", page_id, len(children), len(batches))
-    return {"ok": True, "done": done, "total": len(batches), "error": None}
+                landed = _landed(i)
+                if landed is True:
+                    logger.warning("Notion append raised but batch %d/%d is on the page (%s) — continuing", i + 1, total, e)
+                elif landed is None:
+                    logger.error("Notion draft append failed at batch %d/%d and the page could not be re-counted: %s", i + 1, total, e)
+                    return {"ok": False, "done": done, "total": total, "base": base_children, "ambiguous": True,
+                            "error": f"{str(e)[:200]} — the page could not be re-counted, so batch {i + 1} may or may not be there"}
+                else:
+                    logger.error("Notion draft append failed at batch %d/%d: %s", i + 1, total, e)
+                    return {"ok": False, "done": done, "total": total, "base": base_children, "error": str(e)[:300]}
+        done = i + 1
+        failed = _checkpoint(done)
+        if failed:
+            return failed
+    logger.info("Appended response draft to Notion page %s (%d blocks, %d batches)", page_id, len(children), total)
+    return {"ok": True, "done": done, "total": total, "base": base_children, "error": None}

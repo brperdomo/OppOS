@@ -1921,9 +1921,9 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
                              disabled=bool(_prog.get("complete") and _prog.get("generated_at") == _draft.get("generated_at"))):
                     from oppos.outputs.notion_sync import append_response_draft
                     from oppos.storage.db import save_draft as _save_draft
-                    def _on_batch(done: int, total: int) -> None:
+                    def _on_batch(done: int, total: int, base: int | None = None) -> None:
                         _draft["notion_append"] = {"page_id": str(npid), "generated_at": _draft.get("generated_at"),
-                                                   "done": done, "total": total, "complete": done >= total}
+                                                   "done": done, "total": total, "complete": done >= total, "base": base}
                         _save_draft(sid, _draft)
                     # If a batch landed on the page but its checkpoint could not be saved, the true position is kept
                     # for this session so the next click resumes from there instead of the stale persisted one.
@@ -1932,12 +1932,17 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
                     _start = _prog.get("done", 0) if _resume else 0
                     if _sess.get("page_id") == str(npid) and _sess.get("generated_at") == _draft.get("generated_at"):
                         _start = max(_start, int(_sess.get("done", 0)))
-                    res = append_response_draft(str(npid), _draft, start_batch=_start, on_batch=_on_batch)
+                    res = append_response_draft(str(npid), _draft, start_batch=_start, on_batch=_on_batch,
+                                                base_children=(_prog.get("base") if _resume else None))
                     if res["ok"]:
                         st.session_state.pop(_sess_key, None)
                         _add_event(sid, CURRENT_USER.get("email", ""), "draft_notion", f"Draft appended to Notion page ({res['total']} batches)")
                         st.success("Draft appended to the Notion page")
                         st.rerun()
+                    elif res.get("ambiguous"):
+                        st.error(f"Notion append stopped at batch {res['done'] + 1}/{res['total']}: {res['error']}. "
+                                 "Open the Notion page and check whether the last section is complete before clicking again — "
+                                 "the next attempt re-counts the page first and skips the batch if it is already there.")
                     elif res.get("checkpoint_failed"):
                         st.session_state[_sess_key] = {"page_id": str(npid), "generated_at": _draft.get("generated_at"), "done": res["done"]}
                         st.error(f"Notion append paused after batch {res['done']}/{res['total']}: {res['error']}. "
