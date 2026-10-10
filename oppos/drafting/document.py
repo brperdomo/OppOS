@@ -105,6 +105,8 @@ def _cell(text: Any, limit: int = 220) -> str:
 def status_of(req: dict[str, Any]) -> str:
     """Review status of one drafted requirement, from its markers and basis."""
     resp = str(req.get("response") or "").lstrip()
+    if not resp:
+        return "Not drafted"  # an empty answer is rendered as [NOT DRAFTED] in the body; the matrix must agree
     if resp.startswith(SECURITY_MARK):
         return "Security to confirm"
     if resp.startswith(SALES_MARK):
@@ -238,8 +240,11 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
     w("## Submission details")
     w("")
     method = _known(pursuit.get("submission_method")) or _known(sub.get("method")) or _known(opp.get("submission_method")) or "unknown"
-    if _known(pursuit.get("portal")) and pursuit["portal"].lower() not in method.lower():
-        method = f"{method} ({pursuit['portal']})"
+    # The pursuit's `portal` is the acquisition source key (set for every pursuit); it only names the
+    # submission destination when the SDR chose a portal submission.
+    portal = _known(pursuit.get("portal_name")) or _known(pursuit.get("portal"))
+    if method.lower() == "portal" and portal and portal.lower() not in method.lower():
+        method = f"portal ({portal.replace('_', ' ')})"
     deadline = _known(pursuit.get("submission_deadline")) or _known(sub.get("deadline")) or _known(opp.get("response_deadline")) or "unknown"
     w(f"- **Method:** {method}")
     w(f"- **Deadline:** {deadline}")
