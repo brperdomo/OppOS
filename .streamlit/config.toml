@@ -5,3 +5,8 @@ backgroundColor = "#1a1414"
 secondaryBackgroundColor = "#231e1e"
 textColor = "#efebe7"
 font = "sans serif"
+
+[server]
+# Serves oppos/dashboard/static/ at /app/static/ — the Document Authoring editor page needs a real URL
+# (a srcdoc component iframe has no hostname, so a domain-bound license cannot validate).
+enableStaticServing = true

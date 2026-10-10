@@ -37,6 +37,7 @@ to pursue RFPs under your own identity while developing.
 | `SLACK_WEBHOOK_URL` | Fallback alerts when no bot token |
 | `SLACK_BOT_TOKEN` | Enables channel-per-pursuit, invites, pins, digest, reminders (see Slack app below) |
 | `NUTRIENT_API_KEY` | OCR / document processing for attachments |
+| `DOCAUTH_LICENSE_KEY` | Optional. Nutrient Document Authoring SDK license for the in-app response editor and DOCX / PDF export; without it (or if the key is rejected) the evaluation build adds a watermark. Web keys are bound to the hostname — register `nutrient-opp-os.streamlit.app` and `localhost` in Licensor. The editor page is served from `oppos/dashboard/static/` (`server.enableStaticServing` in `.streamlit/config.toml`) so the iframe carries the real hostname |
 | `KAPA_MCP_URL`, `KAPA_API_KEY` | Optional. Kapa hosted MCP server (`https://<subdomain>.mcp.kapa.ai`) + project API key: Stage 2 can search Nutrient docs to confirm capability claims and cites `doc: <url>` in evidence. Falls back to ungrounded scoring on error |
 
 ### GitHub repository variables (`vars`)
@@ -81,8 +82,9 @@ The app has three pages (top navigation): **Find RFPs** (the shared pool — onl
    (Push to Notion · Salesforce Opp message · Submitted · Won/Lost · Abandon), and an activity log.
 4. Reminders post to the pursuit channel at T-14/7/3/1, due, overdue, Q&A T-3/T-1, and after 7 idle days.
 5. **Draft response** (on a pursuit you own) — one grounded call extracts every requirement/question in the RFP (description + loaded attachments), drafts an answer per item against the LOB profile (and Nutrient docs via Kapa when configured), tags each with confidence and basis (rfp / profile / docs / compliance / needs human), and lists open questions, assumptions and things we must not claim. Review it inline, then **Append to Notion** adds it to the pursuit's page. Security/compliance answers come only from `oppos/drafting/compliance.md` once the security team sets `approved: true`; until then they read `[SECURITY TO CONFIRM]`. Pricing is always `[SALES TO PROVIDE]`.
-6. **Portal registrations** (admins) — keep status / vendor ID / who holds the login / lead time per portal. Never store passwords.
-7. **Settings** (admins) — exclude sources: hidden from every list, skipped by scans, never alerted; one click archives their remaining active items. Use it to retire a source (e.g. an aggregator) without deleting history.
+6. **Response document** — the draft laid into our submitted-response skeleton (executive summary → answers under the RFP's own sections → project team / methodology / past experience → Appendix A requirements matrix → Appendix B security evidence package → Appendix C internal notes to remove before submission). Download it as Markdown, or open the in-browser editor (Nutrient Document Authoring SDK) to edit and export DOCX, PDF or PDF/A. Boilerplate lives in `oppos/drafting/boilerplate/` (`common.md` + one file per LOB). Headless: `node scripts/export_response.mjs response.md --docx --pdf`.
+7. **Portal registrations** (admins) — keep status / vendor ID / who holds the login / lead time per portal. Never store passwords.
+8. **Settings** (admins) — exclude sources: hidden from every list, skipped by scans, never alerted; one click archives their remaining active items. Use it to retire a source (e.g. an aggregator) without deleting history.
 
 ## Scoring model
 

@@ -39,7 +39,7 @@ for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHRO
 
 from oppos.auth import auth_configured, logout_button, require_login
 from oppos.scoring.schema import lob_label, point_claim, point_evidence, points_text
-from oppos.config import DB_PATH, SOURCE_STATE_MAP
+from oppos.config import DB_PATH, DOCAUTH_LICENSE_KEY, SOURCE_STATE_MAP
 from oppos.sources.registry import list_available
 from oppos.storage.db import check_deadlines, get_all_scored, get_by_pipeline_status, get_meta, init_db, set_meta, set_pipeline_status
 
@@ -2013,6 +2013,28 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
                     st.markdown(f'<div class="detail-label" style="margin-top:14px;">{_title}</div>', unsafe_allow_html=True)
                     for x in _items:
                         st.markdown(f'<div class="gap-item">• {_esc(x)}</div>', unsafe_allow_html=True)
+
+    # ── Response document (Nutrient Document Authoring) ───────
+    if _draft:
+        from oppos.dashboard.docauth import DOCAUTH_VERSION, response_editor
+        from oppos.drafting.document import render_markdown, file_stem
+        _md = render_markdown(_draft, opp, author=CURRENT_USER.get("name", ""), pursuit=pursuit)
+        _stem = file_stem(opp)
+        with st.expander("Response document  ·  edit and export"):
+            st.caption("The draft laid into our submitted-response skeleton: executive summary, answers under the RFP's own sections, "
+                       "delivery boilerplate, requirements matrix (Appendix A), security evidence package (Appendix B) and internal "
+                       "notes to remove before submission (Appendix C). Review markers stay visible in the document.")
+            rc1, rc2, rc3 = st.columns([1, 1, 3])
+            with rc1:
+                st.download_button("⬇ Markdown", data=_md, file_name=f"{_stem}.md", mime="text/markdown",
+                                   key=f"{k}_doc_md", use_container_width=True)
+            with rc2:
+                _open = st.toggle("Open editor", key=f"{k}_doc_editor", help="Loads the Nutrient Document Authoring editor in the browser; nothing is uploaded.")
+            with rc3:
+                st.caption(f"Editor and DOCX / PDF / PDF-A export: Nutrient Document Authoring SDK {DOCAUTH_VERSION}"
+                           + ("" if DOCAUTH_LICENSE_KEY else " · evaluation build (watermark) until DOCAUTH_LICENSE_KEY is set"))
+            if _open:
+                response_editor(_md, _stem, DOCAUTH_LICENSE_KEY)
 
     # ── Activity ───────────────────────────────────────────────
     with st.expander("Activity"):

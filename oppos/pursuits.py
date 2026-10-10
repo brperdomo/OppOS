@@ -291,10 +291,17 @@ def start_pursuit(opp: dict[str, Any], reason: str, user: dict[str, Any],
     return result
 
 
+DETAIL_FIELDS = ("submission_deadline", "qa_deadline", "submission_method", "portal")
+
+
 def save_pursuit_fields(sid: str, user: dict[str, Any], **fields: Any) -> None:
     """Persist edited pursuit fields and log a compact change event."""
     before = get_pursuit(sid) or {}
     changed = {k: v for k, v in fields.items() if (before.get(k) or None) != (v or None)}
+    # Saving the details form (even unchanged) makes the pursuit's deadlines / method / portal authoritative over
+    # whatever the draft or extraction captured — including an explicit "unknown" or a cleared date.
+    if any(k in fields for k in DETAIL_FIELDS) and not before.get("details_saved_at"):
+        changed["details_saved_at"] = datetime.utcnow().isoformat(timespec="seconds")
     if not changed:
         return
     update_pursuit(sid, **changed)
