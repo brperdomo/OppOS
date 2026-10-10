@@ -77,7 +77,9 @@ _PRICING_RE = re.compile(
     r"|\b(?:annual|yearly|monthly|quarterly|one[- ]time|recurring|implementation|setup|set-up|onboarding|licen[cs]e|licen[cs]ing|subscription|maintenance|support|hosting|training|professional services|total|estimated|all-in) (?:cost|costs|fee|fees|price|prices|pricing|charge|charges)\b"
     r"|\b(?:cost|costs|fee|fees|price|prices) (?:of|is|are|for|per|will be|would be|starts? at)\b|\bno (?:additional|extra|hidden) (?:cost|costs|fee|fees|charge|charges)\b|\bfree of charge\b|\bat no (?:cost|charge)\b"
     r"|\bper[- ](?:user|seat|named user|page|document|transaction)(?: per (?:month|year))?\b|\blicen[cs]e fee|\bsubscription fee|\bdiscount(?:s|ed|ing)?\b|\bTCO\b"
-    r"|\bunit (?:cost|price)s?\b|\b(?:cost|price|pricing|rate) (?:schedule|sheet|proposal|breakdown)\b|\bbid (?:price|amount)s?\b|\bfreight (?:charge|cost)s?\b|\bhourly rate|\bnot[- ]to[- ]exceed\b",
+    r"|\bunit (?:cost|price)s?\b|\b(?:cost|price|pricing|rate) (?:schedule|sheet|proposal|breakdown)\b|\bbid (?:price|amount)s?\b|\bfreight (?:charge|cost)s?\b|\bnot[- ]to[- ]exceed\b"
+    r"|\b(?:hourly|daily|weekly|monthly|annual|blended|consultant|consulting|labou?r|billing|billable|standard|professional[- ]services|day|per[- ]day|per[- ]hour) rates?\b"
+    r"|\brate cards?\b|\bper[- ]diem\b|\btime[- ]and[- ]materials\b|\bT&M\b",
     re.I,
 )
 # Substantive commercial conditions that sales / legal set — never drafted, even without a price.
@@ -218,37 +220,79 @@ def _term_polarity(sentence: str, start: int, end: int | None = None) -> str:
     return "neg" if _PRED_NEG_RE.search(after) else "pos"
 
 
+_RESIDENCY_RE = re.compile(
+    r"\b(?:US|U\.S\.|United States|domestic|CONUS|US-based|onshore)[- ]?(?:based |only |hosted )?(?:data ?cent(?:er|re)s?|hosting|regions?|servers?|cloud|facilit(?:y|ies))\b"
+    r"|\b(?:data ?cent(?:er|re)s?|hosted|hosting|servers?|data (?:resides|is stored|residency|stays))\s+(?:in|within|located in|inside) the (?:US|U\.S\.|United States|continental US|CONUS)\b"
+    r"|\bUS[- ]based\b|\bonshore\b", re.I)
+# Quantities attached to a control ("RTO of 24 hours", "99.9% uptime", "30-day retention") are part of the claim.
+_QUANTITY_RE = re.compile(r"\b(\d+(?:[.,]\d+)?)[- ]?(hours?|hrs?|minutes?|mins?|seconds?|secs?|days?|weeks?|months?|years?|%|percent|bits?|GB|TB|MB)\b", re.I)
+_UNIT_CANON = {"hr": "hour", "hrs": "hour", "min": "minute", "mins": "minute", "sec": "second", "secs": "second", "%": "percent"}
+# Verbs that start a new predicate: a coordinated noun list without one of these inherits the governing negation.
+_VERB_RE = re.compile(
+    r"\b(is|are|was|were|be|been|has|have|had|does|do|did|will|can|must|shall|may|should|supports?|provides?|offers?|holds?|includes?"
+    r"|maintains?|uses?|encrypts?|requires?|performs?|conducts?|undergoes|signs?|claims?|operates?|runs?|stores?|hosts?|keeps?|retains?)\b", re.I)
+_HARD_BREAK_RE = re.compile(r"[;:.]|\b(but|while|although|whereas|except|however|yet)\b", re.I)
+
+
+def _quantity_token(num: str, unit: str) -> str:
+    n = num.replace(",", "")
+    if "." in n:
+        n = n.rstrip("0").rstrip(".")
+    u = unit.lower()
+    u = _UNIT_CANON.get(u, u.rstrip("s") if u not in ("%",) else "percent")
+    return f"q:{n}{u}"
+
+
 def _claim_terms_pol(sentence: str, controls: bool = False) -> set[tuple[str, str]]:
     """{(term, polarity)} for the concrete compliance terms a sentence asserts (SOC 2, FedRAMP, HIPAA,
-    encryption, …), normalised, plus — when a concrete standard is named — the status words attached to
-    it ("s:certified", "s:report"). A qualified term yields its base too ("SOC 2 Type II" → soc2typeii +
-    soc2) so a fact that states the type supports a claim that omits it, never the reverse. With
-    `controls`, security controls (MFA, SSO, backups, audit logs, TLS …) count as claims as well.
-    Polarity is bound to each term's own clause, not the whole sentence."""
-    out: set[tuple[str, str]] = set()
+    encryption, US data centers, …), normalised, plus — when a concrete standard or control is named — the
+    status words ("s:certified", "s:report") and quantities ("q:24hour", "q:99.9percent") attached to it.
+    A qualified term yields its base too ("SOC 2 Type II" → soc2typeii + soc2) so a fact that states the
+    type supports a claim that omits it, never the reverse. With `controls`, security controls (MFA, SSO,
+    backups, audit logs, TLS …) count as claims as well.
+    Polarity is bound per term (own clause, preceding negation or negated predicate), and a coordinated
+    list inherits the governing negation: "does not support FedRAMP and StateRAMP" leaves both negative."""
+    entries: list[tuple[str, int, int]] = []
     if controls:
         for m in _CONTROL_RE.finditer(sentence):
-            out.add((re.sub(r"[\s.-]+", "", m.group(0).lower()), _term_polarity(sentence, m.start(), m.end())))
+            entries.append((re.sub(r"[\s.-]+", "", m.group(0).lower()), m.start(), m.end()))
     for m in _COMPLIANCE_RE.finditer(sentence):
         full = re.sub(r"[\s.-]+", "", m.group(0).lower())
-        pol = _term_polarity(sentence, m.start(), m.end())
         if full.startswith("encrypt"):  # encrypts / encrypted / encryption → one base term + the qualifier
-            out.add(("encryption", pol))
+            entries.append(("encryption", m.start(), m.end()))
             for q in ("atrest", "intransit"):
                 if full.endswith(q):
-                    out.add(("encryption" + q, pol))
+                    entries.append(("encryption" + q, m.start(), m.end()))
             continue
-        out.add((full, pol))
+        entries.append((full, m.start(), m.end()))
         base = re.match(r"(soc[123]|fedramp|wcag)", full)
         if base and base.group(1) != full:
-            out.add((base.group(1), pol))
-    if {t for t, _ in out} - _GENERIC_COMPLIANCE_TERMS:
+            entries.append((base.group(1), m.start(), m.end()))
+    for m in _RESIDENCY_RE.finditer(sentence):
+        entries.append(("usdatacenter", m.start(), m.end()))
+    specific_present = bool({t for t, _, _ in entries} - _GENERIC_COMPLIANCE_TERMS)
+    if specific_present:
         for m in _STATUS_RE.finditer(sentence):
             w = re.sub(r"[\s-]+", "", m.group(0).lower())
             for prefix, canon in _STATUS_CANON.items():
                 if w.startswith(prefix):
-                    out.add((f"s:{canon}", _term_polarity(sentence, m.start(), m.end())))
+                    entries.append((f"s:{canon}", m.start(), m.end()))
                     break
+        for m in _QUANTITY_RE.finditer(sentence):
+            entries.append((_quantity_token(m.group(1), m.group(2)), m.start(), m.end()))
+    entries.sort(key=lambda e: (e[1], e[2]))
+    out: set[tuple[str, str]] = set()
+    prev_end: int | None = None
+    prev_pol = "pos"
+    for term, start, end in entries:
+        pol = _term_polarity(sentence, start, end)
+        if pol == "pos" and prev_end is not None and prev_pol == "neg":
+            gap = sentence[prev_end:start]
+            if start >= prev_end and len(gap) <= 60 and not _VERB_RE.search(gap) and not _HARD_BREAK_RE.search(gap):
+                pol = "neg"  # "neither FedRAMP nor StateRAMP", "not FedRAMP and StateRAMP authorization"
+        out.add((term, pol))
+        if prev_end is None or end >= prev_end:
+            prev_end, prev_pol = end, pol
     return out
 
 
