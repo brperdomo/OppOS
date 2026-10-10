@@ -9,8 +9,10 @@ investigate/skip until a vetted profile exists.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
+import re
 from typing import Any
 
 import anthropic
@@ -110,7 +112,10 @@ For fit_score (0-100):
 
 ## Evidence rules (strict)
 - Every strength and every risk MUST carry `evidence`: a short verbatim quote (25 words or fewer) from the RFP text that supports it. If nothing in the RFP supports it directly, write exactly "inferred" — never paraphrase and present it as a quote.
-- Put anything that matters but is not stated in the RFP into `knowledge_gaps` (e.g. "hosting requirements not stated", "incumbent vendor unknown", "user counts not given"). Never fill a gap with a guess.
+- A **risk is something the RFP states** that works against us: a required certification we lack, a mandated platform or integration we do not support, a scope outside the profile, a disqualifying term. It must quote the RFP.
+- Anything the RFP does **not** state goes in `knowledge_gaps`, not `risks` — "may require X", "integration with Y not confirmed", "no customer reference in this vertical", "scoring criteria unknown", "needs investigation" are all gaps. Never fill a gap with a guess, and never list a speculation as a risk.
+- Procurement stage is context, not risk: an RFI, market-research notice or sources-sought is a normal entry point for us. Mention the stage in `summary`; do not list it as a risk and do not lower the score for it. Likewise never penalise a tight deadline or an unstated budget.
+- Score what the RFP asks for against what the profile offers. Unknowns do not lower `fit_score`; they make the assessment less certain, which you express through `knowledge_gaps` and a lower `fit_tier` only when the gaps are material.
 - Never invent certifications, customers, pricing, or capabilities that are not in the profile above. If the RFP asks for something the profile does not cover, that is a risk, not a strength.
 - Never state prices, list prices, or dollar figures in your output, even if the profile mentions them — pricing is handled by sales. Describe pricing posture qualitatively (e.g. "quote-based on-prem licensing", "usage-metered cloud tier") only when it affects fit.
 """
@@ -391,14 +396,213 @@ def _tier_for(score: int) -> int:
     return 1 if score >= 80 else 2 if score >= 60 else 3
 
 
-def _normalize_stage2(result: dict[str, Any], lob: LOB) -> dict[str, Any]:
+# Risks written in these terms are speculation about what the RFP does not say — they belong in
+# knowledge_gaps, however the model labelled them. A claim *about* the procurement stage ("this is
+# only an RFI", "market research phase, no award") is context, never a risk — but a requirement an
+# RFI states ("the RFI mandates an Oracle Forms integration") is still a risk when quoted.
+_SPECULATIVE_RISK_RE = re.compile(
+    r"(?<!\bthat )(?<!\bwhich )(?<!\bwho )\b(is|are|was|were|remains?) not (confirmed|stated|specified|named|provided|given|disclosed|mentioned|identified)\b"
+    r"(?=\s*(?:$|[,.;]|in the (?:rfp|rfi|rfq|solicitation|notice|documents?|attachments?)\b|at this|yet\b|anywhere|by the))"
+    r"|\bnot (specified|stated|disclosed|mentioned|identified|named) in the (rfp|rfi|rfq|solicitation|notice|documents?|attachments?)\b"
+    r"|\b(budget|volume|volumes|incumbent|timeline|scope|user counts?|page counts?|evaluation criteria|award date|contract term|licen[cs]ing model|deployment model|hosting model)"
+    r" (is |are |was |were )?not (confirmed|stated|specified|named|provided|given|disclosed|mentioned|identified)\b"
+    r"|\bnot yet (known|confirmed|stated|specified|determined|defined|decided|published|announced|available|clear)\b"
+    r"|\b(is|are|remains?|still|currently) unknown\b|\bunknown (whether|if|at this (time|stage|point))\b"
+    r"|\b(is|are|remains?|still|currently) unclear\b|\bunclear (whether|if|how|what|which|at this (time|stage|point))\b"
+    r"|\b(it|this|fit|scope|budget|volume|requirements?|timeline|incumbent|eligibility|compatibility|deployment model|hosting model|user counts?|licen[cs]ing model)"
+    r" (needs?|requires?|will need|would need) (further |additional )?(investigation|verification|confirmation|clarification)\b"
+    r"|\b(needs?|requires?) (further |additional )?(investigation|verification|confirmation|clarification) (with|from|by|during|before|at|via|through) (the |a )?(agency|buyer|customer|state|county|city|procurement|discovery|q&a|q ?and ?a|bid|pursuit|kickoff)\b"
+    r"|\b(we|nutrient|the profile|profile) (has|have|lacks?|shows?|cites?) no [^.;]{0,30}references?\b"
+    r"|\bno [^.;]{0,30}references? (in|for|from|within) (this|the|a|that) (vertical|industry|sector|segment|state|agency|use case|pattern|domain)\b"
+    r"|\bno [^.;]{0,30}references? (is |are |was |were )?(available|listed|cited|named|provided|known|given|identified)\b"
+    r"|\b(lack|lacks|lacking|without) (a |any |an )?[^.;]{0,30}references?\b"
+    r"|\bnot a (named|proven|listed) (vertical|pattern|industry)\b"
+    r"|\b(this|it) is (only |just |merely )?(an? |the )?(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b"
+    r"|\b(only|just|merely) (an? |the )?(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b"
+    r"|\b(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b.{0,60}"
+    r"\b(rather than|not (a|an) (solicitation|rfp|procurement|bid|commitment)|no (award|contract|guarantee|formal|obligation)"
+    r"|not yet (known|confirmed|determined|defined|decided|published|announced|available|funded|approved|issued)"
+    r"|may not (result|lead)|will not result|stage|phase|informational?|planning purposes|budgetary|does not (commit|obligate|constitute|guarantee))\b"
+    r"|\b(it|this) (cannot|can't|could not) be (confirmed|verified|determined|assessed)\b"
+    r"|\b(scope|budget|volume|requirements?|timeline|incumbent|eligibility|fit|compatibility|deployment model|hosting model|user counts?|licen[cs]ing model)"
+    r" (cannot|can't|could not) be (confirmed|verified|determined|assessed)\b"
+    r"|\b(cannot|can't|could not) be (confirmed|verified|determined|assessed) (from|in|based on|without|at this|until|yet|with the|given)\b",
+    re.I,
+)
+# A tight deadline is never a risk (scoring rule); the model occasionally writes one anyway.
+_DEADLINE_RISK_RE = re.compile(
+    r"\b((response|submission|proposal|bid|rfp|rfi|rfq|quote) (deadline|due date|window|period|time ?frame|timeline|turnaround)"
+    r"|deadline (to|for) (respond|submit|responses?|proposals?|bids?|submission|quotes?)|due date for (responses?|proposals?|bids?|quotes?)|days? (to|until) (respond|submit|the (response|submission) deadline))\b"
+    r".{0,80}\b(tight|short|compressed|aggressive|limited|insufficient|little time|only \d+ (business |calendar )?days|\d+ (business |calendar )?days (away|out|remaining|left)|constrain|pressure|risk)"
+    r"|\b(tight|short|compressed|aggressive|limited) (response|submission|proposal|bid) (deadline|window|timeline|time ?frame|turnaround)\b"
+    r"|\b\d+ (business |calendar )?days? to (respond|submit|prepare)\b"
+    r"|\b(only )?\d+ (business |calendar )?days? (remain|remaining|left|until|before|away)\b.{0,40}\b(deadline|due|respond|submit|response|submission|proposal|bid)\b"
+    r"|\b(deadline|due date|due|respond|submit|response|submission|proposal)\b.{0,60}\b(only )?\d+ (business |calendar )?days? (remain|remaining|left)\b"
+    r"|\b(deadline|due date|due|respond|submit|response|submission|proposal)\b.{0,60}\bonly \d+ (business |calendar )?days\b",
+    re.I,
+)
+# Contract-performance timing (remediation, implementation, go-live, SLAs) is a real requirement, not
+# the bid-response window — never demoted by the deadline rule.
+_CONTRACT_TIMING_RE = re.compile(
+    r"\b(remediation|remediate|implementation|go[- ]live|delivery|cure|onboarding|migration|cutover|transition|rollout|deployment|warranty|retention|support)"
+    r"[- ](deadline|timeline|window|schedule|period|date|time ?frame|milestone|term)s?\b"
+    r"|\b(SLA|service[- ]level|uptime|availability|RTO|RPO|recovery time|recovery point|resolution time|response time|time to (resolve|restore|respond|acknowledge))\b"
+    r"|\bwithin \d+ (hours?|minutes?|business days?|calendar days?|days?) (of|after|from) (notice|notification|detection|discovery|award|contract|incident|outage|request|receipt)\b"
+    r"|\b\d+[- ](hour|minute|day|week)s? (remediation|implementation|go[- ]live|delivery|cure|recovery|resolution|response|restore)\b", re.I)
+# Conditional wording is speculation when the model wrote it, but a stated condition the RFP
+# itself spells out ("cloud hosting would require FedRAMP High") is a real requirement — such a
+# claim is kept when its evidence quotes the condition.
+_CONDITIONAL_RISK_RE = re.compile(
+    r"\b(may|might|could|likely|possibly|potentially|probably)\s+(require|need|involve|include|expect|be)\b"
+    r"|\bif (the|a|an|this|any|future)\b.*\b(require|mandate|demand|need)"
+    r"|\bwould (need|require)\b",
+    re.I,
+)
+
+
+# Only real HTML tags are markup: a known tag name directly after "<" (no space), optional attributes, ">".
+# "Latency < 200 ms and throughput > 10 MB/s" is text and stays text.
+_HTML_TAG_RE = re.compile(
+    r"</?(?:p|br|div|span|strong|b|em|i|u|s|ul|ol|li|a|h[1-6]|table|thead|tbody|tfoot|tr|td|th|img|hr|blockquote|pre|code"
+    r"|font|sup|sub|small|big|section|article|header|footer|nav|label|input|button|form|style|script|html|head|body|title|meta|link)"
+    r"\b[^<>]{0,300}>", re.I)
+
+
+_OPERATOR_TOKENS = (
+    (re.compile(r">=|≥|⩾"), "gte"), (re.compile(r"<=|≤|⩽"), "lte"), (re.compile(r"!=|≠|<>"), "neq"),
+    (re.compile(r"(?<![<>=!])={1,2}(?![<>=])"), "eq"), (re.compile(r">"), "gt"), (re.compile(r"<"), "lt"),
+)
+
+
+def _norm_text(t: str) -> str:
+    """Lower-case token text. Keeps the symbols that distinguish technology names (C++, C#, .NET,
+    v8.21) while dropping sentence punctuation, so "C++" cannot match "C#" or "C". HTML markup in
+    portal descriptions is removed and entities decoded first, so tags never become corpus tokens."""
+    t = _HTML_TAG_RE.sub(" ", html.unescape(t or "")).lower()  # decode entities first so &lt;p&gt; is a tag, then strip
+    # Comparison operators change a requirement's meaning (≥ 30 days ≠ ≤ 30 days): keep them as tokens.
+    for pat, tok in _OPERATOR_TOKENS:
+        t = pat.sub(f" {tok} ", t)
+    t = re.sub(r"[\"'“”‘’()\[\]{}«»]", " ", t)  # quotes and brackets first, so "SAML.”" ends with a sentence period
+    t = re.sub(r"\.(?=\s|$)", " ", t)          # sentence-ending periods are punctuation, not part of a token
+    t = re.sub(r"[^a-z0-9+#.]+", " ", t)        # keep + # . inside tokens
+    return re.sub(r"\s+", " ", t).strip()
+
+
+_ELLIPSIS_RE = re.compile(r"\.{3}|…|\[\s*\.{3}\s*\]|\[…\]")
+_MIN_SEGMENT_WORDS = 3
+
+
+def evidence_in_text(evidence: str, corpus: str) -> bool:
+    """True when the COMPLETE quote genuinely occurs in the RFP text.
+
+    Matching is case/punctuation/whitespace-insensitive. A quote may use an ellipsis to skip
+    words ("intake ... audit trails"); then every segment (≥ 3 words each) must occur in the
+    corpus, in order. No partial-fragment credit: six matching words do not make an invented
+    tail acceptable.
+    """
+    # Token-sequence containment: pad with spaces so "ai" cannot match inside "training",
+    # "net" inside "internet", or "c" (from "C++") inside anything.
+    corpus_n = f" {_norm_text(corpus)} "
+    if not corpus_n.strip():
+        return False
+    segments = [f" {_norm_text(seg)} " for seg in _ELLIPSIS_RE.split(evidence or "") if _norm_text(seg)]
+    if not segments:
+        return False
+    if len(segments) == 1:
+        return segments[0] in corpus_n
+    pos = 0
+    for seg in segments:
+        if len(seg.split()) < _MIN_SEGMENT_WORDS:
+            return False
+        found = corpus_n.find(seg, pos)
+        if found < 0:
+            return False
+        pos = found + len(seg) - 1  # segments may share the boundary space
+    return True
+
+
+# Metadata our own prompt builder writes: a title proves the topic, a URL often carries the title as a
+# slug, an agency name proves who is buying and a deadline value proves when — none states a requirement.
+_NON_EVIDENCE_LINES = ("title:", "url:", "agency:", "response deadline:")
+# Values _build_opportunity_text writes when a field is missing; they are ours, not the RFP's.
+_PLACEHOLDER_VALUES = {"n/a", "na", "none", "null", "tbd", "unknown", "not specified", "not stated", "not provided", ""}
+_METADATA_LINE_RE = re.compile(r"^(agency|notice type|naics|set-aside|classification code|place of performance|response deadline):\s*(.*)$", re.I)
+
+
+def _body_without_title(corpus: str) -> str:
+    """The opportunity text minus the Title / URL / Agency / Response Deadline lines and any
+    placeholder-valued metadata line — see _NON_EVIDENCE_LINES. The same words still ground a
+    risk when they occur in the description or attachments.
+    """
+    kept = []
+    for line in (corpus or "").splitlines():
+        low = line.strip().lower()
+        if low.startswith(_NON_EVIDENCE_LINES):
+            continue
+        m = _METADATA_LINE_RE.match(line.strip())
+        if m and m.group(2).strip().lower() in _PLACEHOLDER_VALUES:
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _ground_risks(risks: list[dict[str, str]], gaps: list[str], title: str = "",
+                  corpus: str | None = None) -> tuple[list[dict[str, str]], list[str]]:
+    """Keep only risks the RFP actually states; demote the rest to knowledge gaps.
+
+    A risk is ungrounded when it has no evidence, says "inferred", only quotes the
+    opportunity title/agency (a title proves the topic, not a requirement), or — when the
+    RFP text is available — quotes something that does not occur in that text.
+    """
+    kept: list[dict[str, str]] = []
+    demoted: list[str] = []
+    title_n = _norm_text(title)
+    body = _body_without_title(corpus) if corpus is not None else None
+    for r in risks:
+        claim, ev = r.get("claim", ""), (r.get("evidence") or "").strip()
+        ev_n = _norm_text(ev)
+        ungrounded = (not ev) or ev.lower() == "inferred" or ev_n in _PLACEHOLDER_VALUES
+        if not ungrounded:
+            if body is not None:
+                # With the RFP text available, the quote must occur in the body (not merely in the title).
+                ungrounded = not evidence_in_text(ev, body)
+            elif title_n and (ev_n == title_n or ev_n in title_n):
+                ungrounded = True  # no text to check against: a title-only quote proves nothing
+        # A deadline claim survives only when the RFP's own words (the evidence) state a contract-performance
+        # constraint — impact wording in the claim ("jeopardizes the delivery schedule") proves nothing.
+        deadline_only = bool(_DEADLINE_RISK_RE.search(claim)) and not _CONTRACT_TIMING_RE.search(ev)
+        speculative = bool(_SPECULATIVE_RISK_RE.search(claim)) or deadline_only
+        if not speculative and _CONDITIONAL_RISK_RE.search(claim):
+            # Model-written condition → speculation; RFP-quoted condition → stated requirement.
+            speculative = not _CONDITIONAL_RISK_RE.search(ev)
+        if ungrounded or speculative:
+            gap = claim.rstrip(".")
+            if gap and gap not in demoted:
+                demoted.append(gap)  # a copy already in gaps is dropped below so it joins the protected prefix
+        else:
+            kept.append(r)
+    # Demoted claims lead the list so a cap on knowledge gaps can never silently drop them.
+    return kept, demoted + [g for g in gaps if g not in demoted]
+
+
+MAX_GAPS = 12
+
+
+def cap_gaps(gaps: list[str], n_demoted: int) -> list[str]:
+    """Cap knowledge gaps at MAX_GAPS without ever cutting the demoted risks at the front."""
+    return gaps[:max(MAX_GAPS, n_demoted)]
+
+
+def _normalize_stage2(result: dict[str, Any], lob: LOB, title: str = "", corpus: str | None = None) -> dict[str, Any]:
     out: dict[str, Any] = dict(lob.extras_defaults)
     out.update(result or {})
     out["lob"] = lob.key
     out["strengths"] = normalize_points(out.get("strengths"))
-    out["risks"] = normalize_points(out.get("risks"))
-    gaps = out.get("knowledge_gaps") or []
-    out["knowledge_gaps"] = [str(g).strip()[:200] for g in gaps if str(g).strip()][:10] if isinstance(gaps, list) else []
+    gaps_raw = out.get("knowledge_gaps") or []
+    gaps = [str(g).strip()[:200] for g in gaps_raw if str(g).strip()] if isinstance(gaps_raw, list) else []
+    risks_in = normalize_points(out.get("risks"))
+    out["risks"], gaps = _ground_risks(risks_in, gaps, title=title, corpus=corpus)
+    out["knowledge_gaps"] = cap_gaps(gaps, len(risks_in) - len(out["risks"]))
 
     try:
         score = int(round(float(out.get("fit_score", 0) or 0)))
@@ -418,7 +622,14 @@ def _normalize_stage2(result: dict[str, Any], lob: LOB) -> dict[str, Any]:
     out["fit_score"] = score
     out["recommended_action"] = action
     out["profile_depth"] = lob.depth
-    out["fit_tier"] = _tier_for(score)  # always from the final score — the thin cap may have lowered it
+    # Tier comes from the final score (the thin cap may have lowered it) — but the model may express material
+    # unknowns through a *lower* tier without lowering the score, as the prompt instructs, so keep a valid
+    # model tier when it is worse than the score implies. It can never be better.
+    try:
+        model_tier = int(result.get("fit_tier")) if result and result.get("fit_tier") is not None else None
+    except (TypeError, ValueError):
+        model_tier = None
+    out["fit_tier"] = max(_tier_for(score), model_tier) if model_tier in (1, 2, 3) else _tier_for(score)
     out["summary"] = str(out.get("summary", "") or "")
     out["industry"] = str(out.get("industry", "") or "")
     out["competitive_notes"] = str(out.get("competitive_notes", "") or "")
@@ -433,8 +644,8 @@ def _stage2_failure(lob: LOB, message: str) -> dict[str, Any]:
         "lob": lob.key,
         "industry": "",
         "strengths": [],
-        "risks": [{"claim": "Scoring failed — manual review needed", "evidence": "inferred"}],
-        "knowledge_gaps": [],
+        "risks": [],  # a diagnostic is not an RFP risk — the grounding invariant holds for failures too
+        "knowledge_gaps": ["Scoring failed — manual review needed"],
         "competitive_notes": "",
         "recommended_action": "investigate",
         "summary": message,
@@ -494,7 +705,7 @@ def stage2_score(
                     out["truncated"] = True
                     return out
                 raise
-            out = _normalize_stage2(result, lob)
+            out = _normalize_stage2(result, lob, title=str(opportunity.get("title") or ""), corpus=opp_text)
             if truncated:
                 logger.warning("Stage 2 output truncated at %d tokens for '%s' — raise STAGE2_MAX_TOKENS", max_tokens, title)
                 out["truncated"] = True
