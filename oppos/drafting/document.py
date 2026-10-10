@@ -175,14 +175,16 @@ def revalidate_compliance(draft: dict[str, Any], comp: dict[str, Any]) -> tuple[
             r["response"], r["basis"], r["confidence"] = resp, ["needs_human"], "low"
             r["human_todo"] = r.get("human_todo") or "Compliance answers changed after this draft — security team to re-confirm."
             changed += 1
+    # Overview prose has no requirement context, so controls (MFA, SSO, audit logging …) are claims there —
+    # the same controls=True the drafter applies when it first gates these fields.
     for key in ("executive_summary",):
-        text, gated = _gate_compliance_prose(str(out.get(key) or ""), facts)
+        text, gated = _gate_compliance_prose(str(out.get(key) or ""), facts, controls=True)
         if gated:
             out[key] = text; changed += 1
     for key in ("win_themes", "assumptions"):
         items = []
         for t in out.get(key) or []:
-            text, gated = _gate_compliance_prose(str(t), facts)
+            text, gated = _gate_compliance_prose(str(t), facts, controls=True)
             changed += int(gated); items.append(text)
         out[key] = items
     now = f"v{comp['version']}" if comp["approved"] else "approval withdrawn"
