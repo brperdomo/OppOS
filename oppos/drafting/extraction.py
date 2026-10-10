@@ -226,9 +226,12 @@ def extract_rfp_requirements(
                 # Later documents in a package usually amend earlier ones: an amendment overrides; otherwise the
                 # first value stands and the disagreement is surfaced for a human (never silently averaged).
                 prev = src.get(k) or {}
-                if doc_type == "amendment" and prev.get("document_type") != "amendment":
+                if doc_type == "amendment":
+                    # An amendment overrides the original, and a later amendment (files are processed in name order)
+                    # overrides an earlier one — the newest revision is the one in force.
+                    reason = "later amendment overrides" if prev.get("document_type") == "amendment" else "amendment overrides"
                     result.setdefault("solicitation_conflicts", []).append(
-                        {"field": k, "kept": v, "kept_file": path.name, "other": have, "other_file": prev.get("file", "?"), "reason": "amendment overrides"})
+                        {"field": k, "kept": v, "kept_file": path.name, "other": have, "other_file": prev.get("file", "?"), "reason": reason})
                     result["solicitation"][k] = v
                     src[k] = {"file": path.name, "document_type": doc_type}
                 else:

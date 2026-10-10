@@ -1940,6 +1940,8 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
                         st.success("Draft appended to the Notion page")
                         st.rerun()
                     elif res.get("ambiguous"):
+                        if res.get("base") is not None:
+                            _on_batch(res["done"], res["total"], res["base"])  # keep the page baseline so the retry can reconcile
                         st.error(f"Notion append stopped at batch {res['done'] + 1}/{res['total']}: {res['error']}. "
                                  "Open the Notion page and check whether the last section is complete before clicking again — "
                                  "the next attempt re-counts the page first and skips the batch if it is already there.")
@@ -1972,6 +1974,7 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
                 st.write(" · ".join(_draft["win_themes"]))
             _sub = _draft.get("submission") or {}
             st.caption(f"{_draft.get('rfp_type', '')} · submission {_sub.get('method', 'unknown')} · deadline {_sub.get('deadline', 'unknown')}"
+                       + (f" · questions due {_sub['questions_deadline']}" if _sub.get("questions_deadline") else "")
                        + (" · " + "; ".join(_sub.get("format_requirements", [])[:3]) if _sub.get("format_requirements") else ""))
             if _draft.get("evaluation_criteria"):
                 st.markdown('<div class="detail-label" style="margin-top:8px;">Evaluation criteria (extracted)</div>', unsafe_allow_html=True)
