@@ -191,6 +191,39 @@ def _amend_newer(a: tuple[str, int] | None, b: tuple[str, int] | None) -> bool |
     return None
 
 
+_REPLACE_RE = re.compile(r"\b(replace[sd]?|replacing|revise[sd]?|revision|delete[sd]?|remove[sd]?|supersede[sd]?|amended to read|is hereby|in lieu of|changed? to|strike)\b", re.I)
+_SECTION_REF_RE = re.compile(r"(?:section|§|item|paragraph|clause|requirement|part)\s*([0-9]+(?:\.[0-9]+)*[a-z]?)", re.I)
+
+
+def _mark_supersessions(result: dict[str, Any]) -> None:
+    """An amendment item that targets an original item's section (same section id, or replacement language
+    naming it) supersedes it: the original is marked, the amendment item records what it replaces, and the
+    link is listed for a human to confirm. Nothing is deleted."""
+    reqs = result.get("requirements") or []
+    originals = [r for r in reqs if r.get("document_type") != "amendment"]
+    by_section: dict[str, list[dict[str, Any]]] = {}
+    for o in originals:
+        if o.get("section"):
+            by_section.setdefault(o["section"].strip().lower(), []).append(o)
+    links: list[dict[str, Any]] = []
+    for a in (r for r in reqs if r.get("document_type") == "amendment"):
+        targets: list[tuple[dict[str, Any], str]] = []
+        sec = (a.get("section") or "").strip().lower()
+        if sec and sec in by_section:
+            targets += [(o, f"same section {a['section']}") for o in by_section[sec]]
+        if not targets and _REPLACE_RE.search(a.get("text") or ""):
+            for ref in _SECTION_REF_RE.findall(a.get("text") or ""):
+                for o in by_section.get(ref.lower(), []):
+                    targets.append((o, f"amendment text replaces section {ref}"))
+        for o, basis in targets:
+            if o.get("superseded_by"):
+                continue
+            o["superseded_by"] = a["id"]
+            a.setdefault("supersedes", []).append(o["id"])
+            links.append({"old": o["id"], "new": a["id"], "new_file": a.get("file", ""), "basis": basis})
+    result["supersessions"] = links
+
+
 def extract_rfp_requirements(
     file_paths: list[Path],
     mode: str | None = None,
@@ -261,7 +294,13 @@ def extract_rfp_requirements(
             if not have:
                 result["solicitation"][k] = v
                 src[k] = {"file": path.name, "document_type": doc_type, "rank": rank}
-            elif str(have).strip() != str(v).strip():
+            elif str(have).strip() == str(v).strip():
+                # Same value restated by a newer amendment: provenance moves to it, so an older amendment seen
+                # later (lexical file order) cannot override with an obsolete value.
+                prev = src.get(k) or {}
+                if doc_type == "amendment" and (prev.get("document_type") != "amendment" or _amend_newer(rank, prev.get("rank")) is True):
+                    src[k] = {"file": path.name, "document_type": doc_type, "rank": rank}
+            else:
                 # An amendment overrides the original; between amendments the newer one (by printed date, then
                 # number, then a number in the file name) wins. When the order cannot be established nothing is
                 # guessed: the first value stands and the disagreement is surfaced for a human.
@@ -312,6 +351,7 @@ def extract_rfp_requirements(
             if frm and str(frm) not in result["required_forms"]:
                 result["required_forms"].append(str(frm)[:200])
 
+    _mark_supersessions(result)
     result["stats"] = {
         "requirements": len(result["requirements"]),
         "by_document_type": {t: sum(1 for r in result["requirements"] if r.get("document_type") == t)
@@ -338,12 +378,17 @@ def format_for_prompt(extracted: dict[str, Any]) -> str:
     lines.append("Items from submission_instructions / terms_and_conditions / form documents are process or contractual "
                  "obligations: acknowledge them briefly (how we will comply) rather than selling capabilities; items from the "
                  "solicitation document are the requirements to answer in full.")
+    if extracted.get("supersessions"):
+        lines.append("Amendments replace earlier items: for an item tagged 'SUPERSEDED by Ex' do not draft an answer — its "
+                     "response is filled in automatically; answer the replacing amendment item in full.")
     for r in extracted["requirements"]:
         tags = [f"file:{r['file']}" if r.get("file") else "", r.get("document_type", "") if r.get("document_type") not in (None, "", "solicitation") else "",
                 f"p.{r['page']}" if r.get("page") else "",
                 f"§{r['section']}" if r.get("section") else "",
                 r.get("category", ""), "mandatory" if r.get("mandatory") else "",
-                f"grounding {r['grounding']:.2f}" if isinstance(r.get("grounding"), (int, float)) else ""]
+                f"grounding {r['grounding']:.2f}" if isinstance(r.get("grounding"), (int, float)) else "",
+                f"SUPERSEDED by {r['superseded_by']}" if r.get("superseded_by") else "",
+                f"supersedes {', '.join(r['supersedes'])}" if r.get("supersedes") else ""]
         lines.append(f"[{r['id']}] ({', '.join(t for t in tags if t)}) {r['text']}")
     if extracted.get("evaluation_criteria"):
         lines.append("Evaluation criteria: " + "; ".join(f"{c['criterion']} ({c['weight']})" if c.get("weight") else c["criterion"]
