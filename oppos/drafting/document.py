@@ -181,7 +181,7 @@ def revalidate_compliance(draft: dict[str, Any], comp: dict[str, Any]) -> tuple[
         text, gated = _gate_compliance_prose(str(out.get(key) or ""), facts, controls=True)
         if gated:
             out[key] = text; changed += 1
-    for key in ("win_themes", "assumptions"):
+    for key in ("win_themes", "assumptions", "open_questions"):
         items = []
         for t in out.get(key) or []:
             text, gated = _gate_compliance_prose(str(t), facts, controls=True)
