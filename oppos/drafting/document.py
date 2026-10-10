@@ -29,6 +29,8 @@ BOILERPLATE_DIR = Path(__file__).resolve().parent / "boilerplate"
 # Boilerplate sections in the order they appear in the document; the LOB file may add or override.
 _BOILERPLATE_ORDER = ("Project team", "Implementation methodology", "Past relevant experience")
 _EVIDENCE_SECTION = "Security and compliance evidence package"
+# compliance.md sections that are internal response guidance, never rendered for a customer.
+_INTERNAL_FACT_SECTION_RE = re.compile(r"must not|not give|do not|never|internal", re.I)
 _UNGROUPED = "Requirements and questions"
 
 
@@ -60,10 +62,24 @@ def _sections(md_path: Path) -> dict[str, str]:
 
 
 def boilerplate(lob_key: str) -> dict[str, str]:
-    """Common sections overlaid with the LOB's own (e.g. Workflow case studies)."""
+    """Common sections overlaid with the LOB's own. Delivery team, methodology and past experience are
+    LOB-specific (an embedded SDK is not delivered like a Workflow implementation), so they come only
+    from `<lob>.md`; a LOB without them gets a [TEAM TO PROVIDE] placeholder in the document."""
     out = _sections(BOILERPLATE_DIR / "common.md")
     out.update(_sections(BOILERPLATE_DIR / f"{lob_key}.md"))
     return out
+
+
+def public_fact_text(facts: str) -> str:
+    """Approved facts minus internal sections ("Standard answers we must NOT give")."""
+    out: list[str] = []
+    skipping = False
+    for line in (facts or "").splitlines():
+        if line.startswith("## "):
+            skipping = bool(_INTERNAL_FACT_SECTION_RE.search(line))
+        if not skipping:
+            out.append(line)
+    return "\n".join(out).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -226,10 +242,11 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
     w(bp.get(_EVIDENCE_SECTION) or TRUST_CENTER_ANSWER)
     w("")
     comp = compliance_status()
-    if comp["approved"] and comp["facts"]:
+    public_facts = public_fact_text(comp["facts"]) if comp["approved"] else ""
+    if public_facts:
         w(f"Approved statements (compliance answers version {comp['version']}, approved {comp['approved_at']}):")
         w("")
-        for line in comp["facts"].splitlines():
+        for line in public_facts.splitlines():
             if line.startswith("## "):
                 w(f"**{line[3:]}**")
             else:
