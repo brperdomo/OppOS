@@ -434,6 +434,9 @@ def _parse_any_date(raw: str | None) -> datetime | None:
     return dt
 
 
+_OPEN_PURSUIT_STATUSES = ("evaluating", "active")  # mirrors oppos.pursuits.OPEN_STAGES (db must not import pursuits)
+
+
 def expire_stale_undated(stale_days: int | None = None) -> int:
     """Active rows with NO deadline that were posted (or first seen) more than `stale_days` ago → expired.
 
@@ -444,11 +447,15 @@ def expire_stale_undated(stale_days: int | None = None) -> int:
     days = STALE_NO_DEADLINE_DAYS if stale_days is None else stale_days
     cutoff = datetime.utcnow() - timedelta(days=days)
     placeholders = ", ".join("?" for _ in _DEADLINE_CHECK_STATUSES)
+    open_ph = ", ".join("?" for _ in _OPEN_PURSUIT_STATUSES)
+    # A heuristic sweep must not touch work someone has claimed: an open pursuit (claimed or pursuing)
+    # keeps its opportunity out of the stale rule, unlike a real deadline that has genuinely passed.
     rows = _query(
         f"""SELECT source_id, posted_date, created_at FROM opportunities
             WHERE pipeline_status IN ({placeholders})
-              AND (response_deadline IS NULL OR response_deadline = '')""",
-        tuple(_DEADLINE_CHECK_STATUSES),
+              AND (response_deadline IS NULL OR response_deadline = '')
+              AND source_id NOT IN (SELECT source_id FROM pursuits WHERE status IN ({open_ph}))""",
+        tuple(_DEADLINE_CHECK_STATUSES) + tuple(_OPEN_PURSUIT_STATUSES),
     )
     n = 0
     for r in rows:

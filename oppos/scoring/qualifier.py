@@ -411,7 +411,10 @@ _SPECULATIVE_RISK_RE = re.compile(
     r"\b(rather than|not (a|an) (solicitation|rfp|procurement|bid|commitment)|no (award|contract|guarantee|formal|obligation)"
     r"|not yet (known|confirmed|determined|defined|decided|published|announced|available|funded|approved|issued)"
     r"|may not (result|lead)|will not result|stage|phase|informational?|planning purposes|budgetary|does not (commit|obligate|constitute|guarantee))\b"
-    r"|\bcannot be (confirmed|verified|determined)\b",
+    r"|\b(it|this) (cannot|can't|could not) be (confirmed|verified|determined|assessed)\b"
+    r"|\b(scope|budget|volume|requirements?|timeline|incumbent|eligibility|fit|compatibility|deployment model|hosting model|user counts?|licen[cs]ing model)"
+    r" (cannot|can't|could not) be (confirmed|verified|determined|assessed)\b"
+    r"|\b(cannot|can't|could not) be (confirmed|verified|determined|assessed) (from|in|based on|without|at this|until|yet|with the|given)\b",
     re.I,
 )
 # A tight deadline is never a risk (scoring rule); the model occasionally writes one anyway.
