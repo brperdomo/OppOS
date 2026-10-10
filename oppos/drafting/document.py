@@ -19,7 +19,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from oppos.drafting.drafter import NOT_DRAFTED_MARK, SALES_MARK, SECURITY_MARK, TEAM_MARK, TRUST_CENTER_URL
+from oppos.drafting.drafter import (NOT_DRAFTED_MARK, SALES_MARK, SECURITY_MARK, TEAM_MARK, TRUST_CENTER_ANSWER,
+                                    TRUST_CENTER_URL, compliance_status)
 from oppos.scoring.lobs import DEFAULT_LOB, LOBS, get_lob
 from oppos.scoring.lobs.base import _FRONTMATTER_RE
 from oppos.scoring.schema import lob_label
@@ -218,11 +219,26 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
           f"| {status_of(r)} | {_cell(r.get('response'), 200)} |")
     w("")
 
-    # Appendix B — security evidence package (standard Trust Center position)
+    # Appendix B — security evidence package: the Trust Center standard position, then ONLY approved facts.
+    # Until the security team approves compliance.md the appendix makes no claim about what evidence exists.
     w(f"## Appendix B: {_EVIDENCE_SECTION}")
     w("")
-    w(bp.get(_EVIDENCE_SECTION) or f"Security and compliance documentation is available under NDA via the Nutrient Trust Center ({TRUST_CENTER_URL}).")
+    w(bp.get(_EVIDENCE_SECTION) or TRUST_CENTER_ANSWER)
     w("")
+    comp = compliance_status()
+    if comp["approved"] and comp["facts"]:
+        w(f"Approved statements (compliance answers version {comp['version']}, approved {comp['approved_at']}):")
+        w("")
+        for line in comp["facts"].splitlines():
+            if line.startswith("## "):
+                w(f"**{line[3:]}**")
+            else:
+                w(line)
+        w("")
+    else:
+        w(f"{SECURITY_MARK} — the list of evidence artifacts for this response (audit reports, encryption, access control, "
+          "logging, residency/DR, accessibility) must be confirmed by the security team before submission.")
+        w("")
 
     # Appendix C — internal
     w("## Appendix C: Internal review notes — REMOVE BEFORE SUBMISSION")

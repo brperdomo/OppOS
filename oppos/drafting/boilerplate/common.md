@@ -33,15 +33,4 @@ Timelines are refined during Discovery based on scope, stakeholder availability 
 
 ## Security and compliance evidence package
 
-Nutrient's security and compliance documentation is shared under NDA through the Nutrient Trust Center, and access is granted to the evaluation team on request. The evidence package typically includes:
-
-- Independent audit reports and attestations
-- Subprocessor list and hosting provider overview
-- Encryption in transit and at rest, and key management overview
-- Identity and access management: SSO configuration, MFA enforcement options, RBAC / permission model
-- Audit logging and monitoring overview (what is logged, access and export options)
-- Data residency, backup and disaster recovery statements
-- Accessibility conformance documentation
-- AI / ML governance, data flows and third-party provider disclosures (where AI features are proposed)
-
-Items the solicitation explicitly requires in the response body are marked for confirmation by the security team before submission.
+Nutrient's security and compliance documentation is shared under NDA through the Nutrient Trust Center, and access is granted to the evaluation team on request, so each requirement can be reviewed against current documentation rather than a summary.
