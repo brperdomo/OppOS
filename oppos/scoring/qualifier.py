@@ -401,7 +401,11 @@ def _tier_for(score: int) -> int:
 # only an RFI", "market research phase, no award") is context, never a risk — but a requirement an
 # RFI states ("the RFI mandates an Oracle Forms integration") is still a risk when quoted.
 _SPECULATIVE_RISK_RE = re.compile(
-    r"\bnot (confirmed|stated|specified|named)\b|\bnot yet (known|confirmed|stated|specified|determined|defined|decided|published|announced|available|clear)\b"
+    r"\b(is|are|was|were|remains?) not (confirmed|stated|specified|named|provided|given|disclosed|mentioned|identified)\b"
+    r"|\bnot (specified|stated|disclosed|mentioned|identified|named) in the (rfp|rfi|rfq|solicitation|notice|documents?|attachments?)\b"
+    r"|\b(budget|volume|volumes|incumbent|timeline|scope|user counts?|page counts?|evaluation criteria|award date|contract term|licen[cs]ing model|deployment model|hosting model)"
+    r" (is |are |was |were )?not (confirmed|stated|specified|named|provided|given|disclosed|mentioned|identified)\b"
+    r"|\bnot yet (known|confirmed|stated|specified|determined|defined|decided|published|announced|available|clear)\b"
     r"|\b(is|are|remains?|still|currently) unknown\b|\bunknown (whether|if|at this (time|stage|point))\b"
     r"|\b(is|are|remains?|still|currently) unclear\b|\bunclear (whether|if|how|what|which|at this (time|stage|point))\b"
     r"|\b(it|this|fit|scope|budget|volume|requirements?|timeline|incumbent|eligibility|compatibility|deployment model|hosting model|user counts?|licen[cs]ing model)"
@@ -436,8 +440,11 @@ _DEADLINE_RISK_RE = re.compile(
 # Contract-performance timing (remediation, implementation, go-live, SLAs) is a real requirement, not
 # the bid-response window — never demoted by the deadline rule.
 _CONTRACT_TIMING_RE = re.compile(
-    r"\b(remediation|remediate|implementation|implement|go[- ]live|delivery|deliver|cure|SLA|service[- ]level|uptime|resolution|restore|recovery|RTO|RPO"
-    r"|onboarding|migration|cutover|transition|warranty|retention|incident|outage|support|response time)\b", re.I)
+    r"\b(remediation|remediate|implementation|go[- ]live|delivery|cure|onboarding|migration|cutover|transition|rollout|deployment|warranty|retention|support)"
+    r"[- ](deadline|timeline|window|schedule|period|date|time ?frame|milestone|term)s?\b"
+    r"|\b(SLA|service[- ]level|uptime|availability|RTO|RPO|recovery time|recovery point|resolution time|response time|time to (resolve|restore|respond|acknowledge))\b"
+    r"|\bwithin \d+ (hours?|minutes?|business days?|calendar days?|days?) (of|after|from) (notice|notification|detection|discovery|award|contract|incident|outage|request|receipt)\b"
+    r"|\b\d+[- ](hour|minute|day|week)s? (remediation|implementation|go[- ]live|delivery|cure|recovery|resolution|response|restore)\b", re.I)
 # Conditional wording is speculation when the model wrote it, but a stated condition the RFP
 # itself spells out ("cloud hosting would require FedRAMP High") is a real requirement — such a
 # claim is kept when its evidence quotes the condition.
@@ -457,11 +464,20 @@ _HTML_TAG_RE = re.compile(
     r"\b[^<>]{0,300}>", re.I)
 
 
+_OPERATOR_TOKENS = (
+    (re.compile(r">=|≥|⩾"), "gte"), (re.compile(r"<=|≤|⩽"), "lte"), (re.compile(r"!=|≠|<>"), "neq"),
+    (re.compile(r"(?<![<>=!])={1,2}(?![<>=])"), "eq"), (re.compile(r">"), "gt"), (re.compile(r"<"), "lt"),
+)
+
+
 def _norm_text(t: str) -> str:
     """Lower-case token text. Keeps the symbols that distinguish technology names (C++, C#, .NET,
     v8.21) while dropping sentence punctuation, so "C++" cannot match "C#" or "C". HTML markup in
     portal descriptions is removed and entities decoded first, so tags never become corpus tokens."""
-    t = html.unescape(_HTML_TAG_RE.sub(" ", t or "")).lower()
+    t = _HTML_TAG_RE.sub(" ", html.unescape(t or "")).lower()  # decode entities first so &lt;p&gt; is a tag, then strip
+    # Comparison operators change a requirement's meaning (≥ 30 days ≠ ≤ 30 days): keep them as tokens.
+    for pat, tok in _OPERATOR_TOKENS:
+        t = pat.sub(f" {tok} ", t)
     t = re.sub(r"[\"'“”‘’()\[\]{}«»]", " ", t)  # quotes and brackets first, so "SAML.”" ends with a sentence period
     t = re.sub(r"\.(?=\s|$)", " ", t)          # sentence-ending periods are punctuation, not part of a token
     t = re.sub(r"[^a-z0-9+#.]+", " ", t)        # keep + # . inside tokens
