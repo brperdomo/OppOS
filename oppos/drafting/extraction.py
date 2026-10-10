@@ -85,19 +85,13 @@ def extraction_available() -> bool:
     return bool(api_key())
 
 
-_PAGE_OBJ_RE = re.compile(rb"/Type\s*/Page(?![s/\w])")
-
-
 def page_count(path: Path) -> int | None:
-    """Local page count, or None when it cannot be bounded (then the file is never sent for extraction)."""
+    """Local page count from a parser that walks the full page tree, or None when it cannot be bounded —
+    then the file is never sent for extraction. (No byte-scan fallback: object streams hide page
+    dictionaries, so a regex count can be a partial, falsely small number.)"""
     try:
         from pypdf import PdfReader
         return len(PdfReader(str(path)).pages)
-    except Exception:
-        pass
-    try:  # encrypted / odd files: count page objects in the raw bytes (object streams hide them → None)
-        n = len(_PAGE_OBJ_RE.findall(path.read_bytes()))
-        return n or None
     except Exception:
         return None
 
