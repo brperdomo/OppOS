@@ -29,6 +29,15 @@ from oppos.storage.db import (_norm_key, _query, expire_if_active, get_excluded_
 ACTIVE = ("new", "qualified", "expiring_soon")
 
 
+def _lookup_for(key: str):
+    """A per-id lookup for sources whose search window does not cover everything we hold."""
+    from oppos.sources.platforms import proactis
+    if key in proactis.SITES:
+        site = proactis.SITES[key]
+        return lambda number: proactis.lookup_opportunity(site, number)
+    return None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sources", default="", help="comma-separated source keys (default: enabled sources)")
@@ -67,6 +76,28 @@ def main() -> None:
                 elif refresh_opportunity_meta(o):
                     refreshed += 1
             print(f"{name}: {len(opps)} listings fetched")
+            # Rows we hold that the portal's search window no longer returns: look each one up by its number.
+            fetched_ids = {o["source_id"] for o in opps}
+            stored = _query(f"SELECT source_id, solicitation_number FROM opportunities WHERE source = ? AND pipeline_status IN ({', '.join('?' for _ in ACTIVE)})", (key, *ACTIVE))
+            missing = [r for r in stored if r["source_id"] not in fetched_ids]
+            lookup = _lookup_for(key)
+            if missing and lookup:
+                for r in missing:
+                    o = lookup(r["solicitation_number"] or "")
+                    if o is None:
+                        continue  # not listed any more: leave to the stale-undated / deadline sweeps
+                    if o.get("active") is False:
+                        if args.dry_run:
+                            expired += 1
+                        elif expire_if_active(r["source_id"], "Auto-expired — source reports the listing is no longer open"):
+                            expired += 1
+                    elif args.dry_run:
+                        row = _query("SELECT response_deadline, url, title FROM opportunities WHERE source_id = ?", (r["source_id"],))
+                        if row and any(o.get(f) and str(o.get(f)) != str(row[0].get(f) or "") for f in ("response_deadline", "url", "title")):
+                            refreshed += 1
+                    elif refresh_opportunity_meta({**o, "source_id": r["source_id"]}):
+                        refreshed += 1
+                print(f"{name}: {len(missing)} stored row(s) outside the search window looked up individually")
     # duplicates + junk titles among active rows
     rows = _query(f"SELECT source_id, source, title, agency, solicitation_number, response_deadline FROM opportunities WHERE pipeline_status IN ({', '.join('?' for _ in ACTIVE)})", ACTIVE)
     junk = [r for r in rows if _JUNK_TITLE_RE.search((r["title"] or "").strip())]

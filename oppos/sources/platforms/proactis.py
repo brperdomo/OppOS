@@ -233,6 +233,21 @@ def _is_active(record: dict) -> bool:
     return (bid_status.get("publicStatus") or "") in OPEN_PUBLIC_STATUSES
 
 
+def lookup_opportunity(site: ProactisSite, bid_number: str) -> dict[str, Any] | None:
+    """Fetch one bid by its solicitation number (for re-syncing rows the wildcard window no longer covers).
+    Returns the opportunity dict with `active` set, or None when the portal no longer lists it."""
+    if not bid_number:
+        return None
+    with httpx.Client(timeout=30.0, follow_redirects=True, verify=False) as client:
+        recs = [r for r in _search_bids(client, site, query=f'"{bid_number}"', status_filter="", max_pages=1)
+                if (r.get("bidNumber") or "").strip().lower() == bid_number.strip().lower()]
+    if not recs:
+        return None
+    opp = _record_to_opportunity(recs[0], site)
+    opp["active"] = _is_active(recs[0])
+    return opp
+
+
 def fetch_opportunities(site: ProactisSite, limit: int = 200) -> list[dict[str, Any]]:
     """Scrape open bids from a PROACTIS/WebProcure portal."""
     results: list[dict[str, Any]] = []
