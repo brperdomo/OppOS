@@ -223,11 +223,25 @@ def _mark_supersessions(result: dict[str, Any]) -> None:
     reviews: list[dict[str, Any]] = []
     rank_of = lambda r: tuple(r.get("amend_rank")) if r.get("amend_rank") else None
     amendments = [r for r in reqs if r.get("document_type") == "amendment"]
-    import functools
-    def _cmp(a: dict[str, Any], b: dict[str, Any]) -> int:
-        n = _amend_newer(rank_of(a), rank_of(b))
-        return 1 if n is True else -1 if n is False else 0
-    amendments.sort(key=functools.cmp_to_key(_cmp))
+    # One total chronology key for the whole package: printed dates when every amendment has one, else printed /
+    # file-name numbers when every amendment has one, else no order at all (amendments then never retire each
+    # other — the pairs go to review). Pairwise date-or-number comparison is not transitive and could cycle.
+    ranks = [rank_of(a) for a in amendments]
+    if ranks and all(r and r[0] for r in ranks):
+        chrono = lambda r: (r[0], r[1])
+    elif ranks and all(r and r[1] >= 0 for r in ranks):
+        # Numbers order everything — unless the dates that ARE printed contradict that order, in which case the
+        # metadata is unreliable and nothing is ordered.
+        dated = sorted((r for r in ranks if r[0]), key=lambda r: r[1])
+        chrono = None if any(a[0] > b[0] for a, b in zip(dated, dated[1:])) else (lambda r: ("", r[1]))
+    else:
+        chrono = None
+    amendments.sort(key=lambda a: (chrono(rank_of(a)) if chrono else ("", -1), a["id"]))
+    def _newer(a: dict[str, Any], b: dict[str, Any]) -> bool | None:
+        if chrono is None:
+            return None
+        ka, kb = chrono(rank_of(a)), chrono(rank_of(b))
+        return None if ka == kb else ka > kb
     for a in amendments:
         text = a.get("text") or ""
         sec = (a.get("section") or "").strip().lower()
@@ -237,8 +251,7 @@ def _mark_supersessions(result: dict[str, Any]) -> None:
         candidates, unordered = [], []
         for o in same_section:
             if o.get("document_type") == "amendment":
-                newer = _amend_newer(rank_of(a), rank_of(o))
-                (candidates if newer is True else unordered).append(o)
+                (candidates if _newer(a, o) is True else unordered).append(o)
             else:
                 candidates.append(o)
         if not candidates and not unordered:
@@ -246,9 +259,13 @@ def _mark_supersessions(result: dict[str, Any]) -> None:
         basis = "same section " + (a.get("section") or next(iter(secs)))
         replacing = bool(_REPLACE_RE.search(text)) and not _ADDITIVE_RE.search(text)
         if replacing and len(candidates) > 1:
-            # Several items share the section: retire only those whose content the amendment actually refers to.
-            a_toks = _content_tokens(text)
-            matched = [o for o in candidates if len(_content_tokens(o.get("text")) & a_toks) >= 2 or (_content_tokens(o.get("text")) & a_toks & {t for t in a_toks if t.isdigit()})]
+            # Several items share the section: retire only those whose content the amendment's *old-value* part
+            # refers to — the text before "with"/"to read"/"as follows" names what is replaced; the new value after
+            # it must not be used to match ("replace the 90-day retention period with 365 days" must not catch an
+            # unrelated item that mentions 365).
+            old_part = re.split(r"\b(?:with|to read|as follows|to:|is replaced by|shall now read)\b", _SECTION_REF_RE.sub(" ", text), maxsplit=1, flags=re.I)[0]
+            a_toks = _content_tokens(old_part)
+            matched = [o for o in candidates if len(_content_tokens(o.get("text")) & a_toks) >= 2]
             if matched:
                 candidates = matched
             else:
