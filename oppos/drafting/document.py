@@ -287,11 +287,11 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
         method = _known(pursuit.get("submission_method")) or _known(sub.get("method")) or _known(opp.get("submission_method")) or "unknown"
         deadline = _known(pursuit.get("submission_deadline")) or _known(sub.get("deadline")) or _known(opp.get("response_deadline")) or "unknown"
         q_deadline = _known(pursuit.get("qa_deadline")) or _known(sub.get("questions_deadline"))
-    # The pursuit's `portal` is the acquisition source key (set for every pursuit); it only names the
-    # submission destination when the SDR chose a portal submission.
-    portal = _known(pursuit.get("portal_name")) or _known(pursuit.get("portal"))
+    # The pursuit's `portal` is the acquisition source key, not a submission destination. Only a registered
+    # portal's display name (portal_registrations) is a real destination; otherwise nothing is appended.
+    portal = _known(pursuit.get("portal_name"))
     if method.lower() == "portal" and portal and portal.lower() not in method.lower():
-        method = f"portal ({portal.replace('_', ' ')})"
+        method = f"portal ({portal})"
     w(f"- **Method:** {method}")
     w(f"- **Deadline:** {deadline}")
     if q_deadline:

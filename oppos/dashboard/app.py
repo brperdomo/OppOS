@@ -2018,7 +2018,10 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
     if _draft:
         from oppos.dashboard.docauth import DOCAUTH_VERSION, response_editor
         from oppos.drafting.document import render_markdown, file_stem
-        _md = render_markdown(_draft, opp, author=CURRENT_USER.get("name", ""), pursuit=pursuit)
+        from oppos.storage.db import get_portal_registration as _get_reg
+        _reg = _get_reg(str(pursuit.get("portal") or "")) or {}
+        _md = render_markdown(_draft, opp, author=CURRENT_USER.get("name", ""),
+                              pursuit=dict(pursuit, portal_name=_reg.get("display_name") or ""))
         _stem = file_stem(opp)
         with st.expander("Response document  ·  edit and export"):
             st.caption("The draft laid into our submitted-response skeleton: executive summary, answers under the RFP's own sections, "
