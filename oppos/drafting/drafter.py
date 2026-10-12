@@ -257,9 +257,10 @@ def _residency_term(match_text: str) -> str:
 _NUM_WORDS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
               "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
               "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
-_NUM_WORD_RE = "|".join(_NUM_WORDS)
+_SCALE_WORDS = {"hundred": 100, "thousand": 1000, "million": 1_000_000}
+_NUM_WORD_RE = "|".join(list(_NUM_WORDS) + list(_SCALE_WORDS) + ["and", "a"])
 _QUANTITY_RE = re.compile(
-    r"\b(\d+(?:[.,]\d+)?|(?:" + _NUM_WORD_RE + r")(?:[- ](?:" + _NUM_WORD_RE + r"))?)[- ]?(hours?|hrs?|minutes?|mins?|seconds?|secs?|days?|weeks?|months?|years?|percent|bits?|GB|TB|MB|%)(?!\w)", re.I)
+    r"\b(\d+(?:[.,]\d+)?|(?:" + "|".join(list(_NUM_WORDS) + ["a"]) + r")(?:[- ](?:" + _NUM_WORD_RE + r"))*)[- ]?(hours?|hrs?|minutes?|mins?|seconds?|secs?|days?|weeks?|months?|years?|percent|bits?|GB|TB|MB|%)(?!\w)", re.I)
 _UNIT_CANON = {"hr": "hour", "hrs": "hour", "min": "minute", "mins": "minute", "sec": "second", "secs": "second", "%": "percent"}
 _VERB_RE = re.compile(
     r"\b(is|are|was|were|be|been|has|have|had|does|do|did|will|can|must|shall|may|should|supports?|provides?|offers?|holds?|includes?"
@@ -272,8 +273,18 @@ def _num_value(raw: str) -> str:
     raw = raw.lower().replace(",", "")
     if raw.replace(".", "", 1).isdigit():
         return raw.rstrip("0").rstrip(".") if "." in raw else raw
-    parts = re.split(r"[- ]", raw)
-    return str(sum(_NUM_WORDS.get(w, 0) for w in parts))
+    total, current = 0, 0
+    for w in re.split(r"[- ]", raw):
+        if w in ("a", "an"):
+            current += 1
+        elif w in _NUM_WORDS:
+            current += _NUM_WORDS[w]
+        elif w in _SCALE_WORDS:
+            current = max(current, 1) * _SCALE_WORDS[w]
+            if _SCALE_WORDS[w] >= 1000:
+                total += current
+                current = 0
+    return str(total + current)
 
 
 def _quantity_token(num: str, unit: str, control: str | None) -> str:
@@ -311,20 +322,27 @@ def _claim_terms_pol(sentence: str, controls: bool = False) -> set[tuple[str, st
         entries.append((_residency_term(m.group(0)), m.start(), m.end()))
     specific_present = bool({t for t, _, _ in entries} - _GENERIC_COMPLIANCE_TERMS)
     if specific_present:
+        controls_pos = sorted((st, en, t) for t, st, en in entries if not t.startswith(("s:", "q:")) and t not in _GENERIC_COMPLIANCE_TERMS)
+
+        def _owner_of(pos: int) -> str | None:
+            """The nearest preceding standard/control in the same clause (longest name on a tie)."""
+            best: tuple[int, int, str] | None = None
+            for st, en, t in controls_pos:
+                if en <= pos and not _OWNER_BREAK_RE.search(sentence[en:pos]):
+                    if best is None or st > best[0] or (st == best[0] and len(t) > len(best[2])):
+                        best = (st, en, t)
+            return best[2] if best else None
+
         for m in _STATUS_RE.finditer(sentence):
             w = re.sub(r"[\s-]+", "", m.group(0).lower())
             for prefix, canon in _STATUS_CANON.items():
                 if w.startswith(prefix):
-                    entries.append((f"s:{canon}", m.start(), m.end()))
+                    # "has a SOC 2 Type II audit report and is ISO 27001 certified": report belongs to SOC 2, certified to ISO.
+                    entries.append((f"s:{_owner_of(m.start()) or '-'}:{canon}", m.start(), m.end()))
                     break
-        controls_pos = sorted((st, en, t) for t, st, en in entries if not t.startswith(("s:", "q:")))
         for m in _QUANTITY_RE.finditer(sentence):
-            owner = None
-            for st, en, t in controls_pos:  # nearest preceding term in the same clause owns the quantity
-                # "RTO: 24 hours; RPO: 4 hours" — a colon is a label separator here, not a clause break.
-                if en <= m.start() and not _OWNER_BREAK_RE.search(sentence[en:m.start()]):
-                    owner = t
-            entries.append((_quantity_token(m.group(1), m.group(2), owner), m.start(), m.end()))
+            # "RTO: 24 hours; RPO: 4 hours" — a colon is a label separator here, not a clause break.
+            entries.append((_quantity_token(m.group(1), m.group(2), _owner_of(m.start())), m.start(), m.end()))
     entries.sort(key=lambda e: (e[1], e[2]))
     out: set[tuple[str, str]] = set()
     prev_end: int | None = None
@@ -338,7 +356,20 @@ def _claim_terms_pol(sentence: str, controls: bool = False) -> set[tuple[str, st
         out.add((term, pol))
         if prev_end is None or end >= prev_end:
             prev_end, prev_pol = end, pol
-    return out
+    return _with_base_status(out)
+
+
+def _with_base_status(pairs: set[tuple[str, str]]) -> set[tuple[str, str]]:
+    """A status bound to a qualified standard also counts for its base ("s:soc2typeii:report" → "s:soc2:report"),
+    so a fact stating the type backs a claim that omits it — never the reverse."""
+    extra = set()
+    for t, p in pairs:
+        if t.startswith("s:") or t.startswith("q:"):
+            kind, owner, rest = t.split(":", 2)
+            base = re.match(r"(soc[123]|fedramp|wcag)", owner)
+            if base and base.group(1) != owner:
+                extra.add((f"{kind}:{base.group(1)}:{rest}", p))
+    return pairs | extra
 
 
 def _claim_terms(sentence: str, controls: bool = False) -> set[str]:
