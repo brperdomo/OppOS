@@ -461,9 +461,16 @@ _CONDITIONAL_RISK_RE = re.compile(
 )
 
 
+_HTML_ELEMENTS = frozenset("""p br div span strong b em i u s ul ol li a h1 h2 h3 h4 h5 h6 table thead tbody tfoot tr td th img hr
+blockquote pre code font sup sub small big section article header footer nav main aside label input button form select option
+textarea style script html head body title meta link mark abbr cite q dl dt dd caption col colgroup iframe noscript wbr dfn kbd
+samp var time address figure figcaption details summary center strike tt""".split())
+
+
 class _TextExtractor(HTMLParser):
-    """Visible text of HTML: every element (known or not) is dropped, text and decoded entities kept. A '<' that
-    does not start a tag ("Latency < 200 ms") is ordinary text to the parser."""
+    """Visible text of HTML. Real HTML elements are dropped; any other angle-bracket name (an XML element such
+    as <Invoice> in a schema requirement) is kept as text, so it still has to match. A '<' that does not start
+    a tag ("Latency < 200 ms") is ordinary text to the parser."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -473,10 +480,13 @@ class _TextExtractor(HTMLParser):
         self.parts.append(data)
 
     def handle_starttag(self, tag: str, attrs: Any) -> None:
-        self.parts.append(" ")
+        self.parts.append(" " if tag.lower() in _HTML_ELEMENTS else f" {tag} ")
+
+    def handle_startendtag(self, tag: str, attrs: Any) -> None:
+        self.handle_starttag(tag, attrs)
 
     def handle_endtag(self, tag: str) -> None:
-        self.parts.append(" ")
+        self.parts.append(" " if tag.lower() in _HTML_ELEMENTS else f" {tag} ")
 
 
 def _strip_html(t: str) -> str:
