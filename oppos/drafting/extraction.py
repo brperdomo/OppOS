@@ -196,36 +196,74 @@ _ADDITIVE_RE = re.compile(r"\b(in addition|additionally|add(?:ed|s)?|new require
 _SECTION_REF_RE = re.compile(r"(?:section|§|item|paragraph|clause|requirement|part)\s*([0-9]+(?:\.[0-9]+)*[a-z]?)", re.I)
 
 
+_STOP = {"the", "a", "an", "and", "or", "of", "to", "in", "for", "with", "shall", "must", "will", "vendor", "contractor", "section", "is", "are",
+         "be", "by", "on", "at", "as", "that", "this", "it", "its", "all", "any", "replace", "replaced", "revised", "revise", "read", "delete", "deleted",
+         "remove", "removed", "supersede", "superseded", "hereby", "lieu", "strike", "amended", "following", "entirety", "provide", "provided", "support"}
+
+
+def _content_tokens(text: str) -> set[str]:
+    toks = set()
+    for w in re.findall(r"[a-z0-9][a-z0-9.-]*", (text or "").lower()):
+        w = w.strip(".-")
+        if w in _STOP or len(w) < 3 and not w.isdigit():
+            continue
+        toks.add(w.rstrip("s") if len(w) > 3 else w)
+    return toks
+
+
 def _mark_supersessions(result: dict[str, Any]) -> None:
     """Link amendment items to the requirements they replace. An item supersedes an earlier item only when it
-    carries replacement / deletion language and targets it specifically (same section id, or a section it names);
-    additive or ambiguous amendments never retire anything — they are listed for human review instead. Amendments
-    are applied in chronological order (printed date / number / file-name number) and an amendment item is itself
-    a target for a newer amendment, so only the newest revision of a section stays active. Nothing is deleted."""
+    carries replacement / deletion language and targets it specifically: the same section id (or a section it
+    names) and — when several items share that section — shared content with the original's text. Additive or
+    ambiguous amendments never retire anything; they are listed for human review. Amendments are applied in
+    chronology (printed date, then number, then file-name number; unknown order → review) and an amendment item
+    is itself a target for a newer amendment, so only the newest revision of a section stays active."""
     reqs = result.get("requirements") or []
     links: list[dict[str, Any]] = []
     reviews: list[dict[str, Any]] = []
+    rank_of = lambda r: tuple(r.get("amend_rank")) if r.get("amend_rank") else None
     amendments = [r for r in reqs if r.get("document_type") == "amendment"]
-    amendments.sort(key=lambda r: (tuple(r.get("amend_rank") or ("", -1)), r["id"]))
+    import functools
+    def _cmp(a: dict[str, Any], b: dict[str, Any]) -> int:
+        n = _amend_newer(rank_of(a), rank_of(b))
+        return 1 if n is True else -1 if n is False else 0
+    amendments.sort(key=functools.cmp_to_key(_cmp))
     for a in amendments:
         text = a.get("text") or ""
         sec = (a.get("section") or "").strip().lower()
         secs = {sec} if sec else set()
         secs |= {ref.lower() for ref in _SECTION_REF_RE.findall(text)}
-        candidates = [o for o in reqs if o is not a and not o.get("superseded_by") and (o.get("section") or "").strip().lower() in secs
-                      and (o.get("document_type") != "amendment" or tuple(o.get("amend_rank") or ("", -1)) < tuple(a.get("amend_rank") or ("", -1)))]
-        if not candidates:
+        same_section = [o for o in reqs if o is not a and not o.get("superseded_by") and (o.get("section") or "").strip().lower() in secs]
+        candidates, unordered = [], []
+        for o in same_section:
+            if o.get("document_type") == "amendment":
+                newer = _amend_newer(rank_of(a), rank_of(o))
+                (candidates if newer is True else unordered).append(o)
+            else:
+                candidates.append(o)
+        if not candidates and not unordered:
             continue
+        basis = "same section " + (a.get("section") or next(iter(secs)))
         replacing = bool(_REPLACE_RE.search(text)) and not _ADDITIVE_RE.search(text)
-        basis = "same section " + (a.get("section") or next(iter(secs))) if sec and sec in {(o.get("section") or "").lower() for o in candidates} else "names section " + ", ".join(sorted(secs))
-        if replacing:
+        if replacing and len(candidates) > 1:
+            # Several items share the section: retire only those whose content the amendment actually refers to.
+            a_toks = _content_tokens(text)
+            matched = [o for o in candidates if len(_content_tokens(o.get("text")) & a_toks) >= 2 or (_content_tokens(o.get("text")) & a_toks & {t for t in a_toks if t.isdigit()})]
+            if matched:
+                candidates = matched
+            else:
+                unordered += candidates
+                candidates = []
+                basis += " — no specific match"
+        if replacing and candidates:
             for o in candidates:
                 o["superseded_by"] = a["id"]
-                a.setdefault("supersedes", []).append(o["id"])
                 links.append({"old": o["id"], "new": a["id"], "new_file": a.get("file", ""), "basis": basis + " with replacement language"})
-        else:
-            reviews.append({"amendment": a["id"], "file": a.get("file", ""), "touches": [o["id"] for o in candidates],
-                            "basis": basis + (" (additive wording)" if _ADDITIVE_RE.search(text) else " (no replacement language)")})
+        touches = [o["id"] for o in (candidates if not replacing else []) + unordered]
+        if touches:
+            why = (" (additive wording)" if _ADDITIVE_RE.search(text) else " (no replacement language)" if not replacing
+                   else " (amendment order unknown)" if unordered else "")
+            reviews.append({"amendment": a["id"], "file": a.get("file", ""), "touches": touches, "basis": basis + why})
     # Resolve chains: whatever an item points at, it ends up pointing at the newest active revision, and that
     # revision lists everything it retired.
     by_id = {r["id"]: r for r in reqs}
@@ -287,20 +325,23 @@ def extract_rfp_requirements(
             continue
         if on_progress:
             on_progress(f"Extracting requirements from {path.name}" + (f" ({n} pages)" if n else ""))
+        budget -= n  # reserved before upload: a charged request whose response is lost must still count
         try:
             one = _extract_one(path, mode)
         except httpx.HTTPStatusError as e:
+            if 400 <= e.response.status_code < 500 and e.response.status_code != 408:
+                budget += n  # rejected client-side (bad request, auth, entitlement): nothing was processed or charged
             result["errors"].append(f"{path.name}: HTTP {e.response.status_code} {e.response.text[:160]}")
             continue
-        except Exception as e:  # network, JSON, etc.
-            result["errors"].append(f"{path.name}: {e}")
+        except Exception as e:  # timeout, disconnect, invalid JSON — the server may have processed and charged it
+            result["errors"].append(f"{path.name}: {e} (its {n} pages stay counted against the budget)")
             continue
 
         data, meta = one["data"], one["metadata"]
         result["files"].append({"file": path.name, "pages": one["pages"], "credits": one["credits_cost"], "request_id": one["request_id"]})
-        effective_pages = one["pages"] or (n or 0)
+        effective_pages = one["pages"] or n
         result["pages"] += effective_pages
-        budget -= effective_pages  # the API's count applies even when pypdf could not read the file
+        budget -= effective_pages - n  # settle the reservation against the API's own count
         if one["credits_cost"]:
             result["credits_cost"] += int(one["credits_cost"])
         if one["credits_remaining"] is not None:
