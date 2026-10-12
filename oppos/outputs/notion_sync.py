@@ -479,3 +479,202 @@ def update_pipeline_status(source_id: str, status: str, notes: str = "") -> bool
     except Exception as e:
         logger.error("Notion status update failed for '%s': %s", source_id, e)
         return False
+
+
+def draft_id(draft: dict[str, Any]) -> str:
+    """Content hash of the draft (12 hex chars) — unique per generated content, so two drafts generated in the
+    same minute with different answers are different sections on the page."""
+    import hashlib
+    keys = ("generated_at", "model", "executive_summary", "win_themes", "requirements", "open_questions", "assumptions",
+            "do_not_claim", "submission", "required_forms", "evaluation_criteria")
+    payload = json.dumps({k: draft.get(k) for k in keys}, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _block_sig(block: dict[str, Any]) -> tuple[str, str]:
+    """(type, text) identity of a block — works for blocks we build and blocks Notion returns."""
+    btype = str(block.get("type") or "")
+    body = block.get(btype) or {}
+    parts = []
+    for rt in body.get("rich_text") or []:
+        txt = rt.get("plain_text")
+        if txt is None:
+            txt = ((rt.get("text") or {}).get("content")) or ""
+        parts.append(str(txt))
+    return btype, "".join(parts)
+
+
+def _page_blocks(client: Any, page_id: str) -> list[tuple[str, str]]:
+    """Identity signatures of every top-level block on the page, in order (paginated)."""
+    sigs: list[tuple[str, str]] = []
+    cursor = None
+    while True:
+        res = client.blocks.children.list(block_id=page_id, start_cursor=cursor, page_size=100) if cursor else \
+            client.blocks.children.list(block_id=page_id, page_size=100)
+        sigs += [_block_sig(b) for b in (res.get("results") or [])]
+        if not res.get("has_more"):
+            return sigs
+        cursor = res.get("next_cursor")
+
+
+def _count_children(client: Any, page_id: str) -> int:
+    return len(_page_blocks(client, page_id))
+
+
+def _find_seq(hay: list[tuple[str, str]], want: list[tuple[str, str]], start: int = 0) -> int:
+    n = len(want)
+    for i in range(max(start, 0), len(hay) - n + 1):
+        if hay[i:i + n] == want:
+            return i
+    return -1
+
+
+def _batch_present(page: list[tuple[str, str]], base: int, batch: list[dict[str, Any]]) -> bool:
+    """Is this batch's exact block sequence on the page after our section start? Identity, not count."""
+    want = [_block_sig(b) for b in batch]
+    return _find_seq(page, want, base) >= 0 if want else True
+
+
+def _section_base(page: list[tuple[str, str]], children: list[dict[str, Any]]) -> int:
+    """Index where THIS draft's section starts on the page, found by its header (divider + heading + the
+    generated-at paragraph, unique per draft). If nothing of ours is there yet, the end of the page."""
+    head = [_block_sig(b) for b in children[:3]]
+    idx = _find_seq(page, head)
+    return idx if idx >= 0 else len(page)
+
+
+def append_response_draft(page_id: str, draft: dict[str, Any], start_batch: int = 0,
+                          on_batch: Any = None, base_children: int | None = None) -> dict[str, Any]:
+    """Append the AI draft to an existing Notion page in 100-block batches.
+
+    Resumable: pass `start_batch` to continue after a partial failure (the caller persists
+    progress via `on_batch(done, total, base_children)`), so a retry never re-appends earlier
+    batches. Before writing, the page is read and this draft's section located by its unique header;
+    the first batch of every run, and any batch whose append call fails, is reconciled against the
+    page by block identity — so a lost response or a lost checkpoint never duplicates a batch, and
+    unrelated blocks added by people cannot fake one. `base_children` is informational.
+    Returns {"ok": bool, "done": batches_appended, "total": batches, "base": base_children, "error": str | None,
+             "checkpoint_failed": True when a batch was appended but on_batch raised — resume from `done`,
+             "ambiguous": True when the page could not be re-counted after a failed call — check the page}.
+    """
+    if not page_id:
+        return {"ok": False, "done": 0, "total": 0, "error": "no page id"}
+    client = _get_client()
+    children: list[dict] = [
+        _divider(),
+        _heading(2, "Response Draft (AI — needs review)"),
+        _paragraph(
+            f"Generated {draft.get('generated_at', '')[:16].replace('T', ' ')} UTC by OppOS ({draft.get('model', '')}). "
+            f"Draft id {draft_id(draft)}. "
+            f"{draft['stats']['requirements']} requirements · {draft['stats']['high_confidence']} high confidence · "
+            f"{draft['stats']['needs_human']} need a human. Compliance source "
+            + ("approved v" + str(draft['compliance_source'].get('version')) if draft['compliance_source'].get('approved') else "NOT approved — all security items marked [SECURITY TO CONFIRM]")
+            + ". Review every answer before it leaves the building."
+        ),
+    ]
+    sub = draft.get("submission") or {}
+    children.append(_paragraph(f"RFP type: {draft.get('rfp_type', '')} · Submission: {sub.get('method', 'unknown')} · Deadline: {sub.get('deadline', 'unknown')}"
+                               + (f" · Questions due: {sub['questions_deadline']}" if sub.get("questions_deadline") else "")))
+    for f in sub.get("format_requirements") or []:
+        children.append(_bullet(f"Format: {f}"))
+    if draft.get("evaluation_criteria"):
+        children.append(_heading(3, "Evaluation criteria (extracted from the RFP)"))
+        children += [_bullet(f"{c['criterion']}" + (f" — {c['weight']}" if c.get("weight") else "")) for c in draft["evaluation_criteria"]]
+    if draft.get("required_forms"):
+        children.append(_heading(3, "Required forms and attachments (extracted from the RFP)"))
+        children += [_bullet(f) for f in draft["required_forms"]]
+    if draft.get("executive_summary"):
+        children.append(_heading(3, "Executive summary (draft)"))
+        children.extend(_text_to_blocks(draft["executive_summary"], max_chars=8000))
+    if draft.get("win_themes"):
+        children.append(_heading(3, "Win themes"))
+        children += [_bullet(t) for t in draft["win_themes"]]
+    children.append(_heading(3, "Requirements and draft responses"))
+    for r in draft.get("requirements") or []:
+        label = (f"{r['id']}" + (f" · {r['section']}" if r.get("section") else "")
+                 + (f" · {r['file']} p.{r['page']}" if r.get("page") and r.get("file") else f" · p.{r['page']}" if r.get("page") else "")
+                 + f" · {r['category'].replace('_', ' ')}")
+        children.append(_heading(3, _truncate(label, 100)))
+        children.append(_paragraph(_truncate("Requirement: " + r.get("text", ""), 2000)))
+        children.extend(_text_to_blocks(r.get("response", ""), max_chars=6000))
+        meta = f"Confidence: {r['confidence']} · Basis: {', '.join(r['basis'])}"
+        if r.get("sources"):
+            meta += " · Sources: " + "; ".join(r["sources"][:4])
+        if r.get("human_todo"):
+            meta += f" · TODO: {r['human_todo']}"
+        children.append(_paragraph(_truncate(meta, 2000)))
+    for title, key in (("Open questions for Q&A", "open_questions"), ("Assumptions", "assumptions"), ("Do not claim", "do_not_claim")):
+        items = draft.get(key) or []
+        if items:
+            children.append(_heading(3, title))
+            children += [_bullet(x) for x in items]
+    batches = [children[i:i + 100] for i in range(0, len(children), 100)]
+    total = len(batches)
+    done = start_batch
+
+    # Where our section starts is re-derived from the page itself (the draft header is unique per generated_at),
+    # so a lost pre-count, a lost response or blocks someone else added can neither hide nor fake our batches.
+    try:
+        page = _page_blocks(client, page_id)
+    except Exception as e:
+        # No write without a read: a previous attempt may have landed a batch whose response was lost, and only the
+        # page can tell. Nothing is written in this state.
+        logger.error("Notion: page %s could not be read (%s); not writing", page_id, e)
+        return {"ok": False, "done": start_batch, "total": total, "base": base_children, "ambiguous": True, "written": 0,
+                "error": f"the Notion page could not be read ({str(e)[:160]}); nothing was written — retry when Notion is reachable"}
+    base_children = _section_base(page, children)
+    # Every batch already on the page (lost response, lost checkpoint, identical re-run) is skipped, not re-sent.
+    present = [_batch_present(page, base_children, b) for b in batches]
+
+    def _landed(i: int) -> bool | None:
+        """True/False if batch i's blocks are (not) on the page after our section start, by identity; None if
+        the page cannot be read right now (then nothing further is written)."""
+        try:
+            page = _page_blocks(client, page_id)
+        except Exception:
+            return None
+        return _batch_present(page, _section_base(page, children), batches[i])
+
+    def _checkpoint(d: int) -> dict[str, Any] | None:
+        if not on_batch:
+            return None
+        try:
+            on_batch(d, total, base_children)
+            return None
+        except Exception as e:
+            logger.error("Notion draft append: batch %d/%d appended but progress could not be saved: %s", d, total, e)
+            return {"ok": False, "done": d, "total": total, "base": base_children, "checkpoint_failed": True,
+                    "error": f"batch {d} was appended but progress could not be saved ({str(e)[:160]})"}
+
+    if done >= total:
+        # Resuming after the final batch already landed but its checkpoint did not: persist completion now,
+        # otherwise the UI keeps offering Append/Resume and a later click would duplicate the draft.
+        failed = _checkpoint(total)
+        return failed or {"ok": True, "done": total, "total": total, "base": base_children, "error": None}
+
+    for i in range(start_batch, total):
+        # Any batch already on the page is skipped: a previous attempt may have landed it without the response
+        # (or the checkpoint) surviving — including a run restarting from batch 0 or an identical re-run.
+        if present[i]:
+            logger.info("Notion: batch %d/%d already on the page (reconciled) — skipping", i + 1, total)
+        else:
+            try:
+                client.blocks.children.append(block_id=page_id, children=batches[i])
+            except Exception as e:
+                landed = _landed(i)
+                if landed is True:
+                    logger.warning("Notion append raised but batch %d/%d is on the page (%s) — continuing", i + 1, total, e)
+                elif landed is None:
+                    logger.error("Notion draft append failed at batch %d/%d and the page could not be re-read: %s", i + 1, total, e)
+                    return {"ok": False, "done": done, "total": total, "base": base_children, "ambiguous": True, "written": done - start_batch,
+                            "error": f"{str(e)[:200]} — the page could not be re-read, so batch {i + 1} may or may not be there; "
+                                     f"the next attempt reads the page before writing anything"}
+                else:
+                    logger.error("Notion draft append failed at batch %d/%d: %s", i + 1, total, e)
+                    return {"ok": False, "done": done, "total": total, "base": base_children, "error": str(e)[:300]}
+        done = i + 1
+        failed = _checkpoint(done)
+        if failed:
+            return failed
+    logger.info("Appended response draft to Notion page %s (%d blocks, %d batches)", page_id, len(children), total)
+    return {"ok": True, "done": done, "total": total, "base": base_children, "error": None}

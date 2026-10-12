@@ -7,6 +7,7 @@ Run with:
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -43,6 +44,12 @@ from oppos.sources.registry import list_available
 from oppos.storage.db import check_deadlines, get_all_scored, get_by_pipeline_status, get_meta, init_db, set_meta, set_pipeline_status
 
 ATTACHMENTS_DIR = DB_PATH.parent / "attachments"
+
+
+def _att_dir(source_id: str) -> Path:
+    """The attachment folder for an opportunity — the same sanitised name the downloader writes to."""
+    from oppos.sources.attachments import _sanitize_filename
+    return ATTACHMENTS_DIR / _sanitize_filename(str(source_id or ""))
 
 NUTRIENT_ICON_SVG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 50 36'%3E%3Cpath d='M4.15 22.15C1.86 22.15 0 20.29 0 18s1.86-4.15 4.15-4.15 4.15 1.86 4.15 4.15-1.86 4.15-4.15 4.15zm41.52-8.3c-2.29 0-4.15 1.86-4.15 4.15s1.86 4.15 4.15 4.15 4.15-1.86 4.15-4.15-1.86-4.15-4.15-4.15zM6.34 28.16c-1.76 1.47-1.99 4.09-.51 5.85s4.09 1.99 5.85.51 1.99-4.09.51-5.85-4.09-1.99-5.85-.51zm37.15-20.33c1.76-1.47 1.99-4.09.51-5.85s-4.09-1.99-5.85-.51-1.99 4.09-.51 5.85 4.09 1.99 5.85.51zM11.68 1.47C9.92 0 7.3.23 5.83 1.99s-.23 4.38 1.51 5.85 4.38.23 5.85-1.51.23-4.38-1.51-5.85zm31.81 26.69c-1.76-1.47-4.38-1.25-5.85.51s-1.25 4.38.51 5.85 4.38 1.25 5.85-.51 1.25-4.38-.51-5.85zm-10.6-8.9c-1.76-1.47-4.38-1.25-5.85.51s-1.25 4.38.51 5.85 4.38 1.25 5.85-.51 1.25-4.38-.51-5.85zm-10.6-8.9c-1.76-1.47-4.38-1.25-5.85.51s-1.25 4.38.51 5.85 4.38 1.25 5.85-.51 1.25-4.38-.51-5.85z' fill='%23f0c966'/%3E%3C/svg%3E"
 
@@ -957,7 +964,7 @@ def _pursue_opportunity(opp: dict, reason: str = "") -> None:
         try:
             opp["pipeline_status"] = "in_progress"
             opp["pipeline_notes"] = reason or "Qualified — pursuing"
-            att_dir = ATTACHMENTS_DIR / sid
+            att_dir = _att_dir(sid)
             att_paths = sorted(att_dir.glob("*")) if att_dir.exists() else []
             page_id = push_opportunity(opp, attachment_paths=att_paths or None)
             if page_id:
@@ -1053,7 +1060,7 @@ def _push_to_notion(opp: dict) -> None:
         st.write("📤 Sending RFP data, scanned documents, and capability profile…")
 
         # Collect attachment files if they exist on disk
-        att_dir = ATTACHMENTS_DIR / sid
+        att_dir = _att_dir(sid)
         attachment_paths = sorted(att_dir.glob("*")) if att_dir.exists() else []
         if attachment_paths:
             st.write(f"📎 {len(attachment_paths)} attachment(s) will be uploaded")
@@ -1658,7 +1665,7 @@ def render_card(opp: dict, tab_key: str, show_status_controls: bool = True) -> N
     # --- Deep Scan ---
     _render_deep_scan(opp, tab_key)
 
-    att_dir = ATTACHMENTS_DIR / opp.get("source_id", "")
+    att_dir = _att_dir(opp.get("source_id", ""))
     if att_dir.is_dir():
         files = sorted(att_dir.iterdir())
         if files:
@@ -1679,6 +1686,67 @@ def render_empty(message: str) -> None:
         <h3>{message}</h3>
     </div>
     """, unsafe_allow_html=True)
+
+
+def _run_draft(opp: dict, pursuit: dict) -> None:
+    """Stage 3: draft the response for a pursued RFP, store it, note it in Slack."""
+    from oppos.drafting import compliance_status, draft_response
+    from oppos.outputs import slack_pursuits as sp
+    from oppos.storage.db import add_pursuit_event, save_draft
+
+    sid = opp.get("source_id", "")
+    title = opp.get("title", "Untitled")
+    comp = compliance_status()
+    with st.status(f"Drafting response: {title[:50]}…", expanded=True) as status:
+        att = opp.get("attachment_text") or ""
+        st.write(f"📄 Using the RFP description" + (f" and {len(att):,} characters of attachment text" if att else " — no attachments loaded (load them first for a better draft)"))
+        st.write("🔒 Security items get the Trust Center standard answer (NDA access on request); explicit asks for a specific statement or artifact are "
+                 + ("answered from the approved compliance file" if comp["approved"] else "marked [SECURITY TO CONFIRM]"))
+
+        # Dogfood: Nutrient Data Extraction API maps the RFP PDFs to a requirements schema with page citations.
+        extracted = None
+        att_dir = _att_dir(sid)
+        pdfs = sorted(f for f in att_dir.iterdir() if f.is_file() and f.suffix.lower() == ".pdf") if att_dir.is_dir() else []
+        if pdfs:
+            from oppos.drafting.extraction import extract_rfp_requirements, extraction_available
+            if extraction_available():
+                extracted = extract_rfp_requirements(pdfs, on_progress=lambda m: st.write(f"🧩 {m}"))
+                st_ = extracted.get("stats") or {}
+                if extracted["requirements"]:
+                    st.write(f"✓ Nutrient Data Extraction: {st_['requirements']} requirements ({st_['mandatory']} mandatory) from "
+                             f"{extracted['pages']} pages · {extracted['credits_cost']} credits"
+                             + (f" · {extracted['credits_remaining']} remaining" if extracted.get("credits_remaining") is not None else ""))
+                for sk in extracted.get("skipped", []):
+                    st.write(f"⚠️ Skipped {sk}")
+                for er in extracted.get("errors", []):
+                    st.write(f"⚠️ Extraction error — {er}")
+                if not extracted["requirements"]:
+                    # A forms-only or instructions-only package yields no requirement items but still carries the
+                    # authoritative deadline / method / forms / criteria — keep them; discard only an empty result.
+                    kept = any(extracted.get(k) for k in ("solicitation", "required_forms", "evaluation_criteria"))
+                    st.write("ℹ️ No requirement items extracted" + (" — keeping the extracted submission facts" if kept else ""))
+                    if not kept:
+                        extracted = None
+            else:
+                st.write("ℹ️ NUTRIENT_API_KEY not set — drafting from text only")
+        try:
+            draft = draft_response(opp, attachment_text=att, extracted=extracted, on_progress=lambda m: st.write(f"✍️ {m}"))
+        except Exception as e:
+            status.update(label="Draft failed", state="error")
+            st.error(f"Drafting failed: {e}")
+            return
+        save_draft(sid, draft)
+        add_pursuit_event(sid, CURRENT_USER.get("email", ""), "drafted",
+                          f"{draft['stats']['requirements']} requirements, {draft['stats']['needs_human']} need a human")
+        try:
+            sp.post_pursuit_update(pursuit.get("slack_channel_id"),
+                                   f"✍️ Response draft ready for *{title[:100]}* — {draft['stats']['requirements']} requirements, "
+                                   f"{draft['stats']['high_confidence']} high confidence, {draft['stats']['needs_human']} need a human. "
+                                   f"Review it on My desk, then append it to Notion.")
+        except Exception as e:
+            logging.getLogger(__name__).info("Slack draft notice failed: %s", e)
+        status.update(label="Draft ready ✓", state="complete")
+        st.write(f"✓ {draft['stats']['requirements']} requirements drafted" + (" (output was truncated — raise DRAFT_MAX_TOKENS)" if draft.get("truncated") else ""))
 
 
 def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
@@ -1831,6 +1899,120 @@ def _render_pursuit_panel(opp: dict, pursuit: dict) -> None:
 
     else:
         st.caption(f"Actions are available to the owner ({owner}) and admins.")
+
+    # ── Response draft (Stage 3) ───────────────────────────────
+    from oppos.storage.db import add_pursuit_event as _add_event, get_draft as _get_draft
+    _draft = _get_draft(sid)
+    dc1, dc2, dc3 = st.columns([1, 1, 3])
+    if can_edit:
+        with dc1:
+            if st.button("✍️ Regenerate draft" if _draft else "✍️ Draft response", key=f"{k}_draft", use_container_width=True,
+                         help="Extracts every requirement in the RFP and drafts an answer per item from the LOB profile (and docs when Kapa is configured)."):
+                _run_draft(opp, pursuit)
+                st.rerun()
+        with dc2:
+            if _draft and npid:
+                _prog = _draft.get("notion_append") or {}
+                _resume = (_prog.get("page_id") == str(npid) and _prog.get("generated_at") == _draft.get("generated_at")
+                           and not _prog.get("complete"))
+                _btn = f"📝 Resume Notion append ({_prog.get('done', 0)}/{_prog.get('total', '?')})" if _resume else (
+                    "📝 Appended to Notion ✓" if _prog.get("complete") and _prog.get("generated_at") == _draft.get("generated_at") else "📝 Append to Notion")
+                if st.button(_btn, key=f"{k}_draft_notion", use_container_width=True,
+                             disabled=bool(_prog.get("complete") and _prog.get("generated_at") == _draft.get("generated_at"))):
+                    from oppos.outputs.notion_sync import append_response_draft
+                    from oppos.storage.db import save_draft as _save_draft
+                    def _on_batch(done: int, total: int, base: int | None = None) -> None:
+                        _draft["notion_append"] = {"page_id": str(npid), "generated_at": _draft.get("generated_at"),
+                                                   "done": done, "total": total, "complete": done >= total, "base": base}
+                        _save_draft(sid, _draft)
+                    # If a batch landed on the page but its checkpoint could not be saved, the true position is kept
+                    # for this session so the next click resumes from there instead of the stale persisted one.
+                    _sess_key = f"{k}_notion_true_done"
+                    _sess = st.session_state.get(_sess_key) or {}
+                    _start = _prog.get("done", 0) if _resume else 0
+                    if _sess.get("page_id") == str(npid) and _sess.get("generated_at") == _draft.get("generated_at"):
+                        _start = max(_start, int(_sess.get("done", 0)))
+                    res = append_response_draft(str(npid), _draft, start_batch=_start, on_batch=_on_batch,
+                                                base_children=(_prog.get("base") if _resume else None))
+                    if res["ok"]:
+                        st.session_state.pop(_sess_key, None)
+                        _add_event(sid, CURRENT_USER.get("email", ""), "draft_notion", f"Draft appended to Notion page ({res['total']} batches)")
+                        st.success("Draft appended to the Notion page")
+                        st.rerun()
+                    elif res.get("ambiguous"):
+                        if res.get("base") is not None:
+                            _on_batch(res["done"], res["total"], res["base"])  # keep the page baseline so the retry can reconcile
+                        st.error(f"Notion append stopped at batch {res['done'] + 1}/{res['total']}: {res['error']}. "
+                                 "Nothing further is written until the page can be read; the next attempt reads it first and "
+                                 "skips any batch that is already there.")
+                    elif res.get("checkpoint_failed"):
+                        st.session_state[_sess_key] = {"page_id": str(npid), "generated_at": _draft.get("generated_at"), "done": res["done"]}
+                        st.error(f"Notion append paused after batch {res['done']}/{res['total']}: {res['error']}. "
+                                 f"Click again in this session to resume from batch {res['done'] + 1}; the saved checkpoint is behind, "
+                                 "so do not resume from another browser until this one finishes.")
+                    else:
+                        st.error(f"Notion append stopped at batch {res['done']}/{res['total']} — {res['error']}. "
+                                 "Click again to resume; earlier batches will not be duplicated.")
+    with dc3:
+        if _draft:
+            _cs = _draft.get("compliance_source") or {}
+            st.caption(f"Draft {str(_draft.get('generated_at', ''))[:16].replace('T', ' ')} UTC · "
+                       f"{_draft['stats']['requirements']} requirements · {_draft['stats']['high_confidence']} high confidence · "
+                       f"{_draft['stats']['needs_human']} need a human"
+                       + (f" · drafted in {_draft['chunks']} parts" if _draft.get("chunks") else "")
+                       + " · security: Trust Center standard answer" + ("" if _cs.get("approved") else "; explicit asks → [SECURITY TO CONFIRM]"))
+        else:
+            st.caption("No response draft yet." + (" Load attachments first for the best result." if not opp.get("attachment_text") else ""))
+    if _draft:
+        _reqs = _draft.get("requirements") or []
+        with st.expander(f"Response draft  ·  {len(_reqs)} requirements"):
+            if _draft.get("executive_summary"):
+                st.markdown('<div class="detail-label">Executive summary (draft)</div>', unsafe_allow_html=True)
+                st.write(_draft["executive_summary"])
+            if _draft.get("win_themes"):
+                st.markdown('<div class="detail-label" style="margin-top:8px;">Win themes</div>', unsafe_allow_html=True)
+                st.write(" · ".join(_draft["win_themes"]))
+            _sub = _draft.get("submission") or {}
+            st.caption(f"{_draft.get('rfp_type', '')} · submission {_sub.get('method', 'unknown')} · deadline {_sub.get('deadline', 'unknown')}"
+                       + (f" · questions due {_sub['questions_deadline']}" if _sub.get("questions_deadline") else "")
+                       + (" · " + "; ".join(_sub.get("format_requirements", [])[:3]) if _sub.get("format_requirements") else ""))
+            if _draft.get("evaluation_criteria"):
+                st.markdown('<div class="detail-label" style="margin-top:8px;">Evaluation criteria (extracted)</div>', unsafe_allow_html=True)
+                st.write(" · ".join(f"{c['criterion']}" + (f" ({c['weight']})" if c.get("weight") else "") for c in _draft["evaluation_criteria"]))
+            if _draft.get("required_forms"):
+                st.markdown('<div class="detail-label" style="margin-top:8px;">Required forms / attachments (extracted)</div>', unsafe_allow_html=True)
+                st.write(" · ".join(_draft["required_forms"]))
+            _ex = _draft.get("extraction")
+            if _ex and _ex.get("stats"):
+                st.caption(f"Requirements extracted with Nutrient Data Extraction API ({_ex.get('mode')}): "
+                           f"{_ex['stats']['requirements']} items, {_ex['stats']['mandatory']} mandatory, from {_ex.get('pages')} pages "
+                           f"across {len(_ex.get('files') or [])} file(s) · {_ex.get('credits_cost')} credits"
+                           + (f" · {_ex['stats']['low_grounding']} with low grounding score" if _ex['stats'].get('low_grounding') else "")
+                           + (f" · {_draft['stats']['missing_from_model']} extracted item(s) not answered by the model (marked [NOT DRAFTED])" if _draft['stats'].get('missing_from_model') else ""))
+            for r in _reqs:
+                _conf_cls = {"high": "pp-ok", "medium": "pp-warn", "low": "pp-bad"}.get(r.get("confidence"), "")
+                _basis = ", ".join(r.get("basis") or [])
+                st.markdown(
+                    f'<div class="pp-strip" style="margin-top:14px;"><span class="pp-owner">{_esc(r["id"])}'
+                    + (f' · {_esc(r["section"])}' if r.get("section") else "")
+                    + (f' · {_esc(r["file"])} p.{r["page"]}' if r.get("page") and r.get("file") else f' · p.{r["page"]}' if r.get("page") else "") + "</span>"
+                    f'<span class="pp-pill">{_esc(r["category"].replace("_", " "))}</span>'
+                    f'<span class="pp-pill {_conf_cls}">{_esc(r["confidence"])} confidence</span>'
+                    f'<span class="pp-pill">{_esc(_basis)}</span></div>'
+                    f'<div class="evidence-quote" style="margin-left:0;">{_esc(r.get("text", ""))}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.write(r.get("response", ""))
+                if r.get("human_todo"):
+                    st.markdown(f'<div class="gap-item">? {_esc(r["human_todo"])}</div>', unsafe_allow_html=True)
+                if r.get("sources"):
+                    st.caption("Sources: " + "; ".join(r["sources"][:4]))
+            for _title, _key in (("Open questions for Q&A", "open_questions"), ("Assumptions", "assumptions"), ("Do not claim", "do_not_claim")):
+                _items = _draft.get(_key) or []
+                if _items:
+                    st.markdown(f'<div class="detail-label" style="margin-top:14px;">{_title}</div>', unsafe_allow_html=True)
+                    for x in _items:
+                        st.markdown(f'<div class="gap-item">• {_esc(x)}</div>', unsafe_allow_html=True)
 
     # ── Activity ───────────────────────────────────────────────
     with st.expander("Activity"):
@@ -2447,6 +2629,11 @@ def page_admin() -> None:
                 st.success(f"Saved {_changed} change(s)")
                 st.rerun()
 
+    from oppos.drafting import compliance_status as _compliance_status
+    _comp = _compliance_status()
+    st.caption("Compliance answers source (oppos/drafting/compliance.md): "
+               + (f"approved v{_comp['version']} by {_comp['approved_by']} on {_comp['approved_at']}" if _comp["approved"]
+                  else "NOT approved — response drafts mark every security/certification item [SECURITY TO CONFIRM] until the security team fills it in and sets approved: true."))
     if not CURRENT_USER.get("is_admin"):
         st.caption("Settings and portal registrations are available to admins (OPPOS_ADMINS).")
 

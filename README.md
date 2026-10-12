@@ -80,8 +80,9 @@ The app has three pages (top navigation): **Find RFPs** (the shared pool — onl
    editable details (deadlines, Q&A date, submission method), a go/no-go checklist, actions
    (Push to Notion · Salesforce Opp message · Submitted · Won/Lost · Abandon), and an activity log.
 4. Reminders post to the pursuit channel at T-14/7/3/1, due, overdue, Q&A T-3/T-1, and after 7 idle days.
-5. **Portal registrations** (admins) — keep status / vendor ID / who holds the login / lead time per portal. Never store passwords.
-6. **Settings** (admins) — exclude sources: hidden from every list, skipped by scans, never alerted; one click archives their remaining active items. Use it to retire a source (e.g. an aggregator) without deleting history.
+5. **Draft response** (on a pursuit you own) — one grounded call extracts every requirement/question in the RFP (description + loaded attachments), drafts an answer per item against the LOB profile (and Nutrient docs via Kapa when configured), tags each with confidence and basis (rfp / profile / docs / compliance / needs human), and lists open questions, assumptions and things we must not claim. Review it inline, then **Append to Notion** adds it to the pursuit's page. Security/compliance answers come only from `oppos/drafting/compliance.md` once the security team sets `approved: true`; until then they read `[SECURITY TO CONFIRM]`. Pricing is always `[SALES TO PROVIDE]`.
+6. **Portal registrations** (admins) — keep status / vendor ID / who holds the login / lead time per portal. Never store passwords.
+7. **Settings** (admins) — exclude sources: hidden from every list, skipped by scans, never alerted; one click archives their remaining active items. Use it to retire a source (e.g. an aggregator) without deleting history.
 
 ## Scoring model
 
