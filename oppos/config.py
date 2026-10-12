@@ -35,6 +35,8 @@ TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
 
 STAGE1_FIT_THRESHOLD = 0.5
 STAGE2_MIN_SCORE = 40
+# Listings with no response deadline are treated as stale once they are this old (posted date, or first seen).
+STALE_NO_DEADLINE_DAYS = int(os.environ.get("STALE_NO_DEADLINE_DAYS", "90"))
 SLACK_ALERT_MIN_SCORE = 65
 
 # Line-of-business routing — optional owner per LOB (name or Slack handle), env-only.

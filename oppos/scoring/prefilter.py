@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -288,6 +288,28 @@ def prefilter(opp: dict[str, Any]) -> dict[str, Any]:
                 return opp
         except (ValueError, TypeError):
             pass  # Unparseable deadline — let it through
+
+    # ── No deadline and stale posting → reject ─────────────────
+    # Some portals publish closed/awarded bids with no close date. If there is no deadline
+    # and the posting is older than STALE_NO_DEADLINE_DAYS, it is not an open opportunity.
+    if not deadline_str:
+        posted_str = opp.get("posted_date") or ""
+        if posted_str:
+            try:
+                from oppos.config import STALE_NO_DEADLINE_DAYS
+                posted = datetime.fromisoformat(str(posted_str).replace("Z", "+00:00"))
+                if posted.tzinfo is None:
+                    posted = posted.replace(tzinfo=timezone.utc)
+                if posted < datetime.now(timezone.utc) - timedelta(days=STALE_NO_DEADLINE_DAYS):
+                    opp["prefilter"] = {
+                        "passed": False,
+                        "reason": f"Stale: posted {posted.date().isoformat()} with no deadline",
+                        "rule": "stale_reject",
+                    }
+                    logger.debug("Pre-filter REJECT (stale): %s posted=%s", title[:80], posted_str)
+                    return opp
+            except (ValueError, TypeError):
+                pass
 
     # ── Empty / broken scrape → reject ─────────────────────────
     # If title is missing/generic AND description is empty, there's nothing
