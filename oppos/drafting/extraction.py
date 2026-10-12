@@ -191,37 +191,61 @@ def _amend_newer(a: tuple[str, int] | None, b: tuple[str, int] | None) -> bool |
     return None
 
 
-_REPLACE_RE = re.compile(r"\b(replace[sd]?|replacing|revise[sd]?|revision|delete[sd]?|remove[sd]?|supersede[sd]?|amended to read|is hereby|in lieu of|changed? to|strike)\b", re.I)
+_REPLACE_RE = re.compile(r"\b(replace[sd]?|replacing|revise[sd]?|revision|delete[sd]?|remove[sd]?|supersede[sd]?|amended to read|is hereby|in lieu of|changed? to|strike|rescind\w*|withdraw\w*)\b", re.I)
+_ADDITIVE_RE = re.compile(r"\b(in addition|additionally|add(?:ed|s)?|new requirement|supplement\w*|also|further requirement|clarif\w+|as well as)\b", re.I)
 _SECTION_REF_RE = re.compile(r"(?:section|§|item|paragraph|clause|requirement|part)\s*([0-9]+(?:\.[0-9]+)*[a-z]?)", re.I)
 
 
 def _mark_supersessions(result: dict[str, Any]) -> None:
-    """An amendment item that targets an original item's section (same section id, or replacement language
-    naming it) supersedes it: the original is marked, the amendment item records what it replaces, and the
-    link is listed for a human to confirm. Nothing is deleted."""
+    """Link amendment items to the requirements they replace. An item supersedes an earlier item only when it
+    carries replacement / deletion language and targets it specifically (same section id, or a section it names);
+    additive or ambiguous amendments never retire anything — they are listed for human review instead. Amendments
+    are applied in chronological order (printed date / number / file-name number) and an amendment item is itself
+    a target for a newer amendment, so only the newest revision of a section stays active. Nothing is deleted."""
     reqs = result.get("requirements") or []
-    originals = [r for r in reqs if r.get("document_type") != "amendment"]
-    by_section: dict[str, list[dict[str, Any]]] = {}
-    for o in originals:
-        if o.get("section"):
-            by_section.setdefault(o["section"].strip().lower(), []).append(o)
     links: list[dict[str, Any]] = []
-    for a in (r for r in reqs if r.get("document_type") == "amendment"):
-        targets: list[tuple[dict[str, Any], str]] = []
+    reviews: list[dict[str, Any]] = []
+    amendments = [r for r in reqs if r.get("document_type") == "amendment"]
+    amendments.sort(key=lambda r: (tuple(r.get("amend_rank") or ("", -1)), r["id"]))
+    for a in amendments:
+        text = a.get("text") or ""
         sec = (a.get("section") or "").strip().lower()
-        if sec and sec in by_section:
-            targets += [(o, f"same section {a['section']}") for o in by_section[sec]]
-        if not targets and _REPLACE_RE.search(a.get("text") or ""):
-            for ref in _SECTION_REF_RE.findall(a.get("text") or ""):
-                for o in by_section.get(ref.lower(), []):
-                    targets.append((o, f"amendment text replaces section {ref}"))
-        for o, basis in targets:
-            if o.get("superseded_by"):
-                continue
-            o["superseded_by"] = a["id"]
-            a.setdefault("supersedes", []).append(o["id"])
-            links.append({"old": o["id"], "new": a["id"], "new_file": a.get("file", ""), "basis": basis})
+        secs = {sec} if sec else set()
+        secs |= {ref.lower() for ref in _SECTION_REF_RE.findall(text)}
+        candidates = [o for o in reqs if o is not a and not o.get("superseded_by") and (o.get("section") or "").strip().lower() in secs
+                      and (o.get("document_type") != "amendment" or tuple(o.get("amend_rank") or ("", -1)) < tuple(a.get("amend_rank") or ("", -1)))]
+        if not candidates:
+            continue
+        replacing = bool(_REPLACE_RE.search(text)) and not _ADDITIVE_RE.search(text)
+        basis = "same section " + (a.get("section") or next(iter(secs))) if sec and sec in {(o.get("section") or "").lower() for o in candidates} else "names section " + ", ".join(sorted(secs))
+        if replacing:
+            for o in candidates:
+                o["superseded_by"] = a["id"]
+                a.setdefault("supersedes", []).append(o["id"])
+                links.append({"old": o["id"], "new": a["id"], "new_file": a.get("file", ""), "basis": basis + " with replacement language"})
+        else:
+            reviews.append({"amendment": a["id"], "file": a.get("file", ""), "touches": [o["id"] for o in candidates],
+                            "basis": basis + (" (additive wording)" if _ADDITIVE_RE.search(text) else " (no replacement language)")})
+    # Resolve chains: whatever an item points at, it ends up pointing at the newest active revision, and that
+    # revision lists everything it retired.
+    by_id = {r["id"]: r for r in reqs}
+    for r in reqs:
+        seen, cur = set(), r.get("superseded_by")
+        while cur and cur not in seen and by_id.get(cur, {}).get("superseded_by"):
+            seen.add(cur)
+            cur = by_id[cur]["superseded_by"]
+        if cur and cur != r.get("superseded_by"):
+            r["superseded_by"] = cur
+    for r in reqs:
+        r.pop("supersedes", None)
+    for r in reqs:
+        if r.get("superseded_by"):
+            by_id[r["superseded_by"]].setdefault("supersedes", []).append(r["id"])
+    for l in links:
+        l["new"] = by_id[l["old"]]["superseded_by"]
+        l["new_file"] = by_id[l["new"]].get("file", "")
     result["supersessions"] = links
+    result["amendment_reviews"] = reviews
 
 
 def extract_rfp_requirements(
@@ -335,6 +359,7 @@ def extract_rfp_requirements(
                 "id": f"E{seq}",
                 "file": path.name,
                 "document_type": doc_type,
+                "amend_rank": list(rank) if rank else None,
                 "section": str(item.get("section") or "").strip()[:80],
                 "text": str(item.get("text")).strip()[:1500],
                 "category": cat if cat in CATEGORIES.replace(" ", "").split("|") else "other",
