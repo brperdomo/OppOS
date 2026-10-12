@@ -56,11 +56,32 @@ def run(days: int = 30, dry_run: bool = False, source_override: list[str] | None
     def _progress(idx: int, total: int, name: str) -> None:
         logger.info("[%d/%d] Fetching from %s…", idx + 1, total, name)
 
+    def _refresh(opp):
+
+        # A listing we already hold changed (deadline / link / title): update its Notion page if it has one.
+
+        from oppos.storage.db import get_opps_by_ids
+
+        sid = opp.get("source_id", "")
+
+        row = get_opps_by_ids([sid]).get(sid) if sid else None
+
+        if not row or not row.get("notion_page_id"):
+
+            return
+
+        merged = {**row, **{k: v for k, v in opp.items() if v and k in ("title", "agency", "solicitation_number", "response_deadline", "posted_date", "url", "description", "notice_type")}}
+
+        push_opportunity(merged)
+
+
     stats = run_scan(
         sources=resolve_sources(source_override),
         days=days,
         on_progress=_progress,
         on_scored=_push,
+
+        on_refreshed=_refresh,
     )
     stats["notion_synced"] = notion_synced
     stats["slack_alerted"] = 0

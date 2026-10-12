@@ -235,8 +235,37 @@ _MIGRATIONS = [
 ]
 
 
+_CREATE_LINK_CHECKS_SQL = """
+    CREATE TABLE IF NOT EXISTS link_checks (
+        url TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        checked_at TEXT NOT NULL
+    )
+"""
+
+
+def get_link_checks(urls: list[str], max_age_days: int = 7) -> dict[str, str]:
+    """Cached link statuses ('ok' | 'dead' | 'unknown') younger than max_age_days, keyed by url."""
+    out: dict[str, str] = {}
+    cutoff = (datetime.utcnow() - timedelta(days=max_age_days)).isoformat()
+    for i in range(0, len(urls), 100):
+        chunk = [u for u in urls[i:i + 100] if u]
+        if not chunk:
+            continue
+        placeholders = ", ".join("?" for _ in chunk)
+        for r in _query(f"SELECT url, status FROM link_checks WHERE url IN ({placeholders}) AND checked_at > ?", (*chunk, cutoff)):
+            out[r["url"]] = r["status"]
+    return out
+
+
+def set_link_check(url: str, status: str) -> None:
+    _execute("INSERT INTO link_checks (url, status, checked_at) VALUES (?, ?, ?) ON CONFLICT(url) DO UPDATE SET status = excluded.status, checked_at = excluded.checked_at",
+             (url, status, datetime.utcnow().isoformat()))
+
+
 def init_db() -> None:
     _execute(_CREATE_TABLE_SQL)
+    _execute(_CREATE_LINK_CHECKS_SQL)
     _execute(_CREATE_META_SQL)
     _execute(_CREATE_HEALTH_SQL)
     _execute(_CREATE_PURSUITS_SQL)
@@ -298,9 +327,17 @@ def find_duplicate(opp: dict[str, Any]) -> dict[str, Any] | None:
     rows = _query(f"SELECT * FROM opportunities WHERE source = ? AND source_id != ? AND pipeline_status IN ({placeholders})",
                   (source, opp.get("source_id", ""), *_ACTIVE_STATUSES))
     for r in rows:
+        r_sol = (r.get("solicitation_number") or "").strip().lower()
+        if sol and r_sol and r_sol != sol.lower():
+            continue  # two identifiers that disagree are two solicitations, whatever the title says
         if _norm_key(r.get("title") or "") == key and (r.get("agency") or "").strip().lower() == (opp.get("agency") or "").strip().lower():
             return r
     return None
+
+
+def meta_changes(opp: dict[str, Any], cur: dict[str, Any]) -> dict[str, Any]:
+    """Listing metadata fields whose fetched value differs from the stored row (empty fetched values never overwrite)."""
+    return {f: opp.get(f) for f in _META_FIELDS if opp.get(f) and str(opp.get(f)) != str(cur.get(f) or "")}
 
 
 def refresh_opportunity_meta(opp: dict[str, Any]) -> bool:
@@ -310,7 +347,7 @@ def refresh_opportunity_meta(opp: dict[str, Any]) -> bool:
     if not rows:
         return False
     cur = rows[0]
-    changes = {f: opp.get(f) for f in _META_FIELDS if opp.get(f) and str(opp.get(f)) != str(cur.get(f) or "")}
+    changes = meta_changes(opp, cur)
     if not changes:
         return False
     sets = ", ".join(f"{k} = ?" for k in changes)

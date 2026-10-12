@@ -264,33 +264,61 @@ _JUNK_TITLE_RE = re.compile(
     r"|page not found|error\b|untitled$|solicitations?$|public solicitations$|notice$)", re.I)
 
 _LINK_CACHE: dict[str, str] = {}
-# Hosts whose TLS certificate is known-bad or that block automated clients; a 403/405/429 is not "dead".
 _LINK_ALIVE_STATUSES = {200, 201, 202, 203, 204, 301, 302, 303, 307, 308, 401, 403, 405, 406, 429}
+LINK_PROBE_TIMEOUT = 5.0
+LINK_PROBE_WORKERS = 8
+LINK_PROBE_MAX_PER_SOURCE = 150
 
 
-def check_link(url: str, timeout: float = 10.0) -> str:
-    """'ok' | 'dead' | 'unknown' for a listing URL. Only an explicit 404/410 (or a resolved host that refuses the
-    path) is dead; connection problems are unknown so a flaky portal does not drop real listings. Single-page
-    portals (hash routes) are checked at their shell URL only."""
-    if not url or not url.lower().startswith(("http://", "https://")):
-        return "unknown"
-    if url in _LINK_CACHE:
-        return _LINK_CACHE[url]
+def _probe_one(url: str, timeout: float = LINK_PROBE_TIMEOUT) -> str:
+    """'ok' | 'dead' | 'unknown'. HEAD first, GET (streamed, no body) when HEAD is refused. Only an explicit
+    404/410 is dead; connection problems are unknown so a flaky portal never drops real listings. Hash routes
+    are checked at the shell URL."""
     import httpx
     target = url.split("#", 1)[0] or url
-    result = "unknown"
     try:
         with httpx.Client(timeout=timeout, follow_redirects=True, verify=False,
                           headers={"User-Agent": "Mozilla/5.0 (compatible; OppOS link check)"}) as client:
-            resp = client.get(target)
-            if resp.status_code in (404, 410):
-                result = "dead"
-            elif resp.status_code in _LINK_ALIVE_STATUSES:
-                result = "ok"
+            resp = client.head(target)
+            if resp.status_code in (405, 501, 400):
+                with client.stream("GET", target) as r:
+                    code = r.status_code
+            else:
+                code = resp.status_code
     except Exception:
-        result = "unknown"
-    _LINK_CACHE[url] = result
-    return result
+        return "unknown"
+    return "dead" if code in (404, 410) else "ok" if code in _LINK_ALIVE_STATUSES else "unknown"
+
+
+def probe_links(urls: list[str], workers: int = LINK_PROBE_WORKERS, limit: int = LINK_PROBE_MAX_PER_SOURCE) -> dict[str, str]:
+    """Check listing links concurrently with a bounded pool, using and filling the persistent cache
+    (link_checks, 7-day TTL). Beyond `limit` fresh probes per call the rest are left 'unknown' for next time,
+    so a source with hundreds of slow links cannot eat the scan's time budget."""
+    from concurrent.futures import ThreadPoolExecutor
+    from oppos.storage.db import get_link_checks, set_link_check
+    todo = [u for u in dict.fromkeys(urls) if u and u.lower().startswith(("http://", "https://"))]
+    results = dict(_LINK_CACHE)
+    try:
+        results.update(get_link_checks(todo))
+    except Exception as e:
+        logger.warning("link cache unavailable: %s", e)
+    fresh = [u for u in todo if u not in results][:limit]
+    if fresh:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for url, status in zip(fresh, pool.map(_probe_one, fresh)):
+                results[url] = status
+                try:
+                    set_link_check(url, status)
+                except Exception as e:
+                    logger.warning("could not cache link check for %s: %s", url, e)
+    _LINK_CACHE.update({u: results[u] for u in todo if u in results})
+    return {u: results.get(u, "unknown") for u in todo}
+
+
+def check_link(url: str, timeout: float = LINK_PROBE_TIMEOUT) -> str:
+    """Cached status only — never touches the network inside the prefilter. run_scan probes a source's new
+    links concurrently (probe_links) before filtering; anything unprobed is 'unknown' and passes."""
+    return _LINK_CACHE.get(url, "unknown")
 
 
 def prefilter(opp: dict[str, Any]) -> dict[str, Any]:
