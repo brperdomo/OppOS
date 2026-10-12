@@ -89,7 +89,10 @@ _COMMERCIAL_TERMS_RE = re.compile(
     r"|\bcontract (?:term|duration|length) (?:of|is|will be)\b|\bminimum (?:commitment|term|purchase)\b|\blate (?:fees?|payment (?:fees?|penalt\w+))\b|\brefund\w*|\bescrow\b"
     r"|\bmost[- ]favou?red\b|\bprice (?:escalation|increase|protection)\b|\bcredit terms?\b|\bpurchase order terms?\b"
     r"|\b\d{2}(?:\.\d+)?\s?% ?(?:uptime|availability)\b|\b(?:uptime|availability) (?:sla|guarantee|commitment|target)s?\b|\b(?:guarantee|guaranteed|commit to|committed to) \d{2}(?:\.\d+)?\s?%"
-    r"|\bsla (?:is|of|target|commitment|guarantee|terms?)\b|\bservice[- ]level agreements?\b|\bguaranteed (?:uptime|availability|response time|resolution time)s?\b",
+    r"|\bsla (?:is|of|target|commitment|guarantee|terms?)\b|\bservice[- ]level agreements?\b|\bguaranteed (?:uptime|availability|response time|resolution time)s?\b"
+    r"|\b(?:commit(?:s|ted|ment)?|target|promise[sd]?|pledge[sd]?) (?:to |of )?(?:a |an )?[\w-]{0,20} ?(?:response|resolution|restoration|recovery) times?\b"
+    r"|\b(?:response|resolution|restoration|recovery)[- ]time (?:commitment|target|promise|sla|guarantee)s?\b"
+    r"|\b(?:respond|resolve|restore) (?:to [\w ]{0,20} )?within \d+ (?:hours?|minutes?|business days?|days?)\b",
     re.I,
 )
 TEAM_MARK = "[TEAM TO PROVIDE]"
@@ -203,7 +206,8 @@ _PRED_NEG_RE = re.compile(
     r"|\bnot (held|offered|available|supported|provided|in place|applicable|covered|included|maintained|certified|authori[sz]ed"
     r"|accredited|attested|signed|enabled|enforced|required|possible|planned|pursued|obtained)\b"
     r"|\b(?:is|are|was|were|remains?|be|currently|now)?\s*(unsupported|unavailable|uncertified|unaccredited|unattested|unverified|unencrypted|unimplemented"
-    r"|disabled|absent|missing|prohibited|excluded|out of scope|not applicable|n/a|no longer (?:supported|offered|available|held))\b", re.I)
+    r"|disabled|absent|missing|prohibited|excluded|out of scope|not applicable|n/a|no longer (?:supported|offered|available|held))\b"
+    r"|\b(?:has|have|had) (?:not|never|no)\b|\b(?:has|have|had) not (?:yet )?been\b|\b(?:will|would|cannot|can't|could not|is not|are not) be (?:implemented|obtained|achieved|provided|offered|supported|pursued)\b", re.I)
 
 
 def _term_polarity(sentence: str, start: int, end: int | None = None) -> str:
@@ -343,12 +347,16 @@ def _claim_terms_pol(sentence: str, controls: bool = False) -> set[tuple[str, st
         for m in _QUANTITY_RE.finditer(sentence):
             # "RTO: 24 hours; RPO: 4 hours" — a colon is a label separator here, not a clause break.
             entries.append((_quantity_token(m.group(1), m.group(2), _owner_of(m.start())), m.start(), m.end()))
+        for tok, st, en in _date_entries(sentence):
+            # "SOC 2 report dated 2025-01-01 and ISO 27001 certificate dated 2025-12-01": each date belongs to its standard.
+            kind, val = tok.split(":", 1)
+            entries.append((f"{kind}:{_owner_of(st) or '-'}:{val}", st, en))
     entries.sort(key=lambda e: (e[1], e[2]))
     out: set[tuple[str, str]] = set()
     prev_end: int | None = None
     prev_pol = "pos"
     for term, start, end in entries:
-        pol = _term_polarity(sentence, start, end)
+        pol = "pos" if term.startswith(("d:", "y:")) else _term_polarity(sentence, start, end)
         if pol == "pos" and prev_end is not None and prev_pol == "neg":
             gap = sentence[prev_end:start]
             if start >= prev_end and len(gap) <= 60 and not _VERB_RE.search(gap) and not _HARD_BREAK_RE.search(gap):
@@ -364,7 +372,7 @@ def _with_base_status(pairs: set[tuple[str, str]]) -> set[tuple[str, str]]:
     so a fact stating the type backs a claim that omits it — never the reverse."""
     extra = set()
     for t, p in pairs:
-        if t.startswith("s:") or t.startswith("q:"):
+        if t.startswith(("s:", "q:", "d:", "y:")):
             kind, owner, rest = t.split(":", 2)
             base = re.match(r"(soc[123]|fedramp|wcag)", owner)
             if base and base.group(1) != owner:
@@ -391,21 +399,29 @@ _DATE_MDY_RE = re.compile(r"\b([A-Za-z]{3,9})\.? (\d{1,2})(?:st|nd|rd|th)?,? (20
 _DATE_DMY_RE = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)? ([A-Za-z]{3,9})\.? (20\d{2})\b")
 
 
-def _date_terms(sentence: str) -> set[str]:
-    """Years and complete dates in a sentence, normalised ("y:2026", "d:2026-03-01"), so an approved
-    "report dated 2026-03-01" does not back a claim "dated 2026-09-01" just because the year matches."""
-    out = {f"y:{y}" for y in _YEAR_RE.findall(sentence)}
-    for y, m, d in _DATE_ISO_RE.findall(sentence):
-        out.add(f"d:{y}-{int(m):02d}-{int(d):02d}")
-    for m, d, y in _DATE_US_RE.findall(sentence):
-        out.add(f"d:{y}-{int(m):02d}-{int(d):02d}")
-    for mon, d, y in _DATE_MDY_RE.findall(sentence):
-        if mon[:3].lower() in _MONTHS:
-            out.add(f"d:{y}-{_MONTHS[mon[:3].lower()]:02d}-{int(d):02d}")
-    for d, mon, y in _DATE_DMY_RE.findall(sentence):
-        if mon[:3].lower() in _MONTHS:
-            out.add(f"d:{y}-{_MONTHS[mon[:3].lower()]:02d}-{int(d):02d}")
+def _date_entries(sentence: str) -> list[tuple[str, int, int]]:
+    """(token, start, end) for every complete date ("d:2026-03-01") and year ("y:2026") in a sentence."""
+    out: list[tuple[str, int, int]] = []
+    covered: list[tuple[int, int]] = []
+    def add(tok: str, m: Any) -> None:
+        out.append((tok, m.start(), m.end())); covered.append((m.start(), m.end()))
+    for m in _DATE_ISO_RE.finditer(sentence):
+        add(f"d:{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}", m)
+    for m in _DATE_US_RE.finditer(sentence):
+        add(f"d:{m.group(3)}-{int(m.group(1)):02d}-{int(m.group(2)):02d}", m)
+    for m in _DATE_MDY_RE.finditer(sentence):
+        if m.group(1)[:3].lower() in _MONTHS:
+            add(f"d:{m.group(3)}-{_MONTHS[m.group(1)[:3].lower()]:02d}-{int(m.group(2)):02d}", m)
+    for m in _DATE_DMY_RE.finditer(sentence):
+        if m.group(2)[:3].lower() in _MONTHS:
+            add(f"d:{m.group(3)}-{_MONTHS[m.group(2)[:3].lower()]:02d}-{int(m.group(1)):02d}", m)
+    for m in _YEAR_RE.finditer(sentence):
+        out.append((f"y:{m.group(1)}", m.start(), m.end()))  # a year inside a full date is also a year
     return out
+
+
+def _date_terms(sentence: str) -> set[str]:
+    return {t for t, _, _ in _date_entries(sentence)}
 
 
 _SCOPE_CANON = {"nutrientworkflow": "workflow", "workflowautomation": "workflow", "documentwebservices": "dws", "onpremises": "onprem",
@@ -437,8 +453,8 @@ def _approved_facts(body: str) -> tuple[tuple[frozenset[tuple[str, str]], frozen
     for line in body.splitlines():
         for sent in _SENTENCE_SPLIT.split(line.strip()):
             pairs = {(t, p) for t, p in _claim_terms_pol(sent, controls=True) if t not in _GENERIC_COMPLIANCE_TERMS}
-            if {t for t, _ in pairs if not t.startswith("s:")}:
-                facts.append((frozenset(pairs), frozenset(_scope_terms(sent)), frozenset(_date_terms(sent))))
+            if {t for t, _ in pairs if not t.startswith(("s:", "q:", "d:", "y:"))}:
+                facts.append((frozenset(pairs), frozenset(_scope_terms(sent)), frozenset()))
     return tuple(facts)
 
 
@@ -460,15 +476,15 @@ def _unsupported_terms(sentence: str, approved_body: str | None, controls: bool 
     if not approved_body:
         return terms
     checked = {(t, p) for t, p in pairs if t not in _GENERIC_COMPLIANCE_TERMS}
-    specific = {t for t, _ in checked if not t.startswith("s:")}
+    specific = {t for t, _ in checked if not t.startswith(("s:", "q:", "d:", "y:"))}
     if not specific:
         # Only generic words ("we are fully compliant") — nothing checkable, so a human must look.
         return terms
-    scope, years = _scope_terms(sentence), _date_terms(sentence)
-    for f_pairs, f_scope, f_years in _approved_facts(approved_body):
-        # Every (term, polarity) the claim asserts must be stated the same way in one fact: "does not have a
-        # SOC 2 report" is not backed by "SOC 2 report has no exceptions" (that SOC 2 is positive).
-        if not checked <= f_pairs or not years <= f_years:
+    scope = _scope_terms(sentence)
+    for f_pairs, f_scope, _unused in _approved_facts(approved_body):
+        # Every (term, polarity) the claim asserts — standards, controls, status, quantities and dates bound to
+        # their standard — must be stated the same way in one fact.
+        if not checked <= f_pairs:
             continue
         # Scope must match exactly: a claim may neither add a product/deployment the fact does not cover
         # nor drop one the fact is limited to ("Nutrient Workflow (Enhanced Cloud)" ≠ "Nutrient Workflow").
