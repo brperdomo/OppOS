@@ -201,7 +201,9 @@ _CLAUSE_BREAK_RE = re.compile(r"[,;:()]|\b(and|but|while|although|whereas|except
 _PRED_NEG_RE = re.compile(
     r"\b(is|are|was|were|be|been|being)\s+(not|no longer|never)\b|\b(isn't|aren't|wasn't|weren't)\b"
     r"|\bnot (held|offered|available|supported|provided|in place|applicable|covered|included|maintained|certified|authori[sz]ed"
-    r"|accredited|attested|signed|enabled|enforced|required|possible|planned|pursued|obtained)\b", re.I)
+    r"|accredited|attested|signed|enabled|enforced|required|possible|planned|pursued|obtained)\b"
+    r"|\b(?:is|are|was|were|remains?|be|currently|now)?\s*(unsupported|unavailable|uncertified|unaccredited|unattested|unverified|unencrypted|unimplemented"
+    r"|disabled|absent|missing|prohibited|excluded|out of scope|not applicable|n/a|no longer (?:supported|offered|available|held))\b", re.I)
 
 
 def _term_polarity(sentence: str, start: int, end: int | None = None) -> str:
@@ -263,6 +265,7 @@ _VERB_RE = re.compile(
     r"\b(is|are|was|were|be|been|has|have|had|does|do|did|will|can|must|shall|may|should|supports?|provides?|offers?|holds?|includes?"
     r"|maintains?|uses?|encrypts?|requires?|performs?|conducts?|undergoes|signs?|claims?|operates?|runs?|stores?|hosts?|keeps?|retains?)\b", re.I)
 _HARD_BREAK_RE = re.compile(r"[;:.]|\b(but|while|although|whereas|except|however|yet)\b", re.I)
+_OWNER_BREAK_RE = re.compile(r"[;.]|\b(but|while|although|whereas|except|however|yet|and|or)\b", re.I)
 
 
 def _num_value(raw: str) -> str:
@@ -318,7 +321,8 @@ def _claim_terms_pol(sentence: str, controls: bool = False) -> set[tuple[str, st
         for m in _QUANTITY_RE.finditer(sentence):
             owner = None
             for st, en, t in controls_pos:  # nearest preceding term in the same clause owns the quantity
-                if en <= m.start() and not _HARD_BREAK_RE.search(sentence[en:m.start()]):
+                # "RTO: 24 hours; RPO: 4 hours" — a colon is a label separator here, not a clause break.
+                if en <= m.start() and not _OWNER_BREAK_RE.search(sentence[en:m.start()]):
                     owner = t
             entries.append((_quantity_token(m.group(1), m.group(2), owner), m.start(), m.end()))
     entries.sort(key=lambda e: (e[1], e[2]))
@@ -688,10 +692,12 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
                 # Not an explicit ask → the standard Trust Center answer; nothing to verify.
                 response, basis, conf, todo = TRUST_CENTER_ANSWER, ["standard"], "high", ""
         else:
-            response, gated = _gate_compliance_prose(response, comp["facts"] if comp["approved"] else None)
+            # Every customer-facing answer: a volunteered control claim ("we support MFA and RBAC") in a functional
+            # answer is still a security claim and must restate an approved fact.
+            response, gated = _gate_compliance_prose(response, comp["facts"] if comp["approved"] else None, controls=True)
             if gated:
                 basis, conf = ["needs_human"], "low"
-                todo = todo or "Security team to confirm the compliance statement in this answer, or remove it."
+                todo = todo or "Security team to confirm the security/compliance statement in this answer, or remove it."
         # Pricing: replace the whole answer only when price language is actually present (in the ask or the answer);
         # a "commercial" label alone is not enough — bid validity days or opening dates are not pricing.
         commercial_ask = cat == "commercial" and (_PRICING_RE.search(req_text) or _COMMERCIAL_TERMS_RE.search(req_text))
@@ -792,6 +798,8 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
                            for q in _norm_list(raw.get("open_questions"), 20)] + [
             f"Confirm that {sp['new']} ({sp.get('new_file', '')}) supersedes {sp['old']} ({sp.get('basis', '')}); only the amendment item is answered."
             for sp in ((extracted or {}).get("supersessions") or [])][:10] + [
+            f"Amendment item {rv['amendment']} ({rv.get('file', '')}) touches {', '.join(rv['touches'])} ({rv.get('basis', '')}) — confirm whether it adds to or replaces them; all are answered for now."
+            for rv in ((extracted or {}).get("amendment_reviews") or [])][:10] + [
             f"Conflicting {c['field'].replace('_', ' ')} across files — {c['kept_file']} says \"{c['kept']}\" but {c['other_file']} says \"{c['other']}\"; confirm which applies."
             for c in ((extracted or {}).get("solicitation_conflicts") or [])][:5],
         "assumptions": assumptions,
