@@ -68,19 +68,19 @@
     if (!system) system = await DocAuth.createDocAuthSystem({});
     const doc = await system.import(new TextEncoder().encode(cfg.md), { format: 'markdown', fileName: cfg.stem + '.md' });
     const editor = await system.createEditor(document.getElementById('editor'), { document: doc });
-    const save = async (format, ext, mime, extra) => {
-      status.textContent = 'Exporting ' + ext.toUpperCase() + '…';
+    const save = async (format, ext, mime, extra, suffix) => {
+      status.textContent = 'Exporting ' + (suffix ? 'PDF/A' : ext.toUpperCase()) + '…';
       try {
         const buf = await editor.currentDocument().export(Object.assign({ format }, extra || {}));
         const url = URL.createObjectURL(new Blob([buf], { type: mime }));
-        const a = document.createElement('a'); a.href = url; a.download = cfg.stem + '.' + ext; a.click();
+        const a = document.createElement('a'); a.href = url; a.download = cfg.stem + (suffix || '') + '.' + ext; a.click();
         setTimeout(() => URL.revokeObjectURL(url), 2000);
         status.textContent = ext.toUpperCase() + ' downloaded';
       } catch (e) { status.textContent = 'Export failed: ' + (e && e.message || e); }
     };
     document.getElementById('docx').onclick = () => save('docx', 'docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     document.getElementById('pdf').onclick = () => save('pdf', 'pdf', 'application/pdf');
-    document.getElementById('pdfa').onclick = () => save('pdf', 'pdf', 'application/pdf', { PDF_A: true });
+    document.getElementById('pdfa').onclick = () => save('pdf', 'pdf', 'application/pdf', { PDF_A: true }, '-pdfa');
     for (const id of ['docx', 'pdf', 'pdfa']) document.getElementById(id).disabled = false;
     status.textContent = licenseNote ? 'Ready (evaluation build, watermarked — ' + licenseNote + ')'
                        : cfg.licenseKey ? 'Ready · licensed for ' + location.hostname

@@ -281,7 +281,7 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
     authoritative = bool(pursuit.get("details_saved_at"))
     if authoritative:
         method = str(pursuit.get("submission_method") or "unknown").strip()
-        deadline = _known(pursuit.get("submission_deadline")) or _known(opp.get("response_deadline")) or "unknown"
+        deadline = _known(pursuit.get("submission_deadline")) or "unknown"  # a cleared date stays cleared
         q_deadline = _known(pursuit.get("qa_deadline"))
     else:
         method = _known(pursuit.get("submission_method")) or _known(sub.get("method")) or _known(opp.get("submission_method")) or "unknown"
@@ -327,11 +327,17 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
                 w(f"> ✎ {r['human_todo']}")
             w("")
 
-    # Delivery boilerplate
+    # Delivery boilerplate — customer-facing prose, so it passes the same compliance/control gate as the draft's
+    # overview text (and is re-checked against the current approval on every export).
+    facts_for_gate = comp["facts"] if comp["approved"] else None
     for heading in _BOILERPLATE_ORDER:
         w(f"## {heading}")
         w("")
-        w(bp.get(heading) or f"{TEAM_MARK} — {heading.lower()} for {lob_name}.")
+        text = bp.get(heading) or f"{TEAM_MARK} — {heading.lower()} for {lob_name}."
+        gated_paras = []
+        for para in text.split("\n"):
+            gated_paras.append(_gate_compliance_prose(para, facts_for_gate, controls=True)[0] if para.strip() else para)
+        w("\n".join(gated_paras))
         w("")
 
     # Appendix A — requirements matrix
