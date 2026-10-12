@@ -203,8 +203,8 @@ def revalidate_compliance(draft: dict[str, Any], comp: dict[str, Any]) -> tuple[
     out = copy.deepcopy(draft)
     changed = 0
     for r in out.get("requirements") or []:
-        controls = r.get("category") == "security_compliance"
-        resp, gated = _gate_compliance_prose(str(r.get("response") or ""), facts, controls=controls)
+        # The drafter gates controls in every answer category, so revalidation must too.
+        resp, gated = _gate_compliance_prose(str(r.get("response") or ""), facts, controls=True)
         if gated:
             r["response"], r["basis"], r["confidence"] = resp, ["needs_human"], "low"
             r["human_todo"] = r.get("human_todo") or "Compliance answers changed after this draft — security team to re-confirm."
