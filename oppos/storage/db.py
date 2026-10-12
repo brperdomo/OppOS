@@ -269,6 +269,65 @@ def is_seen(source_id: str) -> bool:
     return len(rows) > 0
 
 
+_ACTIVE_STATUSES = ("new", "qualified", "expiring_soon", "in_progress")
+_META_FIELDS = ("title", "agency", "solicitation_number", "response_deadline", "posted_date", "url", "description", "notice_type")
+
+
+def _norm_key(text: str) -> str:
+    import re as _re
+    t = (text or "").lower()
+    t = _re.sub(r"\((?:request for|rfi|rfp|rfq|re-?issue|addendum|amendment|revised)[^)]*\)", " ", t)  # "(Request for Information)" suffixes
+    t = _re.sub(r"\b(request for (information|proposals?|quotes?|qualifications?)|rfi|rfp|rfq|rfqu|re-?issued?|addendum|amendment|revised|v\d+)\b", " ", t)
+    return _re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+
+def find_duplicate(opp: dict[str, Any]) -> dict[str, Any] | None:
+    """An existing active row for the same posting: same source + solicitation number, or same source +
+    normalised title (portals re-post the same solicitation under a new id for addenda / re-issues)."""
+    source = opp.get("source") or ""
+    placeholders = ", ".join("?" for _ in _ACTIVE_STATUSES)
+    sol = (opp.get("solicitation_number") or "").strip()
+    if sol:
+        rows = _query(f"SELECT * FROM opportunities WHERE source = ? AND solicitation_number = ? AND source_id != ? AND pipeline_status IN ({placeholders}) LIMIT 1",
+                      (source, sol, opp.get("source_id", ""), *_ACTIVE_STATUSES))
+        if rows:
+            return rows[0]
+    key = _norm_key(opp.get("title") or "")
+    if len(key) < 12:
+        return None
+    rows = _query(f"SELECT * FROM opportunities WHERE source = ? AND source_id != ? AND pipeline_status IN ({placeholders})",
+                  (source, opp.get("source_id", ""), *_ACTIVE_STATUSES))
+    for r in rows:
+        if _norm_key(r.get("title") or "") == key and (r.get("agency") or "").strip().lower() == (opp.get("agency") or "").strip().lower():
+            return r
+    return None
+
+
+def refresh_opportunity_meta(opp: dict[str, Any]) -> bool:
+    """Update listing metadata (deadline, dates, url, title…) of a row we already hold when the source now
+    reports different values — scans re-fetch listings, and a corrected deadline or link must land."""
+    rows = _query("SELECT * FROM opportunities WHERE source_id = ?", (opp.get("source_id", ""),))
+    if not rows:
+        return False
+    cur = rows[0]
+    changes = {f: opp.get(f) for f in _META_FIELDS if opp.get(f) and str(opp.get(f)) != str(cur.get(f) or "")}
+    if not changes:
+        return False
+    sets = ", ".join(f"{k} = ?" for k in changes)
+    _execute(f"UPDATE opportunities SET {sets}, updated_at = ? WHERE source_id = ?",
+             (*changes.values(), datetime.utcnow().isoformat(), opp["source_id"]))
+    return True
+
+
+def expire_if_active(source_id: str, reason: str) -> bool:
+    """Mark a row expired when its source now reports it closed/awarded/cancelled — only if it is still active here."""
+    rows = _query("SELECT pipeline_status FROM opportunities WHERE source_id = ?", (source_id,))
+    if not rows or rows[0]["pipeline_status"] not in ("new", "qualified", "expiring_soon"):
+        return False
+    set_pipeline_status(source_id, "expired", notes=reason)
+    return True
+
+
 def upsert_opportunity(opp: dict[str, Any]) -> None:
     poc = opp.get("point_of_contact") or {}
     _execute(

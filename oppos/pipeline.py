@@ -21,7 +21,7 @@ from oppos.storage.db import (
     is_seen,
     record_source_health,
     set_meta,
-    upsert_opportunity,
+    upsert_opportunity, expire_if_active, find_duplicate, refresh_opportunity_meta,
 )
 
 logger = logging.getLogger("oppos.pipeline")
@@ -88,7 +88,21 @@ def run_scan(
             count = len(opps)
             stats["fetched"] += count
             for opp in opps:
+                if opp.get("active") is False:
+                    # The source now reports this listing closed / awarded / cancelled: retire our copy if we hold one.
+                    if expire_if_active(opp["source_id"], "Auto-expired — source reports the listing is no longer open"):
+                        stats["expired_by_source"] = stats.get("expired_by_source", 0) + 1
+                    continue
                 if is_seen(opp["source_id"]):
+                    if refresh_opportunity_meta(opp):  # corrected deadline / link / title from the latest fetch
+                        stats["refreshed"] = stats.get("refreshed", 0) + 1
+                    continue
+                dup = find_duplicate(opp)
+                if dup:
+                    # Same posting under a new id (addendum / re-issue): keep one row, carry the newer metadata.
+                    refresh_opportunity_meta({**opp, "source_id": dup["source_id"]})
+                    stats["duplicates"] = stats.get("duplicates", 0) + 1
+                    logger.info("Duplicate of %s skipped: %s", dup["source_id"], opp["source_id"])
                     continue
                 new += 1
                 stats["new"] += 1

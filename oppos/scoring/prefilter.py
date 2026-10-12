@@ -257,6 +257,42 @@ def _combine_text(opp: dict[str, Any]) -> str:
     return _URL_RE.sub("", text)
 
 
+# Titles that are a portal's page chrome, not a solicitation ("Welcome to the State of Maine's CGI Advantage
+# Vendor Self Service", "Login", "Bid Board").
+_JUNK_TITLE_RE = re.compile(
+    r"^(welcome to\b|log ?in\b|sign ?in\b|home( page)?$|bid ?board$|vendor (self[- ]service|portal|registration)\b|search results?$"
+    r"|page not found|error\b|untitled$|solicitations?$|public solicitations$|notice$)", re.I)
+
+_LINK_CACHE: dict[str, str] = {}
+# Hosts whose TLS certificate is known-bad or that block automated clients; a 403/405/429 is not "dead".
+_LINK_ALIVE_STATUSES = {200, 201, 202, 203, 204, 301, 302, 303, 307, 308, 401, 403, 405, 406, 429}
+
+
+def check_link(url: str, timeout: float = 10.0) -> str:
+    """'ok' | 'dead' | 'unknown' for a listing URL. Only an explicit 404/410 (or a resolved host that refuses the
+    path) is dead; connection problems are unknown so a flaky portal does not drop real listings. Single-page
+    portals (hash routes) are checked at their shell URL only."""
+    if not url or not url.lower().startswith(("http://", "https://")):
+        return "unknown"
+    if url in _LINK_CACHE:
+        return _LINK_CACHE[url]
+    import httpx
+    target = url.split("#", 1)[0] or url
+    result = "unknown"
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True, verify=False,
+                          headers={"User-Agent": "Mozilla/5.0 (compatible; OppOS link check)"}) as client:
+            resp = client.get(target)
+            if resp.status_code in (404, 410):
+                result = "dead"
+            elif resp.status_code in _LINK_ALIVE_STATUSES:
+                result = "ok"
+    except Exception:
+        result = "unknown"
+    _LINK_CACHE[url] = result
+    return result
+
+
 def prefilter(opp: dict[str, Any]) -> dict[str, Any]:
     """Apply rules-based pre-filter. Returns the opp with a `prefilter` key added.
 
@@ -310,6 +346,17 @@ def prefilter(opp: dict[str, Any]) -> dict[str, Any]:
                     return opp
             except (ValueError, TypeError):
                 pass
+
+    # ── Page chrome scraped as a title → reject ─────────────────
+    if _JUNK_TITLE_RE.search(title.strip()):
+        opp["prefilter"] = {"passed": False, "reason": f"Not a solicitation title: {title[:60]!r}", "rule": "junk_title_reject"}
+        return opp
+
+    # ── Dead listing link → reject ──────────────────────────────
+    link = check_link(opp.get("url") or "")
+    if link == "dead":
+        opp["prefilter"] = {"passed": False, "reason": f"Listing link is dead: {opp.get('url')}", "rule": "dead_link_reject"}
+        return opp
 
     # ── Empty / broken scrape → reject ─────────────────────────
     # If title is missing/generic AND description is empty, there's nothing
