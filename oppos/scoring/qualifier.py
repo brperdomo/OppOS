@@ -10,6 +10,7 @@ investigate/skip until a vetted profile exists.
 from __future__ import annotations
 
 import html
+from html.parser import HTMLParser
 import json
 import logging
 import re
@@ -413,14 +414,16 @@ _SPECULATIVE_RISK_RE = re.compile(
     r" (needs?|requires?|will need|would need) (further |additional )?(investigation|verification|confirmation|clarification)\b"
     r"|\b(we|nutrient|the profile|profile) (lacks?|has no|have no|is without|are without|is lacking|are lacking|does not have|do not have|cannot (cite|provide|offer|name)|shows? no|cites? no|remains? without) (a |any |an )?[^.;]{0,30}references?\b"
     r"|\bno [^.;]{0,30}references? (in|for|from|within) (this|the|a|that) (vertical|industry|sector|segment|state|agency|use case|pattern|domain)\b"
-    r"|\bno [^.;]{0,30}references? (is |are |was |were )?(available|listed|cited|named|provided|known|given|identified)\b"
+    r"|\bno (?:(?:direct|named|known|existing|relevant|comparable|prior|similar|public[- ]sector|government|state|federal) (?:customer |client |vertical |industry |implementation |deployment |project )?"
+    r"|(?:customer|client|vertical|industry|implementation|deployment|project) )references? (is |are |was |were )?(available|listed|cited|named|provided|known|given|identified)\b"
     r"|\bnot a (named|proven|listed) (vertical|pattern|industry)\b"
     r"|\b(this|it) is (only |just |merely )?(an? |the )?(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b"
     r"|\b(only|just|merely) (an? |the )?(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b"
     r"|\b(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b.{0,60}"
     r"\b(rather than|not (a|an) (solicitation|rfp|procurement|bid|commitment)|no (award|contract|guarantee|formal|obligation)"
     r"|not yet (known|confirmed|determined|defined|decided|published|announced|available|funded|approved|issued)"
-    r"|may not (result|lead)|will not result|stage|phase|informational?|planning purposes|budgetary|does not (commit|obligate|constitute|guarantee))\b"
+    r"|may not (result|lead)|will not result|(procurement|market[- ]research|planning|pre[- ]solicitation|information[- ]gathering|rfi|exploratory|early) (stage|phase)"
+    r"|(stage|phase) of (the )?(procurement|process|acquisition)|at this (stage|phase)|informational?|planning purposes|budgetary|does not (commit|obligate|constitute|guarantee))\b"
     r"|\b(it|this) (cannot|can't|could not) be (confirmed|verified|determined|assessed) (from|in|based on|without|at this|until|yet|with the|given|whether|if)\b"
     r"|\b(scope|budget|volume|requirements?|timeline|incumbent|eligibility|fit|compatibility|deployment model|hosting model|user counts?|licen[cs]ing model)"
     r" (cannot|can't|could not) be (confirmed|verified|determined|assessed)\b"
@@ -458,12 +461,34 @@ _CONDITIONAL_RISK_RE = re.compile(
 )
 
 
-# Only real HTML tags are markup: a known tag name directly after "<" (no space), optional attributes, ">".
-# "Latency < 200 ms and throughput > 10 MB/s" is text and stays text.
-_HTML_TAG_RE = re.compile(
-    r"</?(?:p|br|div|span|strong|b|em|i|u|s|ul|ol|li|a|h[1-6]|table|thead|tbody|tfoot|tr|td|th|img|hr|blockquote|pre|code"
-    r"|font|sup|sub|small|big|section|article|header|footer|nav|label|input|button|form|style|script|html|head|body|title|meta|link)"
-    r"\b[^<>]{0,300}>", re.I)
+class _TextExtractor(HTMLParser):
+    """Visible text of HTML: every element (known or not) is dropped, text and decoded entities kept. A '<' that
+    does not start a tag ("Latency < 200 ms") is ordinary text to the parser."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        self.parts.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        self.parts.append(" ")
+
+
+def _strip_html(t: str) -> str:
+    if "<" not in t:
+        return t
+    try:
+        p = _TextExtractor()
+        p.feed(t)
+        p.close()
+        return "".join(p.parts)
+    except Exception:
+        return t
 
 
 _OPERATOR_TOKENS = (
@@ -476,7 +501,7 @@ def _norm_text(t: str) -> str:
     """Lower-case token text. Keeps the symbols that distinguish technology names (C++, C#, .NET,
     v8.21) while dropping sentence punctuation, so "C++" cannot match "C#" or "C". HTML markup in
     portal descriptions is removed and entities decoded first, so tags never become corpus tokens."""
-    t = _HTML_TAG_RE.sub(" ", html.unescape(t or "")).lower()  # decode entities first so &lt;p&gt; is a tag, then strip
+    t = _strip_html(html.unescape(t or "")).lower()  # decode entities first so &lt;p&gt; is a tag, then drop every element
     # Comparison operators change a requirement's meaning (≥ 30 days ≠ ≤ 30 days): keep them as tokens.
     for pat, tok in _OPERATOR_TOKENS:
         t = pat.sub(f" {tok} ", t)
