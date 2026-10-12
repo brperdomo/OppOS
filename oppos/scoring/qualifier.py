@@ -411,11 +411,9 @@ _SPECULATIVE_RISK_RE = re.compile(
     r"|\b(is|are|remains?|still|currently) unclear\b|\bunclear (whether|if|how|what|which|at this (time|stage|point))\b"
     r"|\b(it|this|fit|scope|budget|volume|requirements?|timeline|incumbent|eligibility|compatibility|deployment model|hosting model|user counts?|licen[cs]ing model)"
     r" (needs?|requires?|will need|would need) (further |additional )?(investigation|verification|confirmation|clarification)\b"
-    r"|\b(needs?|requires?) (further |additional )?(investigation|verification|confirmation|clarification) (with|from|by|during|before|at|via|through) (the |a )?(agency|buyer|customer|state|county|city|procurement|discovery|q&a|q ?and ?a|bid|pursuit|kickoff)\b"
-    r"|\b(we|nutrient|the profile|profile) (has|have|lacks?|shows?|cites?) no [^.;]{0,30}references?\b"
+    r"|\b(we|nutrient|the profile|profile) (lacks?|has no|have no|is without|are without|is lacking|are lacking|does not have|do not have|cannot (cite|provide|offer|name)|shows? no|cites? no|remains? without) (a |any |an )?[^.;]{0,30}references?\b"
     r"|\bno [^.;]{0,30}references? (in|for|from|within) (this|the|a|that) (vertical|industry|sector|segment|state|agency|use case|pattern|domain)\b"
     r"|\bno [^.;]{0,30}references? (is |are |was |were )?(available|listed|cited|named|provided|known|given|identified)\b"
-    r"|\b(lack|lacks|lacking|without) (a |any |an )?[^.;]{0,30}references?\b"
     r"|\bnot a (named|proven|listed) (vertical|pattern|industry)\b"
     r"|\b(this|it) is (only |just |merely )?(an? |the )?(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b"
     r"|\b(only|just|merely) (an? |the )?(rfi|request for information|market research|sources[- ]sought|pre[- ]solicitation)\b"
@@ -423,10 +421,10 @@ _SPECULATIVE_RISK_RE = re.compile(
     r"\b(rather than|not (a|an) (solicitation|rfp|procurement|bid|commitment)|no (award|contract|guarantee|formal|obligation)"
     r"|not yet (known|confirmed|determined|defined|decided|published|announced|available|funded|approved|issued)"
     r"|may not (result|lead)|will not result|stage|phase|informational?|planning purposes|budgetary|does not (commit|obligate|constitute|guarantee))\b"
-    r"|\b(it|this) (cannot|can't|could not) be (confirmed|verified|determined|assessed)\b"
+    r"|\b(it|this) (cannot|can't|could not) be (confirmed|verified|determined|assessed) (from|in|based on|without|at this|until|yet|with the|given|whether|if)\b"
     r"|\b(scope|budget|volume|requirements?|timeline|incumbent|eligibility|fit|compatibility|deployment model|hosting model|user counts?|licen[cs]ing model)"
     r" (cannot|can't|could not) be (confirmed|verified|determined|assessed)\b"
-    r"|\b(cannot|can't|could not) be (confirmed|verified|determined|assessed) (from|in|based on|without|at this|until|yet|with the|given)\b",
+    r"|\b(cannot|can't|could not) be (confirmed|verified|determined|assessed) (from|in|based on|without|at this|until|yet|with the|given) (the |this |a )?(rfp|rfi|rfq|solicitation|notice|documents?|attachments?|information|details?|stage|point|time|discovery|q&a|q ?and ?a)\b",
     re.I,
 )
 # A tight deadline is never a risk (scoring rule); the model occasionally writes one anyway.
@@ -435,7 +433,7 @@ _DEADLINE_RISK_RE = re.compile(
     r"|deadline (to|for) (respond|submit|responses?|proposals?|bids?|submission|quotes?)|due date for (responses?|proposals?|bids?|quotes?)|days? (to|until) (respond|submit|the (response|submission) deadline))\b"
     r".{0,80}\b(tight|short|compressed|aggressive|limited|insufficient|little time|only \d+ (business |calendar )?days|\d+ (business |calendar )?days (away|out|remaining|left)|constrain|pressure|risk)"
     r"|\b(tight|short|compressed|aggressive|limited) (response|submission|proposal|bid) (deadline|window|timeline|time ?frame|turnaround)\b"
-    r"|\b\d+ (business |calendar )?days? to (respond|submit|prepare)\b"
+    r"|\b\d+ (business |calendar )?days? to (respond to (the|this) (rfp|rfi|rfq|solicitation|notice)|(submit|prepare|complete) (a |the |our |their )?(proposals?|bids?|responses?|quotes?|offers?|submissions?))\b"
     r"|\b(only )?\d+ (business |calendar )?days? (remain|remaining|left|until|before|away)\b.{0,40}\b(deadline|due|respond|submit|response|submission|proposal|bid)\b"
     r"|\b(deadline|due date|due|respond|submit|response|submission|proposal)\b.{0,60}\b(only )?\d+ (business |calendar )?days? (remain|remaining|left)\b"
     r"|\b(deadline|due date|due|respond|submit|response|submission|proposal)\b.{0,60}\bonly \d+ (business |calendar )?days\b",
