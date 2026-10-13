@@ -69,17 +69,17 @@ def _turso_execute(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
     headers = {"Authorization": f"Bearer {_turso_auth()}"}
 
     is_read = sql.lstrip()[:6].upper() == "SELECT"
+    client = _turso_client()
     try:
-        resp = _turso_client().post(url, json=body, headers=headers)
+        resp = client.post(url, json=body, headers=headers)
     except (httpx.TransportError, httpx.RemoteProtocolError):
-        # A stale pooled connection (server closed it): rebuild the client. Only a read is retried — a write
-        # whose response was lost may already have committed, and re-sending it could duplicate the effect.
+        # A stale pooled connection (server closed it): retire this client so the next caller builds a fresh one.
+        # It is not closed here — other Streamlit sessions may still have requests in flight on its pool; the
+        # pool is released once the last of them drops its reference. Only a read is retried — a write whose
+        # response was lost may already have committed, and re-sending it could duplicate the effect.
         global _TURSO_CLIENT
         with _TURSO_LOCK:
-            try:
-                if _TURSO_CLIENT is not None:
-                    _TURSO_CLIENT.close()
-            finally:
+            if _TURSO_CLIENT is client:
                 _TURSO_CLIENT = None
         if not is_read:
             raise

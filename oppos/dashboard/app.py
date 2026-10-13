@@ -707,10 +707,14 @@ if not getattr(_db, "_APP_INVALIDATION_INSTALLED", False):
     _orig_execute = _db._execute
 
     def _execute_and_invalidate(sql: str, params: tuple = ()):
-        result = _orig_execute(sql, params)
-        if not sql.lstrip()[:6].upper().startswith("SELECT"):
-            st.cache_data.clear()
-        return result
+        is_write = not sql.lstrip()[:6].upper().startswith("SELECT")
+        try:
+            return _orig_execute(sql, params)
+        finally:
+            # Every attempted write drops the cached reads — including one whose response was lost, which may
+            # have committed; the next rerun must re-read rather than show the pre-write state for five minutes.
+            if is_write:
+                st.cache_data.clear()
 
     _db._execute = _execute_and_invalidate
     _db._APP_INVALIDATION_INSTALLED = True
