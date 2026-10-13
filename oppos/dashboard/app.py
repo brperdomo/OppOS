@@ -132,6 +132,17 @@ header[data-testid="stHeader"] a, header[data-testid="stHeader"] span { font-siz
 .pp-in-card { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-subtle); }
 .pp-next { margin-top: 6px; font-size: 13px; color: var(--text-primary); }
 .pp-next::before { content: '→ '; color: var(--accent-gold); }
+.desk-section { margin: 18px 0 6px; font-size: 12px; letter-spacing: .02em; color: var(--text-tertiary); }
+.desk-section span { margin-left: 8px; color: var(--text-tertiary); opacity: .8; }
+.desk-row { padding: 8px 12px; border-left: 3px solid transparent; }
+.desk-row.sel { border-left-color: var(--accent-gold); background: rgba(240, 201, 102, 0.06); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.desk-title { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.desk-sub { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; }
+.desk-sub .desk-warn { color: var(--accent-orange); }
+.desk-sub .desk-bad { color: var(--accent-red); }
+.desk-meta { font-size: 12px; color: var(--text-secondary); text-align: right; }
+.desk-meta .opp-tag { margin-left: 6px; }
+.desk-workspace { margin-top: 22px; border-top: 1px solid var(--border-medium); padding-top: 14px; }
 .oppos-header-left {
     display: flex;
     align-items: center;
@@ -1582,7 +1593,7 @@ def _score_batch(batch: list[dict]) -> None:
     _flash(f"Scored {ok} listing{'s' if ok != 1 else ''}" + (f" · {len(errs)} failed" if errs else ""), icon="📊" if not errs else "⚠️")
 
 
-def render_card(opp: dict, tab_key: str, mode: str = "pool", extra_meta_html: str = "", before_details=None) -> None:
+def render_card(opp: dict, tab_key: str, mode: str = "pool", extra_meta_html: str = "", before_details=None, details: bool = True):
     """One opportunity. `mode`: 'pool' (Find RFPs — Grab / Skip / Score actions), 'desk' (actions live in the
     pursuit panel), 'archive' (closed — Reopen only)."""
     s2 = _parse_json(opp.get("stage2_json"))
@@ -1669,7 +1680,8 @@ def render_card(opp: dict, tab_key: str, mode: str = "pool", extra_meta_html: st
 
     _s1 = _parse_json(opp.get("stage1_json"))
     _filtered = bool(_s1 and not _s1.get("relevant") and not s2)
-    with st.expander("Details"):
+
+    def _details() -> None:
         if score:
             st.caption(f"Fit {score}/100 — how well this matches what Nutrient sells, judged from the listing"
                        + (" and its documents." if opp.get("attachment_text") else ". Scanning its documents (below) makes the score more reliable."))
@@ -1729,6 +1741,11 @@ def render_card(opp: dict, tab_key: str, mode: str = "pool", extra_meta_html: st
             for i, f in enumerate(files):
                 with fc[i % len(fc)], open(f, "rb") as fh:
                     st.download_button(f.name[:28], data=fh.read(), file_name=f.name, key=f"dl_{tab_key}_{sid}_{f.name}", use_container_width=True)
+
+    if details:
+        with st.expander("Details"):
+            _details()
+    return _details
 
 
 def render_empty(message: str) -> None:
@@ -1915,10 +1932,12 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
                 st.caption("Next: Draft response writes a first answer to every requirement in the RFP."
                            + (" For the best draft, load the RFP's documents first (Details → Documents)." if not opp.get("attachment_text") else ""))
 
-    render_card(opp, "desk", "desk", extra_meta_html=strip, before_details=_actions)
+    _details = render_card(opp, "desk", "desk", extra_meta_html=strip, before_details=_actions, details=False)
 
-    # ── Checklist ───────────────────────────────────────────────
-    with st.expander(f"Checklist · {done}/{total} done" + ("" if done == total else " · what is left to do")):
+    # ── Everything else, one tab strip ──────────────────────────
+    t_check, t_resp, t_det, t_pd, t_act = st.tabs([f"Checklist · {done}/{total}", "Response" + (" ✓" if _draft else ""),
+                                                   "About this RFP", "Pursuit details", f"Activity · {len(events)}"])
+    with t_check:
         state = checklist_state(pursuit)
         cols = st.columns(3)
         new_state = {}
@@ -1929,8 +1948,10 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
             save_pursuit_fields(sid, CURRENT_USER, checklist_json=_json.dumps(new_state))
             st.rerun()
 
-    # ── Details ─────────────────────────────────────────────────
-    with st.expander("Pursuit details"):
+    with t_det:
+        _details()
+
+    with t_pd:
         if can_edit:
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -1966,12 +1987,14 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
             if pursuit.get("next_action"):
                 st.markdown(f"**Next action**  \n{_esc(pursuit['next_action'])}")
 
-    # ── Response (draft + document) ─────────────────────────────
-    if _draft:
-        _render_response(opp, pursuit, _draft, k)
+    with t_resp:
+        if _draft:
+            _render_response(opp, pursuit, _draft, k)
+        else:
+            st.caption("No response yet. Draft response (above) writes a first answer to every requirement; the document and the "
+                       "Word / PDF downloads appear here.")
 
-    # ── Activity ────────────────────────────────────────────────
-    with st.expander(f"Activity · {len(events)}"):
+    with t_act:
         if not events:
             st.caption("No activity yet.")
         for ev in events:
@@ -2030,7 +2053,7 @@ def _render_notion_append(opp: dict, pursuit: dict, _draft: dict, npid: str, k: 
 def _render_response(opp: dict, pursuit: dict, _draft: dict, k: str) -> None:
     """The drafted answers and the exportable document, in one fold."""
     _reqs = _draft.get("requirements") or []
-    with st.expander(f"Response · {len(_reqs)} requirements drafted"):
+    if True:  # (was a fold; the Response tab is the container now)
         # The document is the deliverable: open it, edit in place, download as Word or PDF. (It is built from the
         # draft by the Nutrient Document Authoring SDK in the browser; nothing is uploaded anywhere.)
         from oppos.dashboard.docauth import response_editor
@@ -2210,7 +2233,7 @@ def page_pool() -> None:
 def page_desk() -> None:
     """My desk — what the signed-in user has claimed or is working, by stage; Team shows everyone's."""
     import html as _html
-    from oppos.pursuits import OPEN_STAGES, board_rows, days_until as _du, stage_label
+    from oppos.pursuits import OPEN_STAGES, days_until as _du, stage_label
     from oppos.storage.db import add_pursuit_event, create_pursuit, get_opps_by_ids, get_pursuit_events_for
 
     me = CURRENT_USER["email"]
@@ -2257,43 +2280,60 @@ def page_desk() -> None:
             _flash(f"Adopted {_n_orphans} item(s)")
             st.rerun()
 
-    if _view == "Team" and open_p:
-        last = {sid: (evs[0].get("ts") if evs else None) for sid, evs in events.items()}
-        _board = board_rows(open_p, opps, last_activity=last)
-        _b = ['<table class="health-table"><tr><th>Owner</th><th>Stage</th><th>LOB</th><th>RFP</th><th>Agency</th><th>Due</th><th>Checklist</th><th>Last activity</th></tr>']
-        for r in _board:
-            dl = r["days_left"]
-            due_cls = "" if dl is None else ("pp-bad" if dl <= 3 else "pp-warn" if dl <= 7 else "")
-            due_txt = _html.escape(r["due"]) + (f" ({dl}d)" if dl is not None and dl >= 0 else " (overdue)" if dl is not None else "")
-            title = _html.escape(r["title"][:70])
-            link = f'<span class="board-link"><a href="{_html.escape(r["url"])}" target="_blank">{title}</a></span>' if r["url"] else title
-            _b.append(f"<tr><td>{_html.escape(r['owner'])}</td><td>{_html.escape(r['stage'])}</td><td>{_html.escape(r['lob'])}</td>"
-                      f"<td>{link}</td><td>{_html.escape(r['agency'][:40])}</td><td><span class=\"{due_cls}\">{due_txt}</span></td>"
-                      f"<td>{r['checklist']}</td><td class=\"health-note\">{_html.escape(r['last_activity'])}</td></tr>")
-        _b.append("</table>")
-        with st.expander(f"Team board · {len(_board)} in flight", expanded=True):
-            st.markdown("".join(_b), unsafe_allow_html=True)
-
     if not any(by_stage.values()):
         render_empty("Nothing on your desk yet.")
         st.caption("How it works: Find RFPs lists what the scanner found. Grab one and it lands here. Start pursuing, draft the response, "
                    "download it as a Word document, submit it, then record the outcome.")
         return
 
-    for stage, title, hint in (("evaluating", "Grabbed — decide", "You took these from Find RFPs. Go after them, or put them back."),
-                               ("active", "Pursuing", "Draft the response, open the document, download it as Word or PDF, then mark it submitted when it goes in."),
-                               ("submitted", "Submitted — waiting on the agency", "Record Won or Lost when you hear back.")):
+    # One line per pursuit, grouped by stage; the selected one opens as the workspace below.
+    sections = (("evaluating", "Grabbed — decide", "Go after it, or put it back."),
+                ("active", "Pursuing", "Draft, download, submit, mark submitted."),
+                ("submitted", "Submitted — waiting on the agency", "Record Won or Lost when you hear back."))
+    ordered = [(stage, p_) for stage, _, _ in sections for p_ in by_stage[stage]]
+    ids = [p_["source_id"] for _, p_ in ordered]
+    sel_key = f"desk_selected_{_view}"
+    selected = st.session_state.get(sel_key)
+    if selected not in ids:
+        selected = ids[0] if ids else None
+    for stage, title, hint in sections:
         items = by_stage[stage]
         if not items:
             continue
-        st.markdown(f'<div class="detail-label" style="margin:18px 0 2px;font-size:12px;">{title} · {len(items)}</div>'
-                    f'<div style="color: var(--text-tertiary); font-size: 12px; margin-bottom: 10px;">{hint}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="desk-section">{title} · {len(items)} <span>{hint}</span></div>', unsafe_allow_html=True)
         for p_ in items:
-            o = opps.get(p_["source_id"])
-            if not o:
-                continue
-            _render_pursuit_panel(o, p_, events.get(p_["source_id"], []))
-            st.markdown("---")
+            o = opps.get(p_["source_id"]) or {}
+            sid = p_["source_id"]
+            due = p_.get("submission_deadline") or (o.get("response_deadline") or "")[:10]
+            dl = _du(due)
+            due_txt = ("" if dl is None else f"overdue by {-dl}d" if dl < 0 else "due today" if dl == 0 else f"due in {dl}d")
+            due_cls = "" if dl is None else ("desk-bad" if dl <= 3 else "desk-warn" if dl <= 7 else "")
+            bits = [b for b in (SOURCE_STATE_MAP.get(o.get("source", ""), ""), (o.get("agency") or "")[:60]) if b]
+            next_txt = p_.get("next_action") or ""
+            c1, c2, c3 = st.columns([6, 1.8, 0.9], vertical_alignment="center")
+            c1.markdown(
+                f'<div class="desk-row{" sel" if sid == selected else ""}"><div class="desk-title">{_esc(o.get("title") or sid)}</div>'
+                f'<div class="desk-sub">{_esc(" · ".join(bits))}'
+                + (f' · <span class="{due_cls}">{due_txt}</span>' if due_txt else "")
+                + (f' · next: {_esc(next_txt[:70])}' if next_txt else "") + "</div></div>", unsafe_allow_html=True)
+            try:
+                fit = int(float(o.get("fit_score") or 0))
+            except (TypeError, ValueError):
+                fit = 0
+            c2.markdown(f'<div class="desk-meta">{_esc(p_.get("owner_name") or p_.get("owner_email") or "") if _view == "Team" else ""}'
+                        f'<span class="opp-tag">fit {fit}</span></div>', unsafe_allow_html=True)
+            with c3:
+                if st.button("Open" if sid != selected else "Opened", key=f"open_{_view}_{sid}", use_container_width=True,
+                             type="primary" if sid == selected else "secondary", disabled=sid == selected):
+                    st.session_state[sel_key] = sid
+                    st.rerun()
+
+    if selected:
+        p_ = next(p for _, p in ordered if p["source_id"] == selected)
+        o = opps.get(selected)
+        if o:
+            st.markdown('<div class="desk-workspace"></div>', unsafe_allow_html=True)
+            _render_pursuit_panel(o, p_, events.get(selected, []))
 
     closed = sorted(by_stage["closed"], key=lambda x: x.get("closed_at") or x.get("updated_at") or "", reverse=True)
     if closed:
