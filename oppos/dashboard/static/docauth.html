@@ -52,6 +52,7 @@
       }
       return null;
     };
+    try { const el = window.parent.document.querySelector(sel); if (el) return el.textContent; } catch (_) {}
     let w = window;
     for (let i = 0; i < 8; i++) {
       try {
