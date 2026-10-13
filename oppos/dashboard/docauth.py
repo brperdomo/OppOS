@@ -25,6 +25,9 @@ MIN_STREAMLIT = (1, 57)
 DOCAUTH_VERSION = "1.22.1"
 DOCAUTH_CDN = f"https://document-authoring.cdn.nutrient.io/releases/document-authoring-{DOCAUTH_VERSION}-umd.js"
 EDITOR_PATH = "/app/static/docauth.html"
+# Nutrient Web SDK (the PDF viewer) for the in-page preview of the exported PDF; assets load from this base.
+VIEWER_VERSION = "1.23.0"
+VIEWER_BASE = f"https://cdn.cloud.pspdfkit.com/pspdfkit-web@{VIEWER_VERSION}/"
 
 
 def _streamlit_version() -> tuple[int, ...]:
@@ -34,11 +37,12 @@ def _streamlit_version() -> tuple[int, ...]:
         return (0, 0)
 
 
-EDITOR_REV = "2"  # bump when docauth.html changes so browsers do not serve a cached copy
+EDITOR_REV = "3"  # bump when docauth.html changes so browsers do not serve a cached copy
 
 
-def response_editor(markdown: str, file_stem: str, license_key: str = "", height: int = 760) -> None:
-    """Mount the Document Authoring editor with `markdown` loaded; downloads use `file_stem`.
+def response_editor(markdown: str, file_stem: str, license_key: str = "", height: int = 760, viewer_license_key: str = "") -> None:
+    """Mount the Document Authoring editor with `markdown` loaded; downloads use `file_stem`. "Preview PDF" renders the
+    export in Nutrient Web SDK (licensed with `viewer_license_key`, trial watermark without it).
 
     The payload (Markdown, licence key) is placed in a zero-height sibling component as a JSON script tag
     and read by the editor page through the shared origin — never in the URL, which browsers cap at ~2 MB
@@ -48,7 +52,8 @@ def response_editor(markdown: str, file_stem: str, license_key: str = "", height
         st.error(f"The response editor needs Streamlit {MIN_STREAMLIT[0]}.{MIN_STREAMLIT[1]}+ (static pages are served as text/html); "
                  f"this is {st.__version__}. Download the Markdown instead, or upgrade Streamlit.")
         return
-    payload = json.dumps({"md": markdown, "stem": file_stem, "licenseKey": license_key or "", "version": DOCAUTH_VERSION}, ensure_ascii=False)
+    payload = json.dumps({"md": markdown, "stem": file_stem, "licenseKey": license_key or "", "version": DOCAUTH_VERSION,
+                          "viewerBase": VIEWER_BASE, "viewerLicenseKey": viewer_license_key or ""}, ensure_ascii=False)
     payload_id = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
     components.html(f'<script type="application/json" data-oppos-payload="{payload_id}">{payload.replace("</", "<\\/")}</script>', height=0)
     components.iframe(f"{EDITOR_PATH}?v={DOCAUTH_VERSION}&r={EDITOR_REV}&p={payload_id}", height=height, scrolling=False)

@@ -27,6 +27,7 @@ GOOGLE_CSE_DAILY_LIMIT = int(os.environ.get("GOOGLE_CSE_DAILY_LIMIT", "100"))
 NUTRIENT_API_KEY = os.environ.get("NUTRIENT_API_KEY", "")
 # Nutrient Document Authoring SDK (in-app response editor + DOCX/PDF export). Optional: evaluation watermark without it.
 DOCAUTH_LICENSE_KEY = os.environ.get("DOCAUTH_LICENSE_KEY", "")
+VIEWER_LICENSE_KEY = os.environ.get("VIEWER_LICENSE_KEY", "")  # Nutrient Web SDK, for the in-page PDF preview
 
 DB_PATH = Path(os.environ["OPPOS_DB_PATH"]) if os.environ.get("OPPOS_DB_PATH") else _ROOT / "data" / "oppos.db"
 if not DB_PATH.is_absolute():

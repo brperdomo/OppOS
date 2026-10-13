@@ -40,7 +40,7 @@ for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHRO
 from oppos.auth import auth_configured, logout_button, require_login
 from oppos.scoring.schema import lob_label, point_claim, point_evidence, points_text
 from oppos.pursuits import registration_badge as _reg_badge
-from oppos.config import DB_PATH, DOCAUTH_LICENSE_KEY, SOURCE_STATE_MAP
+from oppos.config import DB_PATH, DOCAUTH_LICENSE_KEY, SOURCE_STATE_MAP, VIEWER_LICENSE_KEY
 from oppos.sources.registry import list_available
 from oppos.storage.db import check_deadlines, get_all_scored, get_by_pipeline_status, get_meta, init_db, set_meta, set_pipeline_status
 
@@ -1996,12 +1996,12 @@ def _render_response(opp: dict, pursuit: dict, _draft: dict, k: str) -> None:
                 st.session_state[_open_key] = False
                 st.rerun()
         rc2.caption("Executive summary, the answers under the RFP's own headings, delivery approach, requirements matrix and the "
-                    "security evidence appendix. Review the highlighted markers, edit in place, then download it as a Word document or PDF."
+                    "security evidence appendix. Review the highlighted markers, edit in place, preview the PDF, then download it as a Word document or PDF."
                     + (" Downloads carry an evaluation watermark until the licence key is set." if not DOCAUTH_LICENSE_KEY else ""))
         if st.session_state.get(_open_key):
             _md = render_markdown(_draft, opp, author=CURRENT_USER.get("name", ""),
                                   pursuit=dict(pursuit, portal_name=_reg.get("display_name") or ""))
-            response_editor(_md, _stem, DOCAUTH_LICENSE_KEY)
+            response_editor(_md, _stem, DOCAUTH_LICENSE_KEY, viewer_license_key=VIEWER_LICENSE_KEY)
 
         if _draft.get("executive_summary"):
             st.markdown('<div class="detail-label" style="margin-top:14px;">Executive summary</div>', unsafe_allow_html=True)
