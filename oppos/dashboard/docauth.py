@@ -37,7 +37,7 @@ def _streamlit_version() -> tuple[int, ...]:
         return (0, 0)
 
 
-EDITOR_REV = "3"  # bump when docauth.html changes so browsers do not serve a cached copy
+EDITOR_REV = "4"  # bump when docauth.html changes so browsers do not serve a cached copy
 
 
 def response_editor(markdown: str, file_stem: str, license_key: str = "", height: int = 760, viewer_license_key: str = "") -> None:
