@@ -2364,6 +2364,19 @@ def page_admin() -> None:
     st.caption("Licences (set in the app's secrets / environment, never shown here): "
                f"Document Authoring {'set' if DOCAUTH_LICENSE_KEY else 'NOT set — response documents carry the evaluation watermark'} · "
                f"Web SDK viewer {'set' if VIEWER_LICENSE_KEY else 'not set — PDF preview carries the trial watermark'}")
+    if CURRENT_USER.get("is_admin") and not (DOCAUTH_LICENSE_KEY and VIEWER_LICENSE_KEY):
+        # Names only (never values): enough to spot a misspelt or nested secret from here.
+        try:
+            _names = []
+            for _k in sorted(st.secrets.keys()):
+                _v = st.secrets[_k]
+                _names.append(f"{_k} (section: {', '.join(sorted(_v.keys()))})" if hasattr(_v, "keys") else _k)
+            _seen = ", ".join(_names) or "none"
+        except Exception as _e:
+            _seen = f"no secrets file ({type(_e).__name__})"
+        _env = ", ".join(sorted(k for k in os.environ if "LICENSE" in k.upper() or "LICENCE" in k.upper())) or "none"
+        st.caption(f"Secrets visible to the app (names only): {_seen}. Environment variables with LICENSE in the name: {_env}. "
+                   "The editor reads DOCAUTH_LICENSE_KEY and VIEWER_LICENSE_KEY at the top level, outside any [section].")
     st.caption("Compliance answers source (oppos/drafting/compliance.md): "
                + (f"approved v{_comp['version']} by {_comp['approved_by']} on {_comp['approved_at']}" if _comp["approved"]
                   else "NOT approved — response drafts mark every security/certification item [SECURITY TO CONFIRM] until the security team fills it in and sets approved: true."))
