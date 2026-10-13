@@ -34,6 +34,9 @@ def _streamlit_version() -> tuple[int, ...]:
         return (0, 0)
 
 
+EDITOR_REV = "2"  # bump when docauth.html changes so browsers do not serve a cached copy
+
+
 def response_editor(markdown: str, file_stem: str, license_key: str = "", height: int = 760) -> None:
     """Mount the Document Authoring editor with `markdown` loaded; downloads use `file_stem`.
 
@@ -48,4 +51,4 @@ def response_editor(markdown: str, file_stem: str, license_key: str = "", height
     payload = json.dumps({"md": markdown, "stem": file_stem, "licenseKey": license_key or "", "version": DOCAUTH_VERSION}, ensure_ascii=False)
     payload_id = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
     components.html(f'<script type="application/json" data-oppos-payload="{payload_id}">{payload.replace("</", "<\\/")}</script>', height=0)
-    components.iframe(f"{EDITOR_PATH}?v={DOCAUTH_VERSION}&p={payload_id}", height=height, scrolling=False)
+    components.iframe(f"{EDITOR_PATH}?v={DOCAUTH_VERSION}&r={EDITOR_REV}&p={payload_id}", height=height, scrolling=False)

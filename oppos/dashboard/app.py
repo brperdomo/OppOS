@@ -705,8 +705,8 @@ st.markdown(f"""
 
 _uc1, _uc2 = st.columns([6, 1])
 _role = "Admin" if CURRENT_USER.get("is_admin") else "SDR"
-_mode = "" if CURRENT_USER.get("authenticated") else " · local dev mode — set up Google sign-in for real identities"
-_uc1.caption(f"👤 {CURRENT_USER['name']} · {CURRENT_USER['email']} · {_role}{_mode}")
+_mode = "" if CURRENT_USER.get("authenticated") else " · local dev mode"
+_uc1.caption(f"Signed in as {CURRENT_USER['name']} · {_role}{_mode}")
 with _uc2:
     logout_button()
 _show_flash()
@@ -1611,7 +1611,7 @@ def render_card(opp: dict, tab_key: str, mode: str = "pool") -> None:
                         st.rerun()
             if not score:
                 with c3:
-                    if st.button("Score", key=f"score_{tab_key}_{sid}", use_container_width=True):
+                    if st.button("Get a fit score", key=f"score_{tab_key}_{sid}", use_container_width=True):
                         _score_one(opp, slot)
                         st.rerun()
     elif mode == "archive":
@@ -1625,10 +1625,10 @@ def render_card(opp: dict, tab_key: str, mode: str = "pool") -> None:
     _filtered = bool(_s1 and not _s1.get("relevant") and not s2)
     with st.expander("Details"):
         if _filtered:
-            st.markdown(f'<div class="risk-item">Stage 1 filter: not relevant ({_s1.get("confidence", 0):.0%}) — {_esc(_s1.get("reason", ""))}. '
-                        f'Use Score to override.</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="risk-item">Set aside by the first pass as not relevant — {_esc(_s1.get("reason", ""))}. '
+                        f'Use "Get a fit score" if you disagree.</div>', unsafe_allow_html=True)
         elif not s2:
-            st.caption("Not scored yet.")
+            st.caption("Not scored yet — use \"Get a fit score\" to see how well it matches what we sell.")
         if s2:
             facts = [(l, v) for l, v in (("Pattern", s2.get("pattern_match")), ("Industry", s2.get("industry")),
                                           ("Similar win", s2.get("similar_win")), ("Deployment", s2.get("deployment_recommendation")),
@@ -1810,11 +1810,12 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
                     _pursue_opportunity(opp, reason=pursuit.get("reason") or "")
                 st.rerun()
         with a2:
-            if st.button("Release", key=f"{k}_release", use_container_width=True):
+            if st.button("Put it back", key=f"{k}_release", use_container_width=True):
                 _release_claim(opp, CURRENT_USER)
-                _flash(f"Released — {title[:60]} is back in Find RFPs", icon="↩️")
+                _flash(f"Put back — {title[:60]} is in Find RFPs again", icon="↩️")
                 st.rerun()
-        a3.caption("Start pursuing creates the Notion page and Slack channel and starts reminders. Release puts it back in the pool.")
+        a3.caption("Worth going after? Start pursuing: it opens a Notion page and a Slack channel for it and sets reminders. "
+                   "Not for us? Put it back for someone else.")
     else:
         a1, a2, a3, a4 = st.columns([1, 1, 1, 3])
         if _stage == "active":
@@ -1861,7 +1862,8 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
                 st.caption(f"Draft {str(_draft.get('generated_at', ''))[:16].replace('T', ' ')} UTC · {_st.get('requirements', 0)} requirements · "
                            f"{_st.get('needs_human', 0)} need a human" + (" · appended to Notion" if (_draft.get("notion_append") or {}).get("complete") else ""))
             elif _stage == "active":
-                st.caption("No response draft yet." + (" Scan the RFP documents first (Details → Documents) for a better draft." if not opp.get("attachment_text") else ""))
+                st.caption("Next: Draft response writes a first answer to every requirement in the RFP."
+                           + (" For the best draft, load the RFP's documents first (Details → Documents)." if not opp.get("attachment_text") else ""))
 
     # ── Checklist ───────────────────────────────────────────────
     with st.expander(f"Checklist · {done}/{total}"):
@@ -1977,22 +1979,28 @@ def _render_response(opp: dict, pursuit: dict, _draft: dict, k: str) -> None:
     """The drafted answers and the exportable document, in one fold."""
     _reqs = _draft.get("requirements") or []
     with st.expander(f"Response · {len(_reqs)} requirements drafted"):
-        # Document first: that is what gets submitted.
-        from oppos.dashboard.docauth import DOCAUTH_VERSION, response_editor
+        # The document is the deliverable: open it, edit in place, download as Word or PDF. (It is built from the
+        # draft by the Nutrient Document Authoring SDK in the browser; nothing is uploaded anywhere.)
+        from oppos.dashboard.docauth import response_editor
         from oppos.drafting.document import file_stem, render_markdown
         _reg = PORTAL_REGS.get(str(pursuit.get("portal") or "")) or {}
-        _md = render_markdown(_draft, opp, author=CURRENT_USER.get("name", ""),
-                              pursuit=dict(pursuit, portal_name=_reg.get("display_name") or ""))
         _stem = file_stem(opp)
-        rc1, rc2, rc3 = st.columns([1, 1, 3])
+        _open_key = f"{k}_doc_open"
+        rc1, rc2 = st.columns([1, 4])
         with rc1:
-            _open = st.toggle("Open editor", key=f"{k}_doc_editor")
-        with rc2:
-            st.download_button("Download Markdown", data=_md, file_name=f"{_stem}.md", mime="text/markdown", key=f"{k}_doc_md", use_container_width=True)
-        rc3.caption("Executive summary, answers under the RFP's own sections, delivery boilerplate, requirements matrix and security "
-                    "evidence appendices; internal notes in Appendix C come out before submission. The editor exports DOCX / PDF / PDF-A"
-                    + (" (evaluation watermark until DOCAUTH_LICENSE_KEY is set)." if not DOCAUTH_LICENSE_KEY else "."))
-        if _open:
+            if not st.session_state.get(_open_key):
+                if st.button("Open response document", key=f"{k}_doc_open_btn", use_container_width=True, type="primary"):
+                    st.session_state[_open_key] = True
+                    st.rerun()
+            elif st.button("Close document", key=f"{k}_doc_close_btn", use_container_width=True):
+                st.session_state[_open_key] = False
+                st.rerun()
+        rc2.caption("Executive summary, the answers under the RFP's own headings, delivery approach, requirements matrix and the "
+                    "security evidence appendix. Review the highlighted markers, edit in place, then download it as a Word document or PDF."
+                    + (" Downloads carry an evaluation watermark until the licence key is set." if not DOCAUTH_LICENSE_KEY else ""))
+        if st.session_state.get(_open_key):
+            _md = render_markdown(_draft, opp, author=CURRENT_USER.get("name", ""),
+                                  pursuit=dict(pursuit, portal_name=_reg.get("display_name") or ""))
             response_editor(_md, _stem, DOCAUTH_LICENSE_KEY)
 
         if _draft.get("executive_summary"):
@@ -2087,7 +2095,8 @@ def page_pool() -> None:
     with h2:
         if st.button("Add an RFP", use_container_width=True):
             _manual_rfp_dialog()
-    h3.caption(f"Last scan {_ago(_cached_meta('last_scan'))} · scans run automatically; use the button to pull now.")
+    h3.caption(f"Everything the scanner found that nobody has taken yet. Grab anything worth a look — it moves to your desk. "
+               f"Last scan {_ago(_cached_meta('last_scan'))}.")
 
     if scan_clicked:
         stats = _run_scan()
@@ -2118,7 +2127,7 @@ def page_pool() -> None:
         unscored = [r for r in open_rows if not _score_of(r)]
         with f4:
             st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-            if unscored and st.button(f"Score {len(unscored)} unscored", key="pool_score_all", use_container_width=True):
+            if unscored and st.button(f"Score all {len(unscored)} unscored", key="pool_score_all", use_container_width=True):
                 _score_batch(unscored)
                 st.rerun()
 
@@ -2214,12 +2223,14 @@ def page_desk() -> None:
             st.markdown("".join(_b), unsafe_allow_html=True)
 
     if not any(by_stage.values()):
-        render_empty("Nothing on your desk yet. Grab an RFP from Find RFPs and it lands here.")
+        render_empty("Nothing on your desk yet.")
+        st.caption("How it works: Find RFPs lists what the scanner found. Grab one and it lands here. Start pursuing, draft the response, "
+                   "download it as a Word document, submit it, then record the outcome.")
         return
 
-    for stage, title, hint in (("evaluating", "Claimed", "Decide: start pursuing, or release it back to the pool."),
-                               ("active", "Pursuing", "Draft the response, work the checklist, mark submitted when it goes in."),
-                               ("submitted", "Submitted", "Record the outcome when the agency decides.")):
+    for stage, title, hint in (("evaluating", "Grabbed — decide", "You took these from Find RFPs. Go after them, or put them back."),
+                               ("active", "Pursuing", "Draft the response, open the document, download it as Word or PDF, then mark it submitted when it goes in."),
+                               ("submitted", "Submitted — waiting on the agency", "Record Won or Lost when you hear back.")):
         items = by_stage[stage]
         if not items:
             continue

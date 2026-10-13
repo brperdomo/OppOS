@@ -5,6 +5,7 @@
   body { display: flex; flex-direction: column; }
   /* The SDK draws its own toolbar at the top of the editor; ours sits underneath the page. */
   .bar { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-top: 1px solid #e5e7eb; background: #f9fafb; flex: 0 0 auto; }
+  .bar button#docx { font-weight: 600; }
   .bar button { padding: 6px 12px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px; }
   .bar button:hover { background: #f3f4f6; }
   .bar button:disabled { opacity: .5; cursor: default; }
@@ -12,13 +13,13 @@
   #editor { flex: 1 1 auto; min-height: 0; position: relative; }
 </style></head>
 <body>
-<div id="editor"></div>
 <div class="bar">
-  <button id="docx" disabled>⬇ DOCX</button>
-  <button id="pdf" disabled>⬇ PDF</button>
-  <button id="pdfa" disabled>⬇ PDF/A</button>
-  <span class="status" id="status">Loading Nutrient Document Authoring…</span>
+  <button id="docx" disabled>Download as Word (.docx)</button>
+  <button id="pdf" disabled>Download as PDF</button>
+  <button id="pdfa" disabled>Download as PDF/A (archival)</button>
+  <span class="status" id="status">Opening the response document…</span>
 </div>
+<div id="editor"></div>
 <script>
 (async () => {
   const status = document.getElementById('status');
@@ -75,7 +76,7 @@
         const url = URL.createObjectURL(new Blob([buf], { type: mime }));
         const a = document.createElement('a'); a.href = url; a.download = cfg.stem + (suffix || '') + '.' + ext; a.click();
         setTimeout(() => URL.revokeObjectURL(url), 2000);
-        status.textContent = ext.toUpperCase() + ' downloaded';
+        status.textContent = (suffix ? 'PDF/A' : ext === 'docx' ? 'Word document' : 'PDF') + ' downloaded — check your Downloads folder';
       } catch (e) { status.textContent = 'Export failed: ' + (e && e.message || e); }
     };
     document.getElementById('docx').onclick = () => save('docx', 'docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
