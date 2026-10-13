@@ -696,7 +696,12 @@ with _uc2:
 from oppos.storage import db as _db
 
 DEADLINE_SWEEP_MINUTES = 10
-_LAST_SWEEP: list[float] = [0.0]
+
+
+@st.cache_resource(show_spinner=False)
+def _sweep_state() -> dict:
+    """Process-wide (survives reruns — module-level assignments here are re-executed on every click)."""
+    return {"last": 0.0}
 
 if not getattr(_db, "_APP_INVALIDATION_INSTALLED", False):
     _orig_execute = _db._execute
@@ -741,8 +746,9 @@ def _cached_meta(key: str) -> str | None:
 
 def _maybe_sweep_deadlines() -> None:
     import time as _time
-    if _time.time() - _LAST_SWEEP[0] > DEADLINE_SWEEP_MINUTES * 60:
-        _LAST_SWEEP[0] = _time.time()
+    state = _sweep_state()
+    if _time.time() - state["last"] > DEADLINE_SWEEP_MINUTES * 60:
+        state["last"] = _time.time()
         check_deadlines()
 
 

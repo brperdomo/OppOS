@@ -68,10 +68,12 @@ def _turso_execute(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
     }
     headers = {"Authorization": f"Bearer {_turso_auth()}"}
 
+    is_read = sql.lstrip()[:6].upper() == "SELECT"
     try:
         resp = _turso_client().post(url, json=body, headers=headers)
     except (httpx.TransportError, httpx.RemoteProtocolError):
-        # a stale pooled connection (server closed it): rebuild the client once and retry
+        # A stale pooled connection (server closed it): rebuild the client. Only a read is retried — a write
+        # whose response was lost may already have committed, and re-sending it could duplicate the effect.
         global _TURSO_CLIENT
         with _TURSO_LOCK:
             try:
@@ -79,6 +81,8 @@ def _turso_execute(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
                     _TURSO_CLIENT.close()
             finally:
                 _TURSO_CLIENT = None
+        if not is_read:
+            raise
         resp = _turso_client().post(url, json=body, headers=headers)
     resp.raise_for_status()
     data = resp.json()
@@ -275,7 +279,6 @@ def init_db(force: bool = False) -> None:
     global _DB_INITIALIZED
     if _DB_INITIALIZED and not force:
         return
-    _DB_INITIALIZED = True
     _execute(_CREATE_TABLE_SQL)
     _execute(_CREATE_META_SQL)
     _execute(_CREATE_HEALTH_SQL)
@@ -288,6 +291,7 @@ def init_db(force: bool = False) -> None:
             _execute(migration)
         except Exception:
             pass
+    _DB_INITIALIZED = True  # only once every setup statement has gone through; a transient failure retries next call
 
 
 def set_meta(key: str, value: str) -> None:
