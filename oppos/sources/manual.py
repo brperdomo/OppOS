@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 import json
 import logging
 import re
@@ -862,6 +863,42 @@ def submit_file(file_bytes: bytes, filename: str, on_progress=None) -> dict[str,
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def submit_details(fields: dict[str, Any], score: bool = True, on_progress=None) -> dict[str, Any]:
+    """Add an RFP typed in by hand (no link or document needed). `fields`: title (required), agency, response_deadline
+    (YYYY-MM-DD), url, solicitation_number, description, contact_name/email/phone. Scored from the description when
+    `score` is set and there is one; otherwise stored unscored (fit 0) so the owner can score it later."""
+    import uuid
+    from oppos.scoring.qualifier import qualify
+    from oppos.storage.db import set_pipeline_status, upsert_opportunity
+
+    title = (fields.get("title") or "").strip()
+    if not title:
+        return {"error": "A title is required"}
+    source_id = _make_source_id(f"{title}|{fields.get('agency', '')}|{fields.get('url', '')}|{uuid.uuid4()}")
+    meta = {k: (fields.get(k) or "") for k in ("title", "agency", "response_deadline", "solicitation_number", "description",
+                                              "contact_name", "contact_email", "contact_phone", "place_of_performance")}
+    meta["title"] = title
+    meta["notice_type"] = fields.get("notice_type") or "Solicitation"
+    opp = _build_opportunity(source_id, (fields.get("url") or "").strip(), meta)
+    opp["posted_date"] = datetime.utcnow().strftime("%Y-%m-%d")
+    if score and meta["description"].strip():
+        if on_progress:
+            on_progress("scoring", "Scoring the fit from what you entered")
+        try:
+            opp = qualify(opp)
+            status, note = "qualified", "Added by hand — scored from the description"
+        except Exception as e:
+            opp.setdefault("fit_score", 0)
+            status, note = "new", f"Added by hand — scoring failed ({type(e).__name__}); score it from Find RFPs later"
+    else:
+        opp.setdefault("fit_score", 0)
+        status, note = "new", "Added by hand — not scored yet"
+    upsert_opportunity(opp)
+    set_pipeline_status(source_id, status, notes=note)
+    opp["pipeline_status"] = status
+    return opp
+
 
 def _build_opportunity(source_id: str, url: str, meta: dict) -> dict[str, Any]:
     """Build an opportunity dict from extracted metadata."""
