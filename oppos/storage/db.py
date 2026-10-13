@@ -839,6 +839,20 @@ def get_pursuit_events(source_id: str, limit: int = 50) -> list[dict[str, Any]]:
     )
 
 
+def get_pursuit_events_for(source_ids: list[str], limit_per: int = 40) -> dict[str, list[dict[str, Any]]]:
+    """Recent events for many pursuits in one statement (newest first, at most limit_per each) — the desk renders
+    every pursuit's activity, and one round trip per pursuit was most of its load time."""
+    out: dict[str, list[dict[str, Any]]] = {sid: [] for sid in source_ids}
+    for i in range(0, len(source_ids), 100):
+        chunk = source_ids[i:i + 100]
+        placeholders = ", ".join("?" for _ in chunk)
+        for r in _query(f"SELECT * FROM pursuit_events WHERE source_id IN ({placeholders}) ORDER BY ts DESC", tuple(chunk)):
+            bucket = out.setdefault(r["source_id"], [])
+            if len(bucket) < limit_per:
+                bucket.append(r)
+    return out
+
+
 def last_pursuit_activity(source_id: str) -> str | None:
     rows = _query("SELECT MAX(ts) AS ts FROM pursuit_events WHERE source_id = ?", (source_id,))
     return rows[0]["ts"] if rows and rows[0].get("ts") else None
