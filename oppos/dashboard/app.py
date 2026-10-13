@@ -129,6 +129,9 @@ header[data-testid="stHeader"] a, header[data-testid="stHeader"] span { font-siz
 .welcome li { margin: 4px 0; }
 .welcome b { color: var(--text-primary); font-weight: 600; }
 .welcome-note { font-size: 12px; color: var(--text-tertiary); }
+.pp-in-card { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-subtle); }
+.pp-next { margin-top: 6px; font-size: 13px; color: var(--text-primary); }
+.pp-next::before { content: '→ '; color: var(--accent-gold); }
 .oppos-header-left {
     display: flex;
     align-items: center;
@@ -1579,7 +1582,7 @@ def _score_batch(batch: list[dict]) -> None:
     _flash(f"Scored {ok} listing{'s' if ok != 1 else ''}" + (f" · {len(errs)} failed" if errs else ""), icon="📊" if not errs else "⚠️")
 
 
-def render_card(opp: dict, tab_key: str, mode: str = "pool") -> None:
+def render_card(opp: dict, tab_key: str, mode: str = "pool", extra_meta_html: str = "", before_details=None) -> None:
     """One opportunity. `mode`: 'pool' (Find RFPs — Grab / Skip / Score actions), 'desk' (actions live in the
     pursuit panel), 'archive' (closed — Reopen only)."""
     s2 = _parse_json(opp.get("stage2_json"))
@@ -1592,7 +1595,7 @@ def render_card(opp: dict, tab_key: str, mode: str = "pool") -> None:
     state_name = _esc(SOURCE_STATE_MAP.get(opp.get("source", ""), "") or SOURCE_LABELS.get(opp.get("source", ""), ""))
 
     dl_cls, dl_txt = _deadline_tag(opp.get("response_deadline"))
-    tags = [f'<span class="opp-tag {dl_cls}">{_esc(dl_txt)}</span>']
+    tags = [] if mode == "desk" else [f'<span class="opp-tag {dl_cls}">{_esc(dl_txt)}</span>']  # the desk strip carries the due date
     _lob_key = opp.get("lob") or s2.get("lob") or ""
     if _lob_key:
         tags.append(f'<span class="opp-tag lob-tag">{_esc(lob_label(_lob_key))}</span>')
@@ -1603,7 +1606,7 @@ def render_card(opp: dict, tab_key: str, mode: str = "pool") -> None:
     if mode == "archive" or pipeline_status in ("won", "lost", "skipped", "expired"):
         tags.insert(0, f'<span class="pipeline-badge pipeline-{pipeline_status}">{PIPELINE_LABELS.get(pipeline_status, pipeline_status)}</span>')
     _badge = _reg_badge(PORTAL_REGS.get(opp.get("source") or ""))
-    if _badge and _badge[1] != "reg-ok":
+    if _badge and _badge[1] != "reg-ok" and mode != "desk":
         tags.append(f'<span class="reg-badge {_badge[1]}">{_esc(_badge[0])}</span>')
     if opp.get("submitted_by"):
         tags.append(f'<span class="opp-tag owner-tag">Added by {_esc(str(opp["submitted_by"]).split("@")[0])}</span>')
@@ -1624,11 +1627,14 @@ def render_card(opp: dict, tab_key: str, mode: str = "pool") -> None:
         f'<div class="opp-subtitle"><strong>{state_name}</strong> &middot; {agency}</div>'
         f'<div class="opp-meta">{"".join(tags)}</div></div>'
         f'<div class="score-badge {_score_class(score)}"><div class="score-number">{score if score else "–"}</div><div class="score-label">Fit</div></div>'
-        f'</div>{f"<div class=\"opp-summary\">{_esc(summary)}</div>" if summary else ""}</div>',
+        f'</div>{f"<div class=\"opp-summary\">{_esc(summary)}</div>" if summary else ""}'
+        f'{extra_meta_html}</div>',
         unsafe_allow_html=True,
     )
 
     slot = st.container()  # long operations report here, full width, above the details
+    if before_details:
+        before_details(slot)
 
     if mode == "pool":
         from oppos.pursuits import claim_opportunity as _claim
@@ -1809,7 +1815,7 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
     npid = pursuit.get("notion_page_id") or opp.get("notion_page_id")
     _draft = _parse_json(pursuit.get("draft_json")) or None
 
-    # ── Status strip ────────────────────────────────────────────
+    # ── Where it stands (rendered inside the card) ───────────────
     due_raw = pursuit.get("submission_deadline") or opp.get("response_deadline")
     dleft = days_until(due_raw)
     done, total = checklist_progress(pursuit)
@@ -1818,7 +1824,7 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
     elif dleft < 0:
         due_txt, due_cls = f"Overdue by {-dleft}d", "pp-bad"
     else:
-        due_txt, due_cls = ("Due today" if dleft == 0 else f"Due in {dleft}d"), ("pp-bad" if dleft <= 3 else "pp-warn" if dleft <= 7 else "pp-ok")
+        due_txt, due_cls = ("Due today" if dleft == 0 else f"Due in {dleft}d · {str(due_raw)[:10]}"), ("pp-bad" if dleft <= 3 else "pp-warn" if dleft <= 7 else "pp-ok")
     reg_status = pursuit.get("registration_status") or "unknown"
     reg_cls = {"registered": "pp-ok", "not_required": "pp-ok", "in_progress": "pp-warn", "not_registered": "pp-bad"}.get(reg_status, "")
     links = []
@@ -1826,37 +1832,36 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
         links.append(f'<a href="https://notion.so/{str(npid).replace("-", "")}" target="_blank">Notion ↗</a>')
     if pursuit.get("slack_channel_id"):
         links.append(f'<a href="{channel_url(pursuit["slack_channel_id"])}" target="_blank">#{_esc(pursuit.get("slack_channel_name") or "slack")} ↗</a>')
-    st.markdown(
-        f'<div class="pp-strip"><span class="pp-owner">👤 {_esc(owner)}</span>'
+    strip = (
+        f'<div class="pp-strip pp-in-card"><span class="pp-owner">{_esc(owner)}</span>'
         f'<span class="pp-pill {"pp-ok" if _stage == "active" else ""}">{_esc(_stage_lbl(_stage))}</span>'
         f'<span class="pp-pill {due_cls}">{due_txt}</span>'
         + (f'<span class="pp-pill {reg_cls}">{_esc(REGISTRATION_LABELS.get(reg_status, reg_status))}</span>' if reg_status != "unknown" else "")
-        + f'<span class="pp-pill">Checklist {done}/{total}</span>'
-        + (f'<span class="pp-pill">Next: {_esc(pursuit["next_action"][:60])}</span>' if pursuit.get("next_action") else "")
-        + f'<span class="pp-links">{"".join(links)}</span></div>',
-        unsafe_allow_html=True,
+        + f'<span class="pp-pill">{done}/{total} checklist done</span>'
+        + f'<span class="pp-links">{"".join(links)}</span></div>'
+        + (f'<div class="pp-next">Next: {_esc(pursuit["next_action"][:120])}</div>' if pursuit.get("next_action") else "")
     )
 
-    slot = st.container()  # progress of long actions (pursue / draft / Notion) shows here, full width
-
-    # ── Actions: one row, the stage's main action first ─────────
-    if not can_edit:
-        st.caption(f"Owned by {owner}. Actions are available to the owner and admins.")
-    elif _stage == "evaluating":
-        a1, a2, a3 = st.columns([1, 1, 4])
-        with a1:
-            if st.button("Start pursuing", key=f"{k}_start", use_container_width=True, type="primary"):
-                with slot:
-                    _pursue_opportunity(opp, reason=pursuit.get("reason") or "")
-                st.rerun()
-        with a2:
-            if st.button("Put it back", key=f"{k}_release", use_container_width=True):
-                _release_claim(opp, CURRENT_USER)
-                _flash(f"Put back — {title[:60]} is in Find RFPs again", icon="↩️")
-                st.rerun()
-        a3.caption("Worth going after? Start pursuing: it opens a Notion page and a Slack channel for it and sets reminders. "
-                   "Not for us? Put it back for someone else.")
-    else:
+    def _actions(slot) -> None:
+        # One row, the stage's main action first. Progress of long actions reports into `slot`, full width.
+        if not can_edit:
+            st.caption(f"Owned by {owner}. Actions are available to the owner and admins.")
+            return
+        if _stage == "evaluating":
+            a1, a2, a3 = st.columns([1, 1, 4])
+            with a1:
+                if st.button("Start pursuing", key=f"{k}_start", use_container_width=True, type="primary"):
+                    with slot:
+                        _pursue_opportunity(opp, reason=pursuit.get("reason") or "")
+                    st.rerun()
+            with a2:
+                if st.button("Put it back", key=f"{k}_release", use_container_width=True):
+                    _release_claim(opp, CURRENT_USER)
+                    _flash(f"Put back — {title[:60]} is in Find RFPs again", icon="↩️")
+                    st.rerun()
+            a3.caption("Worth going after? Start pursuing: it opens a Notion page and a Slack channel for it and sets reminders. "
+                       "Not for us? Put it back for someone else.")
+            return
         a1, a2, a3, a4 = st.columns([1, 1, 1, 3])
         if _stage == "active":
             with a1:
@@ -1899,14 +1904,21 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
         with a4:
             if _draft:
                 _st = _draft.get("stats") or {}
-                st.caption(f"Draft {str(_draft.get('generated_at', ''))[:16].replace('T', ' ')} UTC · {_st.get('requirements', 0)} requirements · "
-                           f"{_st.get('needs_human', 0)} need a human" + (" · appended to Notion" if (_draft.get("notion_append") or {}).get("complete") else ""))
+                _when = str(_draft.get("generated_at", ""))[:10]
+                try:
+                    _when = datetime.fromisoformat(_when).strftime("%b %-d")
+                except ValueError:
+                    pass
+                st.caption(f"Draft from {_when} · {_st.get('requirements', 0)} requirements · {_st.get('needs_human', 0)} need your input"
+                           + (" · appended to Notion" if (_draft.get("notion_append") or {}).get("complete") else "") + ". Open it under Response below.")
             elif _stage == "active":
                 st.caption("Next: Draft response writes a first answer to every requirement in the RFP."
                            + (" For the best draft, load the RFP's documents first (Details → Documents)." if not opp.get("attachment_text") else ""))
 
+    render_card(opp, "desk", "desk", extra_meta_html=strip, before_details=_actions)
+
     # ── Checklist ───────────────────────────────────────────────
-    with st.expander(f"Checklist · {done}/{total}"):
+    with st.expander(f"Checklist · {done}/{total} done" + ("" if done == total else " · what is left to do")):
         state = checklist_state(pursuit)
         cols = st.columns(3)
         new_state = {}
@@ -2280,7 +2292,6 @@ def page_desk() -> None:
             o = opps.get(p_["source_id"])
             if not o:
                 continue
-            render_card(o, "desk", "desk")
             _render_pursuit_panel(o, p_, events.get(p_["source_id"], []))
             st.markdown("---")
 
