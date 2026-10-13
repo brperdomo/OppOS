@@ -289,8 +289,9 @@ def init_db(force: bool = False) -> None:
     for migration in _MIGRATIONS:
         try:
             _execute(migration)
-        except Exception:
-            pass
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise  # anything but "already applied" (a transient Turso error) must leave the schema un-initialised
     _DB_INITIALIZED = True  # only once every setup statement has gone through; a transient failure retries next call
 
 
