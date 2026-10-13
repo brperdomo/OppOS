@@ -12,7 +12,7 @@ from datetime import date, datetime
 from typing import Any
 
 from oppos.outputs import slack_pursuits as sp
-from oppos.outputs.slack_alerts import _build_abandon_message, _build_pursue_message
+from oppos.outputs.slack_status import build_status_message, notify_status
 from oppos.storage.db import (
     _parse_deadline,
     add_pursuit_event,
@@ -170,13 +170,9 @@ def claim_opportunity(opp: dict[str, Any], user: dict[str, Any], note: str = "")
     else:
         create_pursuit(sid, **fields)
     add_pursuit_event(sid, owner_email, "claimed", note or "Claimed for evaluation")
-    try:
-        if sp.bot_enabled() and sp.SLACK_DIGEST_CHANNEL:
-            link = f"<{opp['url']}|{opp.get('title', 'RFP')[:100]}>" if opp.get("url") else opp.get("title", "RFP")[:100]
-            sp.post(sp.SLACK_DIGEST_CHANNEL, f"👋 {owner_name} claimed *{link}* for evaluation")
-    except Exception as e:
-        logger.info("Slack claim notice failed: %s", e)
-    return get_pursuit(sid) or {}
+    pursuit = get_pursuit(sid) or {}
+    notify_status("claimed", opp, user, note or "Claimed for evaluation", pursuit=pursuit)
+    return pursuit
 
 
 def release_claim(opp: dict[str, Any], user: dict[str, Any], reason: str = "") -> None:
@@ -185,6 +181,7 @@ def release_claim(opp: dict[str, Any], user: dict[str, Any], reason: str = "") -
     set_pipeline_status(sid, opp.get("pipeline_status") or "new", notes=reason or None, assigned_to="")
     update_pursuit(sid, status="released", closed_at=datetime.utcnow().isoformat())
     add_pursuit_event(sid, user.get("email", ""), "released", reason or "Released back to the pool")
+    notify_status("released", opp, user, reason or "Back in Find RFPs for someone else")
 
 
 def board_rows(pursuits: list[dict[str, Any]], opps: dict[str, dict[str, Any]],
@@ -271,24 +268,20 @@ def start_pursuit(opp: dict[str, Any], reason: str, user: dict[str, Any],
     add_pursuit_event(sid, owner_email, "started", reason)
 
     result: dict[str, Any] = {"slack_channel_name": "", "slack_url": "", "slack_alert_sent": False}
-    brief = _build_pursue_message(opp, reason=reason, notion_url=notion_url)["blocks"]
+    brief = build_status_message("pursuing", opp, owner_name, reason=reason, notion_url=notion_url)["blocks"]
     try:
         if sp.bot_enabled():
-            ch = sp.open_pursuit_channel(opp, brief, owner_email)
+            ch = sp.open_pursuit_channel(opp, brief, owner_email)  # the brief is pinned in the new #rfp- channel
             if ch:
                 update_pursuit(sid, slack_channel_id=ch["channel_id"], slack_channel_name=ch["channel_name"])
                 add_pursuit_event(sid, "system", "slack_channel", f"#{ch['channel_name']}")
                 result.update(slack_channel_name=ch["channel_name"], slack_url=ch["url"])
-            # Also drop a one-liner in the digest channel so the team sees new pursuits
-            if sp.SLACK_DIGEST_CHANNEL:
-                link = f"<{ch['url']}|#{ch['channel_name']}>" if ch else ""
-                sp.post(sp.SLACK_DIGEST_CHANNEL, f"🎯 {owner_name} is pursuing *{opp.get('title', 'RFP')[:120]}* {link}".strip())
-        else:
-            from oppos.outputs.slack_alerts import send_pursue_alert
-            result["slack_alert_sent"] = send_pursue_alert(opp, reason=reason, notion_url=notion_url)
     except Exception as e:  # Slack must never block a pursuit
-        logger.error("Slack setup failed for %s: %s", sid, e)
+        logger.error("Slack channel setup failed for %s: %s", sid, e)
         add_pursuit_event(sid, "system", "slack_error", str(e)[:300])
+    # The team-wide notice (digest channel, or the webhook): same message as every other stage change.
+    result["slack_alert_sent"] = notify_status("pursuing", opp, user, reason, notion_url=notion_url,
+                                               extra=f"Channel <{result['slack_url']}|#{result['slack_channel_name']}>" if result["slack_url"] else "")
 
     result["pursuit"] = get_pursuit(sid)
     return result
@@ -338,22 +331,4 @@ def transition_pursuit(opp: dict[str, Any], new_status: str, user: dict[str, Any
         logger.warning("Notion status sync failed for %s: %s", sid, e)
 
     pursuit = get_pursuit(sid) or {}
-    channel_id = pursuit.get("slack_channel_id")
-    emoji = {"submitted": "📨", "won": "🏆", "lost": "📉", "abandoned": "🚫"}[new_status]
-    text = f"{emoji} *{new_status.title()}* — {opp.get('title', 'RFP')[:120]}\n_{reason}_ — {user.get('name') or user.get('email', '')}"
-    try:
-        if new_status == "submitted":
-            sp.post_pursuit_update(channel_id, text)
-            if sp.SLACK_DIGEST_CHANNEL and sp.bot_enabled():
-                sp.post(sp.SLACK_DIGEST_CHANNEL, text)
-        else:
-            label = {"won": "Won", "lost": "Lost", "abandoned": "Abandoned"}[new_status]
-            fallback = _build_abandon_message(opp, reason=reason, label=label) if new_status != "won" else {"text": text}
-            if channel_id and sp.bot_enabled():
-                sp.close_pursuit_channel(channel_id, text)
-                if sp.SLACK_DIGEST_CHANNEL:
-                    sp.post(sp.SLACK_DIGEST_CHANNEL, text)
-            else:
-                sp.post_pursuit_update(None, text, fallback_payload=fallback)
-    except Exception as e:
-        logger.error("Slack update failed for %s: %s", sid, e)
+    notify_status(new_status, opp, user, reason, pursuit=pursuit)  # closes the #rfp- channel on won / lost / abandoned
