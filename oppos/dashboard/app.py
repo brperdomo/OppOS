@@ -2361,6 +2361,9 @@ def page_admin() -> None:
 
     from oppos.drafting import compliance_status as _compliance_status
     _comp = _compliance_status()
+    st.caption("Licences (set in the app's secrets / environment, never shown here): "
+               f"Document Authoring {'set' if DOCAUTH_LICENSE_KEY else 'NOT set — response documents carry the evaluation watermark'} · "
+               f"Web SDK viewer {'set' if VIEWER_LICENSE_KEY else 'not set — PDF preview carries the trial watermark'}")
     st.caption("Compliance answers source (oppos/drafting/compliance.md): "
                + (f"approved v{_comp['version']} by {_comp['approved_by']} on {_comp['approved_at']}" if _comp["approved"]
                   else "NOT approved — response drafts mark every security/certification item [SECURITY TO CONFIRM] until the security team fills it in and sets approved: true."))
