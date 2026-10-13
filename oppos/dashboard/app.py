@@ -41,6 +41,20 @@ from oppos.auth import auth_configured, logout_button, require_login
 from oppos.scoring.schema import lob_label, point_claim, point_evidence, points_text
 from oppos.pursuits import registration_badge as _reg_badge
 from oppos.config import DB_PATH, DOCAUTH_LICENSE_KEY, SOURCE_STATE_MAP, VIEWER_LICENSE_KEY
+
+
+def _secret(name: str, env_value: str) -> str:
+    """A setting from the environment, else from Streamlit secrets (Community Cloud keeps secrets.toml entries there)."""
+    if env_value:
+        return env_value
+    try:
+        return str(st.secrets.get(name, "") or "")
+    except Exception:  # no secrets file locally
+        return ""
+
+
+DOCAUTH_LICENSE_KEY = _secret("DOCAUTH_LICENSE_KEY", DOCAUTH_LICENSE_KEY)
+VIEWER_LICENSE_KEY = _secret("VIEWER_LICENSE_KEY", VIEWER_LICENSE_KEY)
 from oppos.sources.registry import list_available
 from oppos.storage.db import check_deadlines, get_all_scored, get_by_pipeline_status, get_meta, init_db, set_meta, set_pipeline_status
 
