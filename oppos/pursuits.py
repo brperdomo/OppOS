@@ -67,7 +67,7 @@ def owned_by_other(pursuit: dict[str, Any] | None, user: dict[str, Any]) -> bool
 # Canonical stage model. Everything after "new" has an owner.
 #   new → evaluating (claimed) → active (pursuing) → submitted → won | lost ; exits: abandoned, released
 STAGES: dict[str, str] = {
-    "evaluating": "Claimed",
+    "evaluating": "Grabbed",
     "active": "Pursuing",
     "submitted": "Submitted",
     "won": "Won",
@@ -160,7 +160,7 @@ def claim_opportunity(opp: dict[str, Any], user: dict[str, Any], note: str = "")
     reg = registration_for_source(opp.get("source"))
     fields = {
         "owner_email": owner_email, "owner_name": owner_name, "lob": opp.get("lob"),
-        "reason": note or "Claimed for evaluation", "status": "evaluating",
+        "reason": note or "Grabbed to evaluate", "status": "evaluating",
         "submission_deadline": (opp.get("response_deadline") or "")[:10] or None,
         "registration_status": (reg or {}).get("status") or "unknown", "portal": opp.get("source"),
         "notion_page_id": opp.get("notion_page_id"), "created_by": owner_email, "closed_at": None,
@@ -169,9 +169,9 @@ def claim_opportunity(opp: dict[str, Any], user: dict[str, Any], note: str = "")
         update_pursuit(sid, **{k: v for k, v in fields.items() if k != "created_by"})
     else:
         create_pursuit(sid, **fields)
-    add_pursuit_event(sid, owner_email, "claimed", note or "Claimed for evaluation")
+    add_pursuit_event(sid, owner_email, "claimed", note or "Grabbed to evaluate")
     pursuit = get_pursuit(sid) or {}
-    notify_status("claimed", opp, user, note or "Claimed for evaluation", pursuit=pursuit)
+    notify_status("claimed", opp, user, note or "Grabbed to evaluate", pursuit=pursuit)
     return pursuit
 
 

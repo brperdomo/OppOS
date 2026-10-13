@@ -119,10 +119,16 @@ header[data-testid="stHeader"] a, header[data-testid="stHeader"] span { font-siz
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 20px 0 16px 0;
-    margin-bottom: 8px;
-    border-bottom: 1px solid var(--border-subtle);
+    padding: 6px 0 4px 0;
+    margin-bottom: 4px;
 }
+.who { font-size: 12px; color: var(--text-tertiary); text-align: right; }
+.welcome { font-size: 14px; line-height: 1.55; color: var(--text-secondary); }
+.welcome-title { font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px; }
+.welcome ol { margin: 0 0 8px 18px; padding: 0; }
+.welcome li { margin: 4px 0; }
+.welcome b { color: var(--text-primary); font-weight: 600; }
+.welcome-note { font-size: 12px; color: var(--text-tertiary); }
 .oppos-header-left {
     display: flex;
     align-items: center;
@@ -704,26 +710,46 @@ def _show_flash() -> None:
 
 CURRENT_USER = require_login()
 
-st.markdown(f"""
-<div class="oppos-header">
-    <div class="oppos-header-left">
-        <div class="nutrient-logo-mark" style="color: var(--accent-gold);">{NUTRIENT_DOTS_SVG}</div>
-        <div>
-            <h1>OppOS</h1>
-            <div class="subtitle">RFP Opportunity Pipeline</div>
-        </div>
-    </div>
-    <div class="nutrient-brand" style="color: var(--text-secondary);">{NUTRIENT_WORDMARK_SVG}</div>
-</div>
-""", unsafe_allow_html=True)
-
-_uc1, _uc2 = st.columns([6, 1])
+_hc1, _hc2, _hc3, _hc4 = st.columns([4, 2.4, 1, 1], vertical_alignment="center")
 _role = "Admin" if CURRENT_USER.get("is_admin") else "SDR"
 _mode = "" if CURRENT_USER.get("authenticated") else " · local dev mode"
-_uc1.caption(f"Signed in as {CURRENT_USER['name']} · {_role}{_mode}")
-with _uc2:
+_hc1.markdown(f'<div class="oppos-header"><div class="oppos-header-left">'
+              f'<div class="nutrient-logo-mark" style="color: var(--accent-gold);">{NUTRIENT_DOTS_SVG}</div><h1>OppOS</h1></div></div>',
+              unsafe_allow_html=True)
+_hc2.markdown(f'<div class="who">{_esc(CURRENT_USER["name"])} · {_role}{_mode}</div>', unsafe_allow_html=True)
+with _hc3:
+    if st.button("How it works", key="howitworks", use_container_width=True):
+        st.session_state["show_welcome"] = True
+with _hc4:
     logout_button()
 _show_flash()
+
+
+def _welcome() -> None:
+    """Three-step orientation, shown until the signed-in person dismisses it; "How it works" brings it back."""
+    key = f"welcome_seen:{CURRENT_USER.get('email', '')}"
+    if not st.session_state.get("show_welcome") and _cached_meta(key):
+        return
+    with st.container(border=True):
+        st.markdown(
+            '<div class="welcome">'
+            '<div class="welcome-title">Three steps from an RFP to a submitted response</div>'
+            '<ol>'
+            '<li><b>Find RFPs</b> is everything our scanner found at public portals that nobody has taken yet, scored for fit '
+            '(how well it matches what Nutrient sells, 0 to 100; 65 and up is worth a look). Use <b>Grab</b> on anything you want to evaluate.</li>'
+            '<li>Grabbed RFPs sit on <b>My desk</b>. Decide: <b>Start pursuing</b> opens a Notion page and a Slack channel and starts reminders, '
+            'or <b>Put it back</b> for someone else.</li>'
+            '<li>For a pursuit, <b>Draft response</b> writes a first answer to every requirement; open the document, review the marked spots, '
+            'download it as Word or PDF, submit it on the portal, then <b>Mark submitted</b> and later record Won or Lost.</li>'
+            '</ol>'
+            '<div class="welcome-note">Every click confirms itself in the corner, and the team sees each step in Slack. '
+            'The Team view on My desk shows what everyone else is working on.</div></div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("Got it", key="welcome_done", type="primary"):
+            set_meta(key, datetime.utcnow().isoformat())
+            st.session_state["show_welcome"] = False
+            st.rerun()
 
 # ── Data access for reruns ────────────────────────────────────────────────────
 # Streamlit re-runs this whole script on every click. Each Turso statement is a network round trip, so the
@@ -1638,6 +1664,9 @@ def render_card(opp: dict, tab_key: str, mode: str = "pool") -> None:
     _s1 = _parse_json(opp.get("stage1_json"))
     _filtered = bool(_s1 and not _s1.get("relevant") and not s2)
     with st.expander("Details"):
+        if score:
+            st.caption(f"Fit {score}/100 — how well this matches what Nutrient sells, judged from the listing"
+                       + (" and its documents." if opp.get("attachment_text") else ". Scanning its documents (below) makes the score more reliable."))
         if _filtered:
             st.markdown(f'<div class="risk-item">Set aside by the first pass as not relevant — {_esc(_s1.get("reason", ""))}. '
                         f'Use "Get a fit score" if you disagree.</div>', unsafe_allow_html=True)
@@ -2193,7 +2222,7 @@ def page_desk() -> None:
     _next = sorted((d for d in (_du(p.get("submission_deadline")) for p in open_p) if d is not None))
     _cnt = lambda *sts: sum(1 for p in rows_p if p.get("status") in sts)
     with v2:
-        st.caption(f"{_cnt('evaluating')} claimed · {_cnt('active')} pursuing · {_cnt('submitted')} submitted · "
+        st.caption(f"{_cnt('evaluating')} grabbed · {_cnt('active')} pursuing · {_cnt('submitted')} submitted · "
                    f"{_cnt('won')} won · {_cnt('lost', 'abandoned')} lost"
                    + (f" · next due in {_next[0]}d" if _next and _next[0] >= 0 else " · an item is overdue" if _next else ""))
 
@@ -2380,6 +2409,8 @@ def page_admin() -> None:
     if not CURRENT_USER.get("is_admin"):
         st.caption("Settings and portal registrations are available to admins (OPPOS_ADMINS).")
 
+
+_welcome()
 
 _nav = st.navigation(
     [
