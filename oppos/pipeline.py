@@ -15,7 +15,7 @@ from oppos.config import STAGE2_MIN_SCORE
 from oppos.scoring.prefilter import prefilter, probe_links, check_link, DEFERRED
 from oppos.scoring.qualifier import qualify
 from oppos.sources.registry import FetchFn, get_enabled_sources
-from oppos.storage.db import (
+from oppos.storage.db import (set_pipeline_status, 
     get_excluded_sources,
     init_db,
     is_seen,
@@ -143,6 +143,14 @@ def run_scan(
                     continue
                 qualified = qualify(opp)
                 upsert_opportunity(qualified)
+                _s1 = qualified.get("stage1") or {}
+                if _s1 and not _s1.get("relevant") and not qualified.get("fit_score"):  # a low-confidence rejection still gets scored
+                    # Not something we sell (physical goods, construction, staffing…): keep the row so the listing is not
+                    # re-scanned, but out of Find RFPs. It stays reachable from Archive (Reopen → score it).
+                    set_pipeline_status(qualified["source_id"], "skipped",
+                                        notes=f"Set aside by the first pass — {str(_s1.get('reason') or 'not a software fit')[:160]}")
+                    stats["set_aside"] = stats.get("set_aside", 0) + 1
+                    continue
                 if qualified.get("fit_score", 0) >= STAGE2_MIN_SCORE:
                     scored += 1
                     stats["scored"] += 1

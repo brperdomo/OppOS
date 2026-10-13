@@ -2329,7 +2329,14 @@ def page_pool() -> None:
             for err in _errs:
                 st.text(err)
 
-    open_rows, _claimed_n = _unclaimed([r for r in get_all_scored(0) if (r.get("pipeline_status") or "new") in ("new", "qualified", "expiring_soon")])
+    def _set_aside(r: dict) -> bool:
+        """Rejected by the first pass and never looked at since: stored (so it is not re-scanned) but not a listing to show."""
+        if _score_of(r) or r.get("pipeline_notes"):
+            return False
+        s1 = _parse_json(r.get("stage1_json"))
+        return bool(s1) and not s1.get("relevant")
+    open_rows, _claimed_n = _unclaimed([r for r in get_all_scored(0)
+                                        if (r.get("pipeline_status") or "new") in ("new", "qualified", "expiring_soon") and not _set_aside(r)])
     archive_rows, _ = _unclaimed([r for r in get_all_scored(0) if (r.get("pipeline_status") or "new") in ("won", "lost", "skipped", "expired")])
 
     tab_open, tab_archive = st.tabs([f"Open ({len(open_rows)})", f"Archive ({len(archive_rows)})"])
