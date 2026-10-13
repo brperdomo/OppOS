@@ -305,9 +305,15 @@ def _build_page_body(
     return children
 
 
+LAST_ERROR = ""  # why the most recent push_opportunity returned None — shown to the person who clicked
+
+
 def push_opportunity(opp: dict[str, Any], attachment_paths: list[Path] | None = None) -> str | None:
-    """Create or update a page in the Notion RFP database. Returns the page ID."""
+    """Create or update a page in the Notion RFP database. Returns the page ID (None on failure; see LAST_ERROR)."""
+    global LAST_ERROR
+    LAST_ERROR = ""
     if not NOTION_DATABASE_ID:
+        LAST_ERROR = "NOTION_DATABASE_ID is not set"
         logger.warning("NOTION_DATABASE_ID not set — skipping Notion sync")
         return None
 
@@ -392,6 +398,7 @@ def push_opportunity(opp: dict[str, Any], attachment_paths: list[Path] | None = 
             logger.info("Notion page updated for '%s': %s", opp.get("title", "?"), existing_page_id)
             return existing_page_id
         except Exception as e:
+            LAST_ERROR = f"update of the existing page failed: {type(e).__name__}: {str(e)[:300]}"
             logger.error("Notion update failed for '%s': %s — creating new page", opp.get("title", "?"), e)
 
     # Create a new page (Notion allows max 100 blocks per call)
@@ -425,6 +432,7 @@ def push_opportunity(opp: dict[str, Any], attachment_paths: list[Path] | None = 
 
         return page_id
     except Exception as e:
+        LAST_ERROR = (LAST_ERROR + "; " if LAST_ERROR else "") + f"create failed: {type(e).__name__}: {str(e)[:300]}"
         logger.error("Notion sync failed for '%s': %s", opp.get("title", "?"), e)
         return None
 
