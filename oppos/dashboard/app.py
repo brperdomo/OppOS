@@ -85,6 +85,10 @@ NUTRIENT_CSS = """
 
 /* Hide Streamlit chrome — but keep the header: it hosts the page navigation */
 #MainMenu, footer {visibility: hidden;}
+/* Reruns: keep the previous frame fully visible while the next one renders (no grey fade), and hide the
+   "running" status widget that flickers on every click. Real long operations still use st.spinner/st.status. */
+.stApp [data-stale="true"], .element-container[data-stale="true"], [data-stale="true"] { opacity: 1 !important; transition: none !important; }
+[data-testid="stStatusWidget"] { visibility: hidden !important; }
 .stDeployButton, [data-testid="stAppDeployButton"], [data-testid="stToolbarActions"] {display: none;}
 header[data-testid="stHeader"] { background: transparent; }
 header[data-testid="stHeader"] a, header[data-testid="stHeader"] span { font-size: 14px; }
@@ -684,30 +688,83 @@ _uc1.caption(f"👤 {CURRENT_USER['name']} · {CURRENT_USER['email']} · {_role}
 with _uc2:
     logout_button()
 
-with st.spinner("Loading pipeline..."):
-    init_db()
-    check_deadlines()
-    SOURCE_LABELS = dict(list_available())
-    SOURCE_LABELS["manual"] = "Manual Submission"
-    from oppos.storage.db import list_portal_registrations, seed_portal_registrations
-    if not st.session_state.get("regs_seeded"):
-        seed_portal_registrations(list(SOURCE_LABELS.items()))
-        st.session_state["regs_seeded"] = True
-    PORTAL_REGS = {r["portal"]: r for r in list_portal_registrations()}
-    from oppos.pursuits import OPEN_STAGES as _OPEN_STAGES
-    from oppos.storage.db import list_pursuits as _list_pursuits
-    OPEN_PURSUITS = {p["source_id"]: p for p in _list_pursuits(status=_OPEN_STAGES)}
-    from oppos.storage.db import get_excluded_sources as _get_excluded
-    EXCLUDED_SOURCES = set(_get_excluded())
-    # Anything that ever had a pursuit record stays visible in its lifecycle/history tabs,
-    # so owners can still record outcomes after a source is excluded.
-    # Anything with a pursuit record (open or closed) lives on a desk, never in the shared pool.
-    # "Released" means back to the pool, so it is not counted here.
-    PURSUED_IDS = {p["source_id"] for p in _list_pursuits(status=None) if p.get("status") != "released"}
-    TRACKED_IDS = PURSUED_IDS if EXCLUDED_SOURCES else set()
+# ── Data access for reruns ────────────────────────────────────────────────────
+# Streamlit re-runs this whole script on every click. Each Turso statement is a network round trip, so the
+# reads every page needs are cached (st.cache_data) and invalidated the moment anything is written: the
+# db module's _execute is wrapped so any non-SELECT clears the cache. init_db runs once per process and the
+# deadline sweep at most every DEADLINE_SWEEP_MINUTES.
+from oppos.storage import db as _db
+
+DEADLINE_SWEEP_MINUTES = 10
+_LAST_SWEEP: list[float] = [0.0]
+
+if not getattr(_db, "_APP_INVALIDATION_INSTALLED", False):
+    _orig_execute = _db._execute
+
+    def _execute_and_invalidate(sql: str, params: tuple = ()):
+        result = _orig_execute(sql, params)
+        if not sql.lstrip()[:6].upper().startswith("SELECT"):
+            st.cache_data.clear()
+        return result
+
+    _db._execute = _execute_and_invalidate
+    _db._APP_INVALIDATION_INSTALLED = True
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_registrations() -> list[dict]:
+    from oppos.storage.db import list_portal_registrations
+    return list_portal_registrations()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_pursuits() -> list[dict]:
+    from oppos.storage.db import list_pursuits
+    return list_pursuits(status=None)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_excluded() -> list[str]:
+    from oppos.storage.db import get_excluded_sources
+    return list(get_excluded_sources())
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_all_scored() -> list[dict]:
+    return _db.get_all_scored(0)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_meta(key: str) -> str | None:
+    return _db.get_meta(key)
+
+
+def _maybe_sweep_deadlines() -> None:
+    import time as _time
+    if _time.time() - _LAST_SWEEP[0] > DEADLINE_SWEEP_MINUTES * 60:
+        _LAST_SWEEP[0] = _time.time()
+        check_deadlines()
+
+
+init_db()
+_maybe_sweep_deadlines()
+SOURCE_LABELS = dict(list_available())
+SOURCE_LABELS["manual"] = "Manual Submission"
+from oppos.storage.db import seed_portal_registrations
+if not st.session_state.get("regs_seeded"):
+    seed_portal_registrations(list(SOURCE_LABELS.items()))
+    st.session_state["regs_seeded"] = True
+PORTAL_REGS = {r["portal"]: r for r in _cached_registrations()}
+from oppos.pursuits import OPEN_STAGES as _OPEN_STAGES
+_ALL_PURSUITS = _cached_pursuits()
+OPEN_PURSUITS = {p["source_id"]: p for p in _ALL_PURSUITS if p.get("status") in _OPEN_STAGES}
+EXCLUDED_SOURCES = set(_cached_excluded())
+# Anything with a pursuit record (open or closed) lives on a desk, never in the shared pool.
+# "Released" means back to the pool, so it is not counted here.
+PURSUED_IDS = {p["source_id"] for p in _ALL_PURSUITS if p.get("status") != "released"}
+TRACKED_IDS = PURSUED_IDS if EXCLUDED_SOURCES else set()
 
 # Every list view hides excluded sources, except opportunities that are or were pursued.
-from oppos.storage import db as _db
 
 
 def _visible(rows: list[dict]) -> list[dict]:
@@ -717,11 +774,27 @@ def _visible(rows: list[dict]) -> list[dict]:
 
 
 def get_all_scored(min_score: int = 0) -> list[dict]:
-    return _visible(_db.get_all_scored(min_score))
+    rows = _cached_all_scored()
+    if min_score:
+        rows = [r for r in rows if _score_of(r) >= min_score]
+    return _visible(rows)
+
+
+def _score_of(row: dict) -> float:
+    """fit_score as a number — the Turso HTTP API returns every value as a string."""
+    try:
+        return float(row.get("fit_score") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _rows_by_status(status: str, min_score: int = 0) -> list[dict]:
+    """Rows in one pipeline status from the cached scored set (same ordering and min-score rule as the SQL)."""
+    return [r for r in _cached_all_scored() if (r.get("pipeline_status") or "new") == status and _score_of(r) >= min_score]
 
 
 def get_by_pipeline_status(status: str, min_score: int = 0) -> list[dict]:
-    return _visible(_db.get_by_pipeline_status(status, min_score))
+    return _visible(_rows_by_status(status, min_score))
 
 PIPELINE_LABELS = {
     "new": "New",
@@ -2073,7 +2146,7 @@ def page_pool() -> None:
     with scan_col:
         scan_clicked = st.button("Scan for New RFPs", use_container_width=True, type="primary")
         # Show last scan timestamp
-        _last_scan_raw = get_meta("last_scan")
+        _last_scan_raw = _cached_meta("last_scan")
         if _last_scan_raw:
             try:
                 _last_scan_dt = datetime.fromisoformat(_last_scan_raw).replace(tzinfo=timezone.utc)
@@ -2442,7 +2515,7 @@ def page_desk() -> None:
     _vc1, _vc2 = st.columns([1, 3])
     with _vc1:
         _view = st.radio("View", ["Mine", "Team"], horizontal=True, label_visibility="collapsed", key="pursuit_view")
-    all_p = list_pursuits(status=None)
+    all_p = _cached_pursuits()
     rows_p = all_p if _view == "Team" else [p for p in all_p if (p.get("owner_email") or "").lower() == me]
     open_p = [p for p in rows_p if p.get("status") in OPEN_STAGES]
     by_stage = {
@@ -2479,8 +2552,8 @@ def page_desk() -> None:
     # Legacy in-progress / submitted RFPs with no pursuit record — surface them and let someone adopt.
     _have = {p["source_id"] for p in all_p}
     _orphans = {
-        "active": [o for o in _db.get_by_pipeline_status("in_progress") if o["source_id"] not in _have],
-        "submitted": [o for o in _db.get_by_pipeline_status("submitted") if o["source_id"] not in _have],
+        "active": [o for o in _rows_by_status("in_progress") if o["source_id"] not in _have],
+        "submitted": [o for o in _rows_by_status("submitted") if o["source_id"] not in _have],
     }
     _n_orphans = sum(len(v) for v in _orphans.values())
     if _n_orphans:

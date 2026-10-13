@@ -27,6 +27,25 @@ def _use_turso() -> bool:
     return bool(_os.environ.get("TURSO_DATABASE_URL") and _os.environ.get("TURSO_AUTH_TOKEN"))
 
 
+_TURSO_CLIENT: "httpx.Client | None" = None
+_TURSO_LOCK = __import__("threading").Lock()
+
+
+def _turso_client() -> "httpx.Client":
+    """One keep-alive HTTP client per process (HTTP/2 when h2 is installed). A fresh TLS handshake per
+    statement cost 150–350 ms; a reused connection answers in ~30 ms."""
+    global _TURSO_CLIENT
+    with _TURSO_LOCK:
+        if _TURSO_CLIENT is None:
+            try:
+                import h2  # noqa: F401
+                http2 = True
+            except ImportError:
+                http2 = False
+            _TURSO_CLIENT = httpx.Client(http2=http2, timeout=30.0, limits=httpx.Limits(max_keepalive_connections=8, max_connections=16))
+        return _TURSO_CLIENT
+
+
 def _turso_execute(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
     """Execute a SQL statement against Turso via the HTTP API."""
     url = f"{_turso_url()}/v2/pipeline"
@@ -49,7 +68,18 @@ def _turso_execute(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
     }
     headers = {"Authorization": f"Bearer {_turso_auth()}"}
 
-    resp = httpx.post(url, json=body, headers=headers, timeout=30.0)
+    try:
+        resp = _turso_client().post(url, json=body, headers=headers)
+    except (httpx.TransportError, httpx.RemoteProtocolError):
+        # a stale pooled connection (server closed it): rebuild the client once and retry
+        global _TURSO_CLIENT
+        with _TURSO_LOCK:
+            try:
+                if _TURSO_CLIENT is not None:
+                    _TURSO_CLIENT.close()
+            finally:
+                _TURSO_CLIENT = None
+        resp = _turso_client().post(url, json=body, headers=headers)
     resp.raise_for_status()
     data = resp.json()
 
@@ -236,7 +266,16 @@ _MIGRATIONS = [
 ]
 
 
-def init_db() -> None:
+_DB_INITIALIZED = False
+
+
+def init_db(force: bool = False) -> None:
+    """Create tables and apply migrations — once per process. Every statement is a round trip (14 of them, about
+    2.5 s on Turso), so the dashboard must not pay for this on every rerun."""
+    global _DB_INITIALIZED
+    if _DB_INITIALIZED and not force:
+        return
+    _DB_INITIALIZED = True
     _execute(_CREATE_TABLE_SQL)
     _execute(_CREATE_META_SQL)
     _execute(_CREATE_HEALTH_SQL)
