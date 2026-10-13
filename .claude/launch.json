@@ -24,6 +24,19 @@
         "8502"
       ],
       "port": 8502
+    },
+    {
+      "name": "oppos-dashboard-turso",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "OPPOS_AUTH_DISABLED=1",
+        "streamlit",
+        "run",
+        "oppos/dashboard/app.py",
+        "--server.port",
+        "8503"
+      ],
+      "port": 8503
     }
   ]
 }
