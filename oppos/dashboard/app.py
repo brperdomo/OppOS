@@ -1117,7 +1117,7 @@ def _change_status(opp: dict, new_status: str, notes: str, current_status: str) 
     consistent with the pipeline status. Falls back to the plain status update
     (plus the legacy abandon alert) for opportunities without a pursuit.
     """
-    from oppos.outputs.slack_alerts import send_abandon_alert
+    from oppos.outputs.slack_status import notify_status
     from oppos.pursuits import release_claim, transition_pursuit
     from oppos.storage.db import get_pursuit
 
@@ -1164,7 +1164,7 @@ def _change_status(opp: dict, new_status: str, notes: str, current_status: str) 
 
     set_pipeline_status(sid, new_status, notes=notes or None)
     if not live and new_status in ("skipped", "lost") and current_status in ("qualified", "expiring_soon", "in_progress"):
-        send_abandon_alert(opp, reason=notes or "", label="Abandoned" if new_status == "lost" else "Skipped")
+        notify_status("skipped" if new_status == "skipped" else "lost", opp, CURRENT_USER, notes or "")
 
 
 def _push_to_notion(opp: dict) -> None:
@@ -1750,13 +1750,10 @@ def _run_draft(opp: dict, pursuit: dict) -> None:
         save_draft(sid, draft)
         add_pursuit_event(sid, CURRENT_USER.get("email", ""), "drafted",
                           f"{draft['stats']['requirements']} requirements, {draft['stats']['needs_human']} need a human")
-        try:
-            sp.post_pursuit_update(pursuit.get("slack_channel_id"),
-                                   f"✍️ Response draft ready for *{title[:100]}* — {draft['stats']['requirements']} requirements, "
-                                   f"{draft['stats']['high_confidence']} high confidence, {draft['stats']['needs_human']} need a human. "
-                                   f"Review it on My desk, then append it to Notion.")
-        except Exception as e:
-            logging.getLogger(__name__).info("Slack draft notice failed: %s", e)
+        from oppos.outputs.slack_status import notify_status
+        notify_status("draft", opp, CURRENT_USER, pursuit=pursuit,
+                      extra=f"{draft['stats']['requirements']} requirements drafted · {draft['stats']['high_confidence']} high confidence · "
+                            f"{draft['stats']['needs_human']} need a human · review on My desk, then append to Notion")
         status.update(label="Draft ready ✓", state="complete")
     _flash(f"Draft ready — {draft['stats']['requirements']} requirements, {draft['stats']['needs_human']} need a human"
            + (" · output was truncated (raise DRAFT_MAX_TOKENS)" if draft.get("truncated") else ""), icon="✍️")
