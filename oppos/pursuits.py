@@ -175,6 +175,22 @@ def claim_opportunity(opp: dict[str, Any], user: dict[str, Any], note: str = "")
     return pursuit
 
 
+def reopen_pursuit(opp: dict[str, Any], user: dict[str, Any], reason: str = "") -> None:
+    """Bring a closed pursuit (won / lost / abandoned / released) back to Pursuing under this person."""
+    sid = opp["source_id"]
+    owner_email = (user.get("email") or "").lower()
+    owner_name = user.get("name") or owner_email
+    set_pipeline_status(sid, "in_progress", notes=reason or "Reopened", assigned_to=owner_name)
+    update_pursuit(sid, status="active", closed_at=None, owner_email=owner_email, owner_name=owner_name)
+    add_pursuit_event(sid, owner_email, "reopened", reason or "Reopened from Closed")
+    try:
+        from oppos.outputs.notion_sync import update_pipeline_status
+        update_pipeline_status(sid, "in_progress", notes=reason or "Reopened")
+    except Exception as e:
+        logger.warning("Notion status sync failed for %s: %s", sid, e)
+    notify_status("pursuing", opp, user, reason or "Reopened from Closed")
+
+
 def release_claim(opp: dict[str, Any], user: dict[str, Any], reason: str = "") -> None:
     """Un-claim an evaluating RFP so someone else can pick it up."""
     sid = opp["source_id"]
