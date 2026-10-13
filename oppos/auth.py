@@ -31,6 +31,27 @@ def _admin_emails() -> set[str]:
     return {e.strip().lower() for e in raw.split(",") if e.strip()}
 
 
+def member_emails(stored_json: str | None = None) -> set[str]:
+    """Who may grab and work RFPs: OPPOS_MEMBERS (env, comma-separated) plus the list admins keep in the app
+    (meta key "members", JSON array). Admins are always members. Empty on both sides means open access."""
+    import json
+    raw = os.environ.get("OPPOS_MEMBERS", "")
+    out = {e.strip().lower() for e in raw.split(",") if e.strip()}
+    if stored_json:
+        try:
+            out |= {str(e).strip().lower() for e in json.loads(stored_json) if str(e).strip()}
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def can_work(user: dict[str, Any], stored_json: str | None = None) -> bool:
+    if user.get("is_admin"):
+        return True
+    members = member_emails(stored_json)
+    return True if not members else (user.get("email") or "").lower() in members
+
+
 def _dev_user() -> dict[str, Any]:
     raw = os.environ.get("OPPOS_DEV_USER", "").strip()  # "Name <email>" or "email"
     if raw:
@@ -51,7 +72,7 @@ def current_user() -> dict[str, Any]:
         user = {**_dev_user(), "authenticated": False}
     admins = _admin_emails()
     # OPPOS_ADMINS, when set, is authoritative (with or without sign-in configured).
-    # When it is empty, everyone is an admin — fine for single-user dev, set it before SDR rollout.
+    # When it is empty, everyone is an admin — fine for single-user dev, set it before rolling out to the team.
     user["is_admin"] = (user["email"] in admins) if admins else True
     return user
 

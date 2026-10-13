@@ -37,7 +37,7 @@ for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHRO
     except Exception as e:
         _secrets_errors.append(f"{key}: {e}")
 
-from oppos.auth import auth_configured, logout_button, require_login
+from oppos.auth import auth_configured, can_work, logout_button, member_emails, require_login
 from oppos.scoring.schema import lob_label, point_claim, point_evidence, points_text
 from oppos.pursuits import registration_badge as _reg_badge
 from oppos.config import DB_PATH, DOCAUTH_LICENSE_KEY, SOURCE_STATE_MAP, VIEWER_LICENSE_KEY
@@ -725,12 +725,12 @@ def _show_flash() -> None:
 CURRENT_USER = require_login()
 
 _hc1, _hc2, _hc3, _hc4 = st.columns([4, 2.4, 1, 1], vertical_alignment="center")
-_role = "Admin" if CURRENT_USER.get("is_admin") else "SDR"
+_role = " · Admin" if CURRENT_USER.get("is_admin") else ""
 _mode = "" if CURRENT_USER.get("authenticated") else " · local dev mode"
 _hc1.markdown(f'<div class="oppos-header"><div class="oppos-header-left">'
               f'<div class="nutrient-logo-mark" style="color: var(--accent-gold);">{NUTRIENT_DOTS_SVG}</div><h1>OppOS</h1></div></div>',
               unsafe_allow_html=True)
-_hc2.markdown(f'<div class="who">{_esc(CURRENT_USER["name"])} · {_role}{_mode}</div>', unsafe_allow_html=True)
+_hc2.markdown(f'<div class="who">{_esc(CURRENT_USER["name"])}{_role}{_mode}</div>', unsafe_allow_html=True)
 with _hc3:
     if st.button("How it works", key="howitworks", use_container_width=True):
         st.session_state["show_welcome"] = True
@@ -835,6 +835,9 @@ def _maybe_sweep_deadlines() -> None:
 
 init_db()
 _maybe_sweep_deadlines()
+# Anyone signed in can browse; grabbing and working RFPs is limited to the member list (Admin → Settings).
+CURRENT_USER["can_work"] = can_work(CURRENT_USER, _cached_meta("members"))
+NO_ACCESS_NOTE = "Browse only — to grab and work RFPs, ask an admin for access."
 SOURCE_LABELS = dict(list_available())
 SOURCE_LABELS["manual"] = "Manual Submission"
 from oppos.storage.db import seed_portal_registrations
@@ -1653,6 +1656,8 @@ def render_card(opp: dict, tab_key: str, mode: str = "pool", extra_meta_html: st
         c1, c2, c3, c4 = st.columns([1, 1, 1, 3])
         if _open_p:
             c4.caption(f"Owned by {_open_p.get('owner_name') or _open_p.get('owner_email')} — on their desk.")
+        elif not CURRENT_USER.get("can_work"):
+            c4.caption(NO_ACCESS_NOTE)
         else:
             with c1:
                 if st.button("Grab", key=f"grab_{tab_key}_{sid}", use_container_width=True, type="primary"):
@@ -1672,7 +1677,7 @@ def render_card(opp: dict, tab_key: str, mode: str = "pool", extra_meta_html: st
                         _score_one(opp, slot)
                         st.rerun()
     elif mode == "archive":
-        if pipeline_status in ("skipped", "expired", "lost") and sid not in OPEN_PURSUITS:
+        if pipeline_status in ("skipped", "expired", "lost") and sid not in OPEN_PURSUITS and CURRENT_USER.get("can_work"):
             if st.button("Reopen", key=f"reopen_{tab_key}_{sid}"):
                 set_pipeline_status(sid, "new", notes="Reopened from Archive")
                 _flash(f"Reopened — {opp.get('title', '')[:60]}", icon="↩️")
@@ -2168,10 +2173,11 @@ def page_pool() -> None:
     with h1:
         scan_clicked = st.button("Scan for new RFPs", use_container_width=True, type="primary")
     with h2:
-        if st.button("Add an RFP", use_container_width=True):
+        if st.button("Add an RFP", use_container_width=True, disabled=not CURRENT_USER.get("can_work")):
             _manual_rfp_dialog()
-    h3.caption(f"Everything the scanner found that nobody has taken yet. Grab anything worth a look — it moves to your desk. "
-               f"Last scan {_ago(_cached_meta('last_scan'))}.")
+    h3.caption((f"Everything the scanner found that nobody has taken yet. Grab anything worth a look — it moves to your desk. "
+                if CURRENT_USER.get("can_work") else f"Everything the scanner found that nobody has taken yet. {NO_ACCESS_NOTE} ")
+               + f"Last scan {_ago(_cached_meta('last_scan'))}.")
 
     if scan_clicked:
         stats = _run_scan()
@@ -2282,7 +2288,8 @@ def page_desk() -> None:
 
     if not any(by_stage.values()):
         render_empty("Nothing on your desk yet.")
-        st.caption("How it works: Find RFPs lists what the scanner found. Grab one and it lands here. Start pursuing, draft the response, "
+        st.caption(NO_ACCESS_NOTE if not CURRENT_USER.get("can_work") else
+                   "How it works: Find RFPs lists what the scanner found. Grab one and it lands here. Start pursuing, draft the response, "
                    "download it as a Word document, submit it, then record the outcome.")
         return
 
@@ -2368,6 +2375,27 @@ def page_admin() -> None:
                 n = _db_sources.get(k)
                 tag = "" if k in SOURCE_LABELS else " · retired"
                 return f"{base}{tag}" + (f"  ({n} rows)" if n else "")
+            st.markdown('<div class="detail-label" style="margin-bottom:6px;">Who can grab and work RFPs</div>', unsafe_allow_html=True)
+            _stored = _cached_meta("members")
+            _env_members = member_emails(None)
+            try:
+                _stored_list = [str(e) for e in json.loads(_stored)] if _stored else []
+            except (TypeError, ValueError):
+                _stored_list = []
+            _members_txt = st.text_area("Member emails, one per line", value="\n".join(_stored_list), key="members_txt", height=120,
+                                        placeholder="name@nutrient.io", label_visibility="collapsed")
+            _all_members = member_emails(_stored)
+            if not _all_members:
+                st.warning("Access is open: anyone who signs in can grab and work RFPs. Add emails here to restrict it. Admins are always members.")
+            else:
+                st.caption(f"{len(_all_members)} member{'s' if len(_all_members) != 1 else ''} can grab and work RFPs"
+                           + (f" ({len(_env_members)} from OPPOS_MEMBERS)" if _env_members else "") + "; everyone else can browse. Admins are always members.")
+            if st.button("Save members", key="members_save"):
+                _new = sorted({e.strip().lower() for e in _members_txt.splitlines() if e.strip()})
+                set_meta("members", json.dumps(_new))
+                _flash(f"Members saved — {len(_new)} listed")
+                st.rerun()
+            st.markdown('<div class="detail-label" style="margin:14px 0 6px;">Sources</div>', unsafe_allow_html=True)
             st.caption("Excluded sources are hidden from every list, skipped by scans, and never alerted. "
                        "Items you already claimed stay in your pursuits.")
             _sel = st.multiselect("Excluded sources", _all_keys, default=sorted(EXCLUDED_SOURCES),
@@ -2458,7 +2486,7 @@ def page_admin() -> None:
                + (f"approved v{_comp['version']} by {_comp['approved_by']} on {_comp['approved_at']}" if _comp["approved"]
                   else "NOT approved — response drafts mark every security/certification item [SECURITY TO CONFIRM] until the security team fills it in and sets approved: true."))
     if not CURRENT_USER.get("is_admin"):
-        st.caption("Settings and portal registrations are available to admins (OPPOS_ADMINS).")
+        st.caption("Members, sources and portal registrations are managed by admins (OPPOS_ADMINS).")
 
 
 _welcome()

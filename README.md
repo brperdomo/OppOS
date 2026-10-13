@@ -50,7 +50,8 @@ to pursue RFPs under your own identity while developing.
 | `SLACK_DIGEST_CHANNEL` | Channel id (or `#name` the bot is in) for the daily digest and team notices |
 | `SLACK_ALERT_MODE` | `digest` (one summary per scan) or `individual` (one alert per opp). Default: digest when bot + channel are set |
 | `LOB_OWNER_WORKFLOW`, `LOB_OWNER_LOW_CODE`, `LOB_OWNER_SDK`, `LOB_OWNER_DWS` | Optional owner name per LOB for the Salesforce-opp message. Unset = omitted |
-| `OPPOS_ADMINS` | Comma-separated admin emails: can edit portal registrations and change anyone's pursuit. **Set this before SDR rollout** — when empty, every user is an admin |
+| `OPPOS_ADMINS` | Comma-separated admin emails: can edit portal registrations and change anyone's pursuit. **Set this before rolling out to the team** — when empty, every user is an admin |
+| `OPPOS_MEMBERS` | Optional. Comma-separated emails allowed to grab and work RFPs; admins can also maintain the list in Admin → Settings (stored in the database). Everyone who signs in can browse; when both are empty access is open |
 
 ### Google sign-in (Streamlit native auth)
 
