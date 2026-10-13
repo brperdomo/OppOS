@@ -99,7 +99,10 @@ def main() -> None:
                         refreshed += 1
                 print(f"{name}: {len(missing)} stored row(s) outside the search window looked up individually")
     # duplicates + junk titles among active rows
-    rows = _query(f"SELECT source_id, source, title, agency, solicitation_number, response_deadline FROM opportunities WHERE pipeline_status IN ({', '.join('?' for _ in ACTIVE)})", ACTIVE)
+    # Cleanup is scoped to the requested sources (or every enabled, non-excluded source).
+    scope = wanted or [k for k, _, _ in sources if k not in excluded]
+    rows = _query(f"SELECT source_id, source, title, agency, solicitation_number, response_deadline FROM opportunities "
+                  f"WHERE pipeline_status IN ({', '.join('?' for _ in ACTIVE)}) AND source IN ({', '.join('?' for _ in scope)})", (*ACTIVE, *scope)) if scope else []
     junk = [r for r in rows if _JUNK_TITLE_RE.search((r["title"] or "").strip())]
     # Union-find over two keys: same source + solicitation number, and same source + normalised title + agency.
     live = [r for r in rows if r not in junk]
@@ -141,7 +144,9 @@ def main() -> None:
     for members in groups.values():
         if len(members) < 2:
             continue
-        members.sort(key=lambda r: (r.get("response_deadline") or "", r["source_id"]), reverse=True)
+        # Keeper: a numbered row wins over a number-less one, then the latest deadline — the group's identity must
+        # survive repeated cleanups, so a numbered posting is never retired in favour of a number-less re-post.
+        members.sort(key=lambda r: (bool((r.get("solicitation_number") or "").strip()), r.get("response_deadline") or "", r["source_id"]), reverse=True)
         dups += [(m, members[0]) for m in members[1:]]
     for r in junk:
         if not args.dry_run:

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from oppos.config import STAGE2_MIN_SCORE
-from oppos.scoring.prefilter import prefilter, probe_links
+from oppos.scoring.prefilter import prefilter, probe_links, check_link, DEFERRED
 from oppos.scoring.qualifier import qualify
 from oppos.sources.registry import FetchFn, get_enabled_sources
 from oppos.storage.db import (
@@ -111,6 +111,9 @@ def run_scan(
                                 on_refreshed(opp)
                             except Exception as e:
                                 logger.error("on_refreshed failed for %s: %s", opp.get("source_id"), e)
+                    continue
+                if check_link(opp.get("url") or "") == DEFERRED:
+                    stats["deferred"] = stats.get("deferred", 0) + 1  # link not probed yet (per-source cap): next run
                     continue
                 dup = find_duplicate(opp)
                 if dup and dup["source_id"] in inactive_ids:

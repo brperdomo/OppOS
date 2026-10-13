@@ -27,7 +27,9 @@ from oppos.pipeline import notify_after_scan, resolve_sources, run_scan
 from oppos.scoring.qualifier import USAGE
 from oppos.sources.attachments import download_attachments
 from oppos.sources.registry import list_available
-from oppos.storage.db import set_notion_page_id
+from oppos.storage.db import clear_notion_dirty, get_notion_dirty, get_opps_by_ids, set_notion_page_id
+
+_META = ("title", "agency", "solicitation_number", "response_deadline", "posted_date", "url", "description", "notice_type")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,24 +58,31 @@ def run(days: int = 30, dry_run: bool = False, source_override: list[str] | None
     def _progress(idx: int, total: int, name: str) -> None:
         logger.info("[%d/%d] Fetching from %s…", idx + 1, total, name)
 
-    def _refresh(opp):
+    def _sync_page(row: dict, changes: dict | None = None) -> bool:
+        """Update an existing Notion page with the stored (plus freshly fetched) listing metadata."""
+        merged = {**row, **{k: v for k, v in (changes or {}).items() if v and k in _META}}
+        page_id = push_opportunity(merged)
+        if page_id:
+            clear_notion_dirty(row["source_id"])
+            return True
+        return False
 
+    def _refresh(opp: dict) -> None:
         # A listing we already hold changed (deadline / link / title): update its Notion page if it has one.
-
-        from oppos.storage.db import get_opps_by_ids
-
+        if dry_run:
+            return  # the CLI promises no Notion / Slack side effects in dry-run mode
         sid = opp.get("source_id", "")
-
         row = get_opps_by_ids([sid]).get(sid) if sid else None
+        if row and row.get("notion_page_id"):
+            _sync_page(row, opp)  # on failure the row stays notion_dirty and is retried next run
 
-        if not row or not row.get("notion_page_id"):
-
-            return
-
-        merged = {**row, **{k: v for k, v in opp.items() if v and k in ("title", "agency", "solicitation_number", "response_deadline", "posted_date", "url", "description", "notice_type")}}
-
-        push_opportunity(merged)
-
+    if not dry_run:
+        # Rows whose page is behind the database (an earlier push failed): retry before scanning.
+        for row in get_notion_dirty():
+            try:
+                _sync_page(row)
+            except Exception as e:
+                logger.warning("Notion retry failed for %s: %s", row.get("source_id"), e)
 
     stats = run_scan(
         sources=resolve_sources(source_override),

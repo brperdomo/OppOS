@@ -263,11 +263,25 @@ _JUNK_TITLE_RE = re.compile(
     r"^(welcome to\b|log ?in\b|sign ?in\b|home( page)?$|bid ?board$|vendor (self[- ]service|portal|registration)\b|search results?$"
     r"|page not found|error\b|untitled$|solicitations?$|public solicitations$|notice$)", re.I)
 
-_LINK_CACHE: dict[str, str] = {}
+_LINK_CACHE: dict[str, tuple[str, float]] = {}  # url -> (status, checked_at epoch); honours LINK_CACHE_TTL_DAYS
 _LINK_ALIVE_STATUSES = {200, 201, 202, 203, 204, 301, 302, 303, 307, 308, 401, 403, 405, 406, 429}
 LINK_PROBE_TIMEOUT = 5.0
 LINK_PROBE_WORKERS = 8
 LINK_PROBE_MAX_PER_SOURCE = 150
+LINK_CACHE_TTL_DAYS = 7
+DEFERRED = "deferred"  # not probed this run (per-source cap) — the listing is held back, not stored
+
+
+def _cached(url: str) -> str | None:
+    import time
+    hit = _LINK_CACHE.get(url)
+    if not hit:
+        return None
+    status, ts = hit
+    if time.time() - ts > LINK_CACHE_TTL_DAYS * 86400:
+        _LINK_CACHE.pop(url, None)
+        return None
+    return status
 
 
 def _probe_one(url: str, timeout: float = LINK_PROBE_TIMEOUT) -> str:
@@ -290,35 +304,49 @@ def _probe_one(url: str, timeout: float = LINK_PROBE_TIMEOUT) -> str:
     return "dead" if code in (404, 410) else "ok" if code in _LINK_ALIVE_STATUSES else "unknown"
 
 
-def probe_links(urls: list[str], workers: int = LINK_PROBE_WORKERS, limit: int = LINK_PROBE_MAX_PER_SOURCE) -> dict[str, str]:
+def probe_links(urls: list[str], workers: int | None = None, limit: int | None = None) -> dict[str, str]:
     """Check listing links concurrently with a bounded pool, using and filling the persistent cache
-    (link_checks, 7-day TTL). Beyond `limit` fresh probes per call the rest are left 'unknown' for next time,
-    so a source with hundreds of slow links cannot eat the scan's time budget."""
+    (link_checks, LINK_CACHE_TTL_DAYS). Beyond `limit` fresh probes per call the rest are marked DEFERRED:
+    the scan holds those listings back (they are not stored) and probes them on a later run, so a source with
+    hundreds of slow links cannot eat the scan's time budget and a dead link can never slip in unchecked."""
+    import time
     from concurrent.futures import ThreadPoolExecutor
     from oppos.storage.db import get_link_checks, set_link_check
+    workers = LINK_PROBE_WORKERS if workers is None else workers  # read at call time so operators can tune the module constants
+    limit = LINK_PROBE_MAX_PER_SOURCE if limit is None else limit
     todo = [u for u in dict.fromkeys(urls) if u and u.lower().startswith(("http://", "https://"))]
-    results = dict(_LINK_CACHE)
+    results: dict[str, str] = {}
+    for u in todo:
+        c = _cached(u)
+        if c is not None and c != DEFERRED:  # a deferred mark is a promise to probe later, never a cached answer
+            results[u] = c
     try:
-        results.update(get_link_checks(todo))
+        for u, st in get_link_checks([u for u in todo if u not in results], max_age_days=LINK_CACHE_TTL_DAYS).items():
+            results[u] = st
+            _LINK_CACHE[u] = (st, time.time())
     except Exception as e:
         logger.warning("link cache unavailable: %s", e)
-    fresh = [u for u in todo if u not in results][:limit]
+    pending = [u for u in todo if u not in results]
+    fresh, deferred = pending[:limit], pending[limit:]
     if fresh:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             for url, status in zip(fresh, pool.map(_probe_one, fresh)):
                 results[url] = status
+                _LINK_CACHE[url] = (status, time.time())
                 try:
                     set_link_check(url, status)
                 except Exception as e:
                     logger.warning("could not cache link check for %s: %s", url, e)
-    _LINK_CACHE.update({u: results[u] for u in todo if u in results})
+    for u in deferred:
+        results[u] = DEFERRED
+        _LINK_CACHE[u] = (DEFERRED, time.time())  # in-memory only: a later run probes it
     return {u: results.get(u, "unknown") for u in todo}
 
 
 def check_link(url: str, timeout: float = LINK_PROBE_TIMEOUT) -> str:
     """Cached status only — never touches the network inside the prefilter. run_scan probes a source's new
     links concurrently (probe_links) before filtering; anything unprobed is 'unknown' and passes."""
-    return _LINK_CACHE.get(url, "unknown")
+    return _cached(url) or "unknown"
 
 
 def prefilter(opp: dict[str, Any]) -> dict[str, Any]:

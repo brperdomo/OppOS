@@ -230,6 +230,7 @@ _MIGRATIONS = [
     "ALTER TABLE opportunities ADD COLUMN attachment_text TEXT",
     "ALTER TABLE opportunities ADD COLUMN lob TEXT",
     "ALTER TABLE opportunities ADD COLUMN submitted_by TEXT",
+    "ALTER TABLE opportunities ADD COLUMN notion_dirty INTEGER DEFAULT 0",  # metadata changed after the Notion page was written
     "ALTER TABLE pursuits ADD COLUMN draft_json TEXT",
     "ALTER TABLE pursuits ADD COLUMN drafted_at TEXT",
 ]
@@ -351,9 +352,20 @@ def refresh_opportunity_meta(opp: dict[str, Any]) -> bool:
     if not changes:
         return False
     sets = ", ".join(f"{k} = ?" for k in changes)
-    _execute(f"UPDATE opportunities SET {sets}, updated_at = ? WHERE source_id = ?",
+    # A row that already has a Notion page is marked dirty until the page is updated, so a failed push is retried.
+    dirty = ", notion_dirty = 1" if cur.get("notion_page_id") else ""
+    _execute(f"UPDATE opportunities SET {sets}, updated_at = ?{dirty} WHERE source_id = ?",
              (*changes.values(), datetime.utcnow().isoformat(), opp["source_id"]))
     return True
+
+
+def get_notion_dirty() -> list[dict[str, Any]]:
+    """Rows whose Notion page is behind the stored metadata (a push failed or never ran after a refresh)."""
+    return _query("SELECT * FROM opportunities WHERE notion_dirty = 1 AND notion_page_id IS NOT NULL AND notion_page_id != ''")
+
+
+def clear_notion_dirty(source_id: str) -> None:
+    _execute("UPDATE opportunities SET notion_dirty = 0 WHERE source_id = ?", (source_id,))
 
 
 def expire_if_active(source_id: str, reason: str) -> bool:
