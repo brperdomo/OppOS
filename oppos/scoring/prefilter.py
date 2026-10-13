@@ -257,6 +257,100 @@ def _combine_text(opp: dict[str, Any]) -> str:
     return _URL_RE.sub("", text)
 
 
+# Titles that are a portal's page chrome, not a solicitation ("Welcome to the State of Maine's CGI Advantage
+# Vendor Self Service", "Login", "Bid Board"). Every label is matched whole (trailing punctuation aside): a
+# solicitation such as "Vendor Portal Modernization" or "Error Reporting Software" is not chrome.
+_JUNK_TITLE_RE = re.compile(
+    r"^(?:welcome to\b[\s\S]*|log ?in|sign ?in|home(?: page)?|bid ?board|vendor (?:self[- ]service|portal|registration)"
+    r"|search results?|page not found|(?:(?:server|application|\d{3}) )?error(?: \d{3})?|untitled|(?:public )?solicitations?"
+    r"|notice)[\s.!:]*$", re.I)
+
+_LINK_CACHE: dict[str, tuple[str, float]] = {}  # url -> (status, checked_at epoch); honours LINK_CACHE_TTL_DAYS
+_LINK_ALIVE_STATUSES = {200, 201, 202, 203, 204, 301, 302, 303, 307, 308, 401, 403, 405, 406, 429}
+LINK_PROBE_TIMEOUT = 5.0
+LINK_PROBE_WORKERS = 8
+LINK_PROBE_MAX_PER_SOURCE = 150
+LINK_CACHE_TTL_DAYS = 7
+DEFERRED = "deferred"  # not probed this run (per-source cap) — the listing is held back, not stored
+
+
+def _cached(url: str) -> str | None:
+    import time
+    hit = _LINK_CACHE.get(url)
+    if not hit:
+        return None
+    status, ts = hit
+    if time.time() - ts > LINK_CACHE_TTL_DAYS * 86400:
+        _LINK_CACHE.pop(url, None)
+        return None
+    return status
+
+
+def _probe_one(url: str, timeout: float = LINK_PROBE_TIMEOUT) -> str:
+    """'ok' | 'dead' | 'unknown'. HEAD first, GET (streamed, no body) when HEAD is refused. Only an explicit
+    404/410 is dead; connection problems are unknown so a flaky portal never drops real listings. Hash routes
+    are checked at the shell URL."""
+    import httpx
+    target = url.split("#", 1)[0] or url
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True, verify=False,
+                          headers={"User-Agent": "Mozilla/5.0 (compatible; OppOS link check)"}) as client:
+            resp = client.head(target)
+            if resp.status_code in (405, 501, 400):
+                with client.stream("GET", target) as r:
+                    code = r.status_code
+            else:
+                code = resp.status_code
+    except Exception:
+        return "unknown"
+    return "dead" if code in (404, 410) else "ok" if code in _LINK_ALIVE_STATUSES else "unknown"
+
+
+def probe_links(urls: list[str], workers: int | None = None, limit: int | None = None) -> dict[str, str]:
+    """Check listing links concurrently with a bounded pool, using and filling the persistent cache
+    (link_checks, LINK_CACHE_TTL_DAYS). Beyond `limit` fresh probes per call the rest are marked DEFERRED:
+    the scan holds those listings back (they are not stored) and probes them on a later run, so a source with
+    hundreds of slow links cannot eat the scan's time budget and a dead link can never slip in unchecked."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from oppos.storage.db import get_link_checks, set_link_check
+    workers = LINK_PROBE_WORKERS if workers is None else workers  # read at call time so operators can tune the module constants
+    limit = LINK_PROBE_MAX_PER_SOURCE if limit is None else limit
+    todo = [u for u in dict.fromkeys(urls) if u and u.lower().startswith(("http://", "https://"))]
+    results: dict[str, str] = {}
+    for u in todo:
+        c = _cached(u)
+        if c is not None and c != DEFERRED:  # a deferred mark is a promise to probe later, never a cached answer
+            results[u] = c
+    try:
+        for u, (st, ts) in get_link_checks([u for u in todo if u not in results], max_age_days=LINK_CACHE_TTL_DAYS).items():
+            results[u] = st
+            _LINK_CACHE[u] = (st, ts)  # original check time — reading never extends a verdict's life
+    except Exception as e:
+        logger.warning("link cache unavailable: %s", e)
+    pending = [u for u in todo if u not in results]
+    fresh, deferred = pending[:limit], pending[limit:]
+    if fresh:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for url, status in zip(fresh, pool.map(_probe_one, fresh)):
+                results[url] = status
+                _LINK_CACHE[url] = (status, time.time())
+                try:
+                    set_link_check(url, status)
+                except Exception as e:
+                    logger.warning("could not cache link check for %s: %s", url, e)
+    for u in deferred:
+        results[u] = DEFERRED
+        _LINK_CACHE[u] = (DEFERRED, time.time())  # in-memory only: a later run probes it
+    return {u: results.get(u, "unknown") for u in todo}
+
+
+def check_link(url: str, timeout: float = LINK_PROBE_TIMEOUT) -> str:
+    """Cached status only — never touches the network inside the prefilter. run_scan probes a source's new
+    links concurrently (probe_links) before filtering; anything unprobed is 'unknown' and passes."""
+    return _cached(url) or "unknown"
+
+
 def prefilter(opp: dict[str, Any]) -> dict[str, Any]:
     """Apply rules-based pre-filter. Returns the opp with a `prefilter` key added.
 
@@ -310,6 +404,17 @@ def prefilter(opp: dict[str, Any]) -> dict[str, Any]:
                     return opp
             except (ValueError, TypeError):
                 pass
+
+    # ── Page chrome scraped as a title → reject ─────────────────
+    if _JUNK_TITLE_RE.search(title.strip()):
+        opp["prefilter"] = {"passed": False, "reason": f"Not a solicitation title: {title[:60]!r}", "rule": "junk_title_reject"}
+        return opp
+
+    # ── Dead listing link → reject ──────────────────────────────
+    link = check_link(opp.get("url") or "")
+    if link == "dead":
+        opp["prefilter"] = {"passed": False, "reason": f"Listing link is dead: {opp.get('url')}", "rule": "dead_link_reject"}
+        return opp
 
     # ── Empty / broken scrape → reject ─────────────────────────
     # If title is missing/generic AND description is empty, there's nothing

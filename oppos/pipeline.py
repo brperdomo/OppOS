@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from oppos.config import STAGE2_MIN_SCORE
-from oppos.scoring.prefilter import prefilter
+from oppos.scoring.prefilter import prefilter, probe_links, check_link, DEFERRED
 from oppos.scoring.qualifier import qualify
 from oppos.sources.registry import FetchFn, get_enabled_sources
 from oppos.storage.db import (
@@ -21,7 +21,7 @@ from oppos.storage.db import (
     is_seen,
     record_source_health,
     set_meta,
-    upsert_opportunity,
+    upsert_opportunity, expire_if_active, find_duplicate, refresh_opportunity_meta,
 )
 
 logger = logging.getLogger("oppos.pipeline")
@@ -53,12 +53,16 @@ def run_scan(
     days: int = 14,
     on_progress: ProgressFn | None = None,
     on_scored: ScoredFn | None = None,
+    on_refreshed: ScoredFn | None = None,
+    on_expired: ScoredFn | None = None,
 ) -> dict[str, Any]:
     """Scan every source, score new listings, persist them, and record source health.
 
     Returns stats: fetched, new, filtered_out, scored, sources, errors[], per_source{}.
     `on_scored` is called for each newly scored opportunity whose fit_score meets
-    STAGE2_MIN_SCORE (the CLI uses it to push to Notion).
+    STAGE2_MIN_SCORE (the CLI uses it to push to Notion); `on_refreshed` for each already-held row whose
+    listing metadata (deadline, link, title…) changed, so outputs such as Notion can be updated too; `on_expired`
+    for each held row the source now reports closed (so its Notion status can follow the database).
     """
     init_db()
     sources = sources if sources is not None else get_enabled_sources()
@@ -87,8 +91,49 @@ def run_scan(
             opps = fetch_fn(posted_from=posted_from) if key == "sam_gov" else fetch_fn()
             count = len(opps)
             stats["fetched"] += count
-            for opp in opps:
+            # Closed listings first: a re-issued bid (new id) must not be folded into the retired original it replaces.
+            inactive_ids = {o["source_id"] for o in opps if o.get("active") is False}
+            # Probe the links of listings we have not stored yet — concurrently, cached, bounded — so the prefilter
+            # can reject dead links without a serial network wait per listing.
+            try:
+                probe_links([o.get("url") or "" for o in opps if o.get("active") is not False and not is_seen(o["source_id"])])
+            except Exception as e:
+                logger.warning("%s: link probing skipped: %s", name, e)
+            for opp in sorted(opps, key=lambda o: o.get("active") is not False):
+                if opp.get("active") is False:
+                    # The source now reports this listing closed / awarded / cancelled: retire our copy if we hold one.
+                    if expire_if_active(opp["source_id"], "Auto-expired — source reports the listing is no longer open"):
+                        stats["expired_by_source"] = stats.get("expired_by_source", 0) + 1
+                        if on_expired:
+                            try:
+                                on_expired(opp)
+                            except Exception as e:
+                                logger.error("on_expired failed for %s: %s", opp.get("source_id"), e)
+                    continue
                 if is_seen(opp["source_id"]):
+                    if refresh_opportunity_meta(opp):  # corrected deadline / link / title from the latest fetch
+                        stats["refreshed"] = stats.get("refreshed", 0) + 1
+                        if on_refreshed:
+                            try:
+                                on_refreshed(opp)
+                            except Exception as e:
+                                logger.error("on_refreshed failed for %s: %s", opp.get("source_id"), e)
+                    continue
+                if check_link(opp.get("url") or "") == DEFERRED:
+                    stats["deferred"] = stats.get("deferred", 0) + 1  # link not probed yet (per-source cap): next run
+                    continue
+                dup = find_duplicate(opp)
+                if dup and dup["source_id"] in inactive_ids:
+                    dup = None  # the row we hold is the retired original; this is its replacement, store it
+                if dup:
+                    # Same posting under a new id (addendum / re-issue): keep one row, carry the newer metadata.
+                    if refresh_opportunity_meta({**opp, "source_id": dup["source_id"]}) and on_refreshed:
+                        try:
+                            on_refreshed({**opp, "source_id": dup["source_id"]})
+                        except Exception as e:
+                            logger.error("on_refreshed failed for %s: %s", dup.get("source_id"), e)
+                    stats["duplicates"] = stats.get("duplicates", 0) + 1
+                    logger.info("Duplicate of %s skipped: %s", dup["source_id"], opp["source_id"])
                     continue
                 new += 1
                 stats["new"] += 1
