@@ -2245,10 +2245,21 @@ def page_desk() -> None:
     from oppos.storage.db import add_pursuit_event, create_pursuit, get_opps_by_ids, get_pursuit_events_for
 
     me = CURRENT_USER["email"]
+    all_p = _cached_pursuits()
+    # Deep link (Slack buttons): /desk?open=<source_id> selects that pursuit, switching to Team if it is not mine.
+    _open_q = st.query_params.get("open")
+    if _open_q and st.session_state.get("desk_deeplink") != _open_q:
+        st.session_state["desk_deeplink"] = _open_q
+        _target = next((p for p in all_p if p["source_id"] == _open_q), None)
+        if _target:
+            _mine = (_target.get("owner_email") or "").lower() == me
+            st.session_state["pursuit_view"] = "Mine" if _mine else "Team"
+            st.session_state[f"desk_selected_{'Mine' if _mine else 'Team'}"] = _open_q
+        else:
+            _flash("That RFP is no longer on anyone's desk.", icon="ℹ️")
     v1, v2 = st.columns([1, 4])
     with v1:
         _view = st.radio("View", ["Mine", "Team"], horizontal=True, label_visibility="collapsed", key="pursuit_view")
-    all_p = _cached_pursuits()
     rows_p = all_p if _view == "Team" else [p for p in all_p if (p.get("owner_email") or "").lower() == me]
     open_p = [p for p in rows_p if p.get("status") in OPEN_STAGES]
     by_stage = {
