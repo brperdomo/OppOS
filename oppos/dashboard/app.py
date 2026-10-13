@@ -1135,7 +1135,8 @@ def _pursue_opportunity(opp: dict, reason: str = "") -> None:
                 notion_url = f"https://notion.so/{page_id.replace('-', '')}"
                 st.write(f"✓ Notion page created — [Open]({notion_url})")
             else:
-                st.write("⚠️ Notion push failed — continuing…")
+                from oppos.outputs import notion_sync as _ns
+                st.write(f"⚠️ Notion push failed — continuing. Notion said: {_ns.LAST_ERROR or 'no reason returned'}")
         except Exception as e:
             st.write(f"⚠️ Notion error: {e} — continuing…")
 
@@ -1235,8 +1236,9 @@ def _push_to_notion(opp: dict) -> None:
                 status.update(label="Pushed to Notion ✓", state="complete")
                 st.success(f"Pushed — [open in Notion](https://notion.so/{clean_id})")
             else:
+                from oppos.outputs import notion_sync as _ns
                 status.update(label="Notion push failed", state="error")
-                st.error("Push failed — check that NOTION_TOKEN and NOTION_DATABASE_ID are set.")
+                st.error(f"Notion did not accept the page: {_ns.LAST_ERROR or 'no reason returned'}")
         except Exception as e:
             status.update(label="Notion push failed", state="error")
             st.error(f"Error: {e}")
