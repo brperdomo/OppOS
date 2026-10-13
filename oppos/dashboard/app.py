@@ -40,7 +40,7 @@ for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHRO
 from oppos.auth import auth_configured, can_work, logout_button, member_emails, require_login
 from oppos.scoring.schema import lob_label, point_claim, point_evidence, points_text
 from oppos.pursuits import registration_badge as _reg_badge
-from oppos.config import DB_PATH, DOCAUTH_LICENSE_KEY, SOURCE_STATE_MAP, VIEWER_LICENSE_KEY
+from oppos.config import DB_PATH, DOCAUTH_LICENSE_KEY, PORTAL_ACCESS_REQUEST_URL, SOURCE_STATE_MAP, VIEWER_LICENSE_KEY
 
 
 def _secret(name: str, env_value: str) -> str:
@@ -1887,14 +1887,18 @@ def _submission_html(opp: dict, pursuit: dict, draft: dict | None) -> str:
         if portal_url:
             where += f' · <a href="{_esc(portal_url)}" target="_blank">open ↗</a>'
         reg_status = pursuit.get("registration_status") or reg.get("status") or "unknown"
+        _request = (f' · <a href="{_esc(PORTAL_ACCESS_REQUEST_URL)}" target="_blank">request an account ↗</a>'
+                    if PORTAL_ACCESS_REQUEST_URL else "")
         if reg_status in ("registered", "not_required"):
             where += f' · <span class="sub-ok">{_esc(REGISTRATION_LABELS.get(reg_status, reg_status))}</span>'
         elif reg_status == "unknown":
-            where += ' · <span class="sub-warn">registration status unknown</span>'
+            where += ' · <span class="sub-warn">registration status unknown</span> — check whether we have an account' + _request
+        elif reg_status == "in_progress":
+            where += ' · <span class="sub-warn">account requested, pending</span>'
         else:
             lead = reg.get("lead_time_days")
-            where += (f' · <span class="sub-bad">{_esc(REGISTRATION_LABELS.get(reg_status, reg_status))}'
-                      + (f", allow ~{int(lead)} days" if lead else "") + "</span>")
+            where += (f' · <span class="sub-bad">No account yet{f", allow ~{int(lead)} days" if lead else ""}</span>'
+                      + (_request or " — ask an admin to add the service desk link (PORTAL_ACCESS_REQUEST_URL)"))
         if reg.get("login_owner"):
             where += f" · login held by {_esc(str(reg['login_owner']))}"
     elif method == "email":
