@@ -34,15 +34,33 @@
   // same origin as a <script type="application/json" data-oppos-payload="<id>"> tag; this page is served from the
   // app's own host so the licence can validate, and the URL carries only the payload id (never the content).
   const pid = new URLSearchParams(location.search).get('p');
+  // The payload frame is a sibling of ours in the app document — but hosts may wrap component iframes in
+  // extra same-origin frames (Streamlit Community Cloud does), so walk every reachable ancestor and search
+  // their frame trees; frames we cannot read are not ours.
   const findPayload = () => {
-    try {
-      for (const f of window.parent.document.querySelectorAll('iframe')) {
+    const sel = 'script[data-oppos-payload="' + pid + '"]';
+    const scan = (doc) => {
+      for (const f of doc.querySelectorAll('iframe')) {
         try {
-          const el = f.contentDocument && f.contentDocument.querySelector('script[data-oppos-payload="' + pid + '"]');
+          const d = f.contentDocument;
+          if (!d || d === document) continue;
+          const el = d.querySelector(sel);
           if (el) return el.textContent;
+          const deeper = scan(d);
+          if (deeper) return deeper;
         } catch (_) { /* cross-origin frame — not ours */ }
       }
-    } catch (_) { /* parent not reachable */ }
+      return null;
+    };
+    let w = window;
+    for (let i = 0; i < 8; i++) {
+      try {
+        if (w.parent === w) break;
+        w = w.parent;
+        const found = scan(w.document);
+        if (found) return found;
+      } catch (_) { break; /* cross-origin ancestor: nothing above is readable */ }
+    }
     return null;
   };
   let cfg = null;
