@@ -258,10 +258,12 @@ def _combine_text(opp: dict[str, Any]) -> str:
 
 
 # Titles that are a portal's page chrome, not a solicitation ("Welcome to the State of Maine's CGI Advantage
-# Vendor Self Service", "Login", "Bid Board").
+# Vendor Self Service", "Login", "Bid Board"). Every label is matched whole (trailing punctuation aside): a
+# solicitation such as "Vendor Portal Modernization" or "Error Reporting Software" is not chrome.
 _JUNK_TITLE_RE = re.compile(
-    r"^(welcome to\b|log ?in\b|sign ?in\b|home( page)?$|bid ?board$|vendor (self[- ]service|portal|registration)\b|search results?$"
-    r"|page not found|error\b|untitled$|solicitations?$|public solicitations$|notice$)", re.I)
+    r"^(?:welcome to\b[\s\S]*|log ?in|sign ?in|home(?: page)?|bid ?board|vendor (?:self[- ]service|portal|registration)"
+    r"|search results?|page not found|(?:(?:server|application|\d{3}) )?error(?: \d{3})?|untitled|(?:public )?solicitations?"
+    r"|notice)[\s.!:]*$", re.I)
 
 _LINK_CACHE: dict[str, tuple[str, float]] = {}  # url -> (status, checked_at epoch); honours LINK_CACHE_TTL_DAYS
 _LINK_ALIVE_STATUSES = {200, 201, 202, 203, 204, 301, 302, 303, 307, 308, 401, 403, 405, 406, 429}

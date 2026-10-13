@@ -54,13 +54,15 @@ def run_scan(
     on_progress: ProgressFn | None = None,
     on_scored: ScoredFn | None = None,
     on_refreshed: ScoredFn | None = None,
+    on_expired: ScoredFn | None = None,
 ) -> dict[str, Any]:
     """Scan every source, score new listings, persist them, and record source health.
 
     Returns stats: fetched, new, filtered_out, scored, sources, errors[], per_source{}.
     `on_scored` is called for each newly scored opportunity whose fit_score meets
     STAGE2_MIN_SCORE (the CLI uses it to push to Notion); `on_refreshed` for each already-held row whose
-    listing metadata (deadline, link, title…) changed, so outputs such as Notion can be updated too.
+    listing metadata (deadline, link, title…) changed, so outputs such as Notion can be updated too; `on_expired`
+    for each held row the source now reports closed (so its Notion status can follow the database).
     """
     init_db()
     sources = sources if sources is not None else get_enabled_sources()
@@ -102,6 +104,11 @@ def run_scan(
                     # The source now reports this listing closed / awarded / cancelled: retire our copy if we hold one.
                     if expire_if_active(opp["source_id"], "Auto-expired — source reports the listing is no longer open"):
                         stats["expired_by_source"] = stats.get("expired_by_source", 0) + 1
+                        if on_expired:
+                            try:
+                                on_expired(opp)
+                            except Exception as e:
+                                logger.error("on_expired failed for %s: %s", opp.get("source_id"), e)
                     continue
                 if is_seen(opp["source_id"]):
                     if refresh_opportunity_meta(opp):  # corrected deadline / link / title from the latest fetch

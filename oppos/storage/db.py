@@ -402,6 +402,9 @@ def expire_if_active(source_id: str, reason: str) -> bool:
     if not rows or rows[0]["pipeline_status"] not in ("new", "qualified", "expiring_soon"):
         return False
     set_pipeline_status(source_id, "expired", notes=reason)
+    # The Notion page (if any) still says New / Qualified: dirty until its status is pushed, so a failed push is retried.
+    _execute("UPDATE opportunities SET notion_dirty = 1 WHERE source_id = ? AND notion_page_id IS NOT NULL AND notion_page_id != ''",
+             (source_id,))
     return True
 
 

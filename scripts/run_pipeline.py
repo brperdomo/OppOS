@@ -78,6 +78,16 @@ def run(days: int = 30, dry_run: bool = False, source_override: list[str] | None
         if row and row.get("notion_page_id"):
             _sync_page(row, opp)  # on failure the row stays notion_dirty and is retried next run
 
+    def _expired(opp: dict) -> None:
+        # The source closed a listing we hold: push the Expired status to its Notion page (the row is already
+        # notion_dirty, so a failed push is retried before the next scan).
+        if dry_run:
+            return
+        sid = opp.get("source_id", "")
+        row = get_opps_by_ids([sid]).get(sid) if sid else None
+        if row and row.get("notion_page_id"):
+            _sync_page(row)
+
     init_db()  # schema (incl. the notion_dirty column) must exist before the retry query below
     if not dry_run:
         # Rows whose page is behind the database (an earlier push failed): retry before scanning.
@@ -94,6 +104,7 @@ def run(days: int = 30, dry_run: bool = False, source_override: list[str] | None
         on_scored=_push,
 
         on_refreshed=_refresh,
+        on_expired=_expired,
     )
     stats["notion_synced"] = notion_synced
     stats["slack_alerted"] = 0

@@ -296,6 +296,11 @@ def fetch_opportunities(site: ProactisSite, limit: int = 200) -> list[dict[str, 
         for r in all_records:
             (active_records if _is_active(r) and r.get("bidid") not in rebuilt_from else inactive_records).append(r)
         logger.info("%s: %d active out of %d total", site.name, len(active_records), len(all_records))
+        # An original the bounded searches no longer return is still retired by its replacement: emit it as an
+        # inactive stub so a stored copy is expired and the replacement is not folded onto it.
+        missing_originals = sorted(b for b in rebuilt_from if b not in seen_ids)
+        if missing_originals:
+            logger.info("%s: %d rebuilt original(s) outside the search window", site.name, len(missing_originals))
 
         # Convert to opportunity dicts; inactive bids are returned too, flagged, so the pipeline can expire
         # rows it already holds (an earlier scan may have stored them while they were open).
@@ -309,6 +314,9 @@ def fetch_opportunities(site: ProactisSite, limit: int = 200) -> list[dict[str, 
                     "%s: failed to parse bid %s: %s",
                     site.name, record.get("bidid", "?"), e,
                 )
+        for bid_id in missing_originals:
+            results.append({"source": site.key, "source_id": f"{site.state.lower()}-proactis-{bid_id}",
+                            "title": "", "url": "", "active": False, "rebuilt": True})
 
     logger.info("%s: %d opportunities scraped", site.name, len(results))
     return results
