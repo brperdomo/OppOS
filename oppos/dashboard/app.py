@@ -40,7 +40,7 @@ for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHRO
 from oppos.auth import auth_configured, can_work, logout_button, member_emails, require_login
 from oppos.scoring.schema import lob_label, point_claim, point_evidence, points_text
 from oppos.pursuits import registration_badge as _reg_badge
-from oppos.config import DB_PATH, DOCAUTH_LICENSE_KEY, SOURCE_STATE_MAP, VIEWER_LICENSE_KEY
+from oppos.config import DB_PATH, DOCAUTH_LICENSE_KEY, PORTAL_ACCESS_REQUEST_URL, SOURCE_STATE_MAP, VIEWER_LICENSE_KEY
 
 
 def _secret(name: str, env_value: str) -> str:
@@ -143,6 +143,13 @@ header[data-testid="stHeader"] a, header[data-testid="stHeader"] span { font-siz
 .desk-meta { font-size: 12px; color: var(--text-secondary); text-align: right; }
 .desk-meta .opp-tag { margin-left: 6px; }
 .desk-workspace { margin-top: 22px; border-top: 1px solid var(--border-medium); padding-top: 14px; }
+.sub-box { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: rgba(255,255,255,0.025); font-size: 13px; line-height: 1.7; color: var(--text-secondary); }
+.sub-title { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px; }
+.sub-k { display: inline-block; min-width: 56px; color: var(--text-tertiary); font-size: 12px; }
+.sub-ok { color: var(--accent-green); } .sub-warn { color: var(--accent-orange); } .sub-bad { color: var(--accent-red); }
+.sub-src { color: var(--text-tertiary); font-size: 12px; }
+.sub-missing { margin-top: 4px; color: var(--accent-orange); font-size: 12px; }
+.sub-box a { color: var(--accent-gold); text-decoration: none; }
 .oppos-header-left {
     display: flex;
     align-items: center;
@@ -1858,6 +1865,93 @@ def _run_draft(opp: dict, pursuit: dict) -> None:
            + (" · output was truncated (raise DRAFT_MAX_TOKENS)" if draft.get("truncated") else ""), icon="✍️")
 
 
+def _submission_html(opp: dict, pursuit: dict, draft: dict | None) -> str:
+    """'How to submit' for one pursuit: where (portal + registration, email, or mail), when (due, questions),
+    who (contact), what (format, forms). Pursuit details win; the RFP documents (draft extraction) fill the gaps;
+    whatever is still unknown is named so the person knows what to find out."""
+    from oppos.pursuits import REGISTRATION_LABELS
+    sub = (draft or {}).get("submission") or {}
+    method = (pursuit.get("submission_method") or "unknown").lower()
+    from_docs = False
+    if method == "unknown" and str(sub.get("method") or "").lower() in ("portal", "email", "mail", "in_person"):
+        method, from_docs = str(sub["method"]).lower(), True
+    reg = PORTAL_REGS.get(str(pursuit.get("portal") or opp.get("source") or "")) or {}
+    portal_name = reg.get("display_name") or SOURCE_LABELS.get(opp.get("source", ""), "") or ""
+    portal_url = reg.get("url") or opp.get("url") or ""
+    contact = [opp.get("contact_name"), opp.get("contact_email"), opp.get("contact_phone")]
+    missing = []
+
+    # where
+    if method == "portal":
+        where = f"On the portal{': ' + _esc(portal_name) if portal_name else ''}"
+        if portal_url:
+            where += f' · <a href="{_esc(portal_url)}" target="_blank">open ↗</a>'
+        reg_status = pursuit.get("registration_status") or reg.get("status") or "unknown"
+        _request = (f' · <a href="{_esc(PORTAL_ACCESS_REQUEST_URL)}" target="_blank">request an account ↗</a>'
+                    if PORTAL_ACCESS_REQUEST_URL else "")
+        if reg_status in ("registered", "not_required"):
+            where += f' · <span class="sub-ok">{_esc(REGISTRATION_LABELS.get(reg_status, reg_status))}</span>'
+        elif reg_status == "unknown":
+            where += ' · <span class="sub-warn">registration status unknown</span> — check whether we have an account' + _request
+        elif reg_status == "in_progress":
+            where += ' · <span class="sub-warn">account requested, pending</span>'
+        else:
+            lead = reg.get("lead_time_days")
+            where += (f' · <span class="sub-bad">No account yet{f", allow ~{int(lead)} days" if lead else ""}</span>'
+                      + (_request or " — ask an admin to add the service desk link (PORTAL_ACCESS_REQUEST_URL)"))
+        if reg.get("login_owner"):
+            where += f" · login held by {_esc(str(reg['login_owner']))}"
+    elif method == "email":
+        where = "By email" + (f' to <a href="mailto:{_esc(opp["contact_email"])}">{_esc(opp["contact_email"])}</a>' if opp.get("contact_email") else "")
+        if not opp.get("contact_email"):
+            missing.append("the address to send it to")
+    elif method == "mail":
+        where = "By mail / hand delivery" + (f" · {_esc(opp.get('office') or opp.get('place_of_performance') or '')}" if (opp.get("office") or opp.get("place_of_performance")) else "")
+    elif method == "in_person":
+        where = "In person" + (f" · {_esc(opp.get('office') or '')}" if opp.get("office") else "")
+    else:
+        where = '<span class="sub-warn">Submission method not known yet</span>'
+        if opp.get("url"):
+            where += f' · listing: <a href="{_esc(opp["url"])}" target="_blank">open ↗</a>'
+        missing.append("how it is submitted")
+    if from_docs:
+        where += ' <span class="sub-src">(from the RFP documents)</span>'
+
+    # when
+    due = pursuit.get("submission_deadline") or (opp.get("response_deadline") or "")[:10]
+    when_bits = []
+    if due:
+        when_bits.append(f"Due {_esc(str(due)[:10])}" + (f" (the RFP says {_esc(str(sub['deadline']))})" if sub.get("deadline") and sub["deadline"] != "unknown" and str(sub["deadline"])[:10] != str(due)[:10] else ""))
+    else:
+        missing.append("the due date")
+    qa = pursuit.get("qa_deadline") or sub.get("questions_deadline") or ""
+    if qa:
+        when_bits.append(f"questions by {_esc(str(qa)[:40])}")
+
+    # who
+    who = " · ".join(_esc(str(c)) for c in contact if c)
+    if not who:
+        missing.append("a contact")
+
+    # what
+    forms = [str(x) for x in ((draft or {}).get("required_forms") or [])][:5]
+    fmt = [str(x) for x in (sub.get("format_requirements") or []) if not str(x).lower().startswith("required form")][:4]  # forms have their own line
+
+    rows = [f'<div><span class="sub-k">Where</span>{where}</div>']
+    if when_bits:
+        rows.append(f'<div><span class="sub-k">When</span>{" · ".join(when_bits)}</div>')
+    if who:
+        rows.append(f'<div><span class="sub-k">Who</span>{who}</div>')
+    if fmt:
+        rows.append(f'<div><span class="sub-k">Format</span>{_esc("; ".join(fmt))}</div>')
+    if forms:
+        rows.append(f'<div><span class="sub-k">Forms</span>{_esc("; ".join(forms))}</div>')
+    if missing:
+        rows.append(f'<div class="sub-missing">Still to find out: {_esc(", ".join(missing))} — fill it in under Pursuit details'
+                    + ("" if draft else ", or draft the response and the RFP documents are read for it") + ".</div>")
+    return '<div class="sub-box"><div class="sub-title">How to submit</div>' + "".join(rows) + "</div>"
+
+
 def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
     """Workspace for one pursuit: status strip, one action row for its stage, then the checklist, details,
     response and activity folded away. `events` is this pursuit's slice of the desk's single events query."""
@@ -1904,6 +1998,7 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
         + f'<span class="pp-pill">{done}/{total} checklist done</span>'
         + f'<span class="pp-links">{"".join(links)}</span></div>'
         + (f'<div class="pp-next">Next: {_esc(pursuit["next_action"][:120])}</div>' if pursuit.get("next_action") else "")
+        + _submission_html(opp, pursuit, _draft)
     )
 
     def _actions(slot) -> None:

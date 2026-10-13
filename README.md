@@ -37,6 +37,7 @@ to pursue RFPs under your own identity while developing.
 | `SLACK_WEBHOOK_URL` | Fallback alerts when no bot token |
 | `SLACK_BOT_TOKEN` | Enables channel-per-pursuit, invites, pins, digest, reminders (see Slack app below) |
 | `NUTRIENT_API_KEY` | OCR / document processing for attachments |
+| `PORTAL_ACCESS_REQUEST_URL` | Optional. Where to request an account on a vendor portal we are not registered on; linked as "request an account" under *How to submit* whenever registration is needed or unknown. Defaults to Nutrient's service-desk form |
 | `OPPOS_APP_URL` | Optional. Public URL of the dashboard; every Slack stage message (grabbed, pursuing, draft ready, submitted, won, lost, abandoned, put back) gets an "Open on my desk" button pointing at it |
 | `DOCAUTH_LICENSE_KEY` | Optional. Nutrient Document Authoring SDK license for the in-app response editor and DOCX / PDF export; without it (or if the key is rejected) the evaluation build adds a watermark. Web keys are bound to the hostname — register `nutrient-opp-os.streamlit.app` and `localhost` in Licensor. The editor page is served from `oppos/dashboard/static/` (`server.enableStaticServing` in `.streamlit/config.toml`) so the iframe carries the real hostname |
 | `VIEWER_LICENSE_KEY` | Optional. Nutrient Web SDK license for the "Preview PDF" button in the response document (the exported PDF rendered in our viewer before anything is downloaded); without it the viewer runs as a watermarked trial build. Also hostname-bound: register the same domains in Licensor |
