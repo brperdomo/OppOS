@@ -27,7 +27,9 @@ from oppos.pipeline import notify_after_scan, resolve_sources, run_scan
 from oppos.scoring.qualifier import USAGE
 from oppos.sources.attachments import download_attachments
 from oppos.sources.registry import list_available
-from oppos.storage.db import set_notion_page_id
+from oppos.storage.db import clear_notion_dirty, get_notion_dirty, get_opps_by_ids, init_db, row_to_opp, set_notion_page_id
+
+_META = ("title", "agency", "solicitation_number", "response_deadline", "posted_date", "url", "description", "notice_type")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,11 +58,53 @@ def run(days: int = 30, dry_run: bool = False, source_override: list[str] | None
     def _progress(idx: int, total: int, name: str) -> None:
         logger.info("[%d/%d] Fetching from %s…", idx + 1, total, name)
 
+    def _sync_page(row: dict, changes: dict | None = None) -> bool:
+        """Update an existing Notion page with the stored assessment plus the freshly fetched listing metadata.
+        The row is re-shaped first (stage2 / contacts / raw decoded) so the page keeps its pattern, industry,
+        similar win, deployment and contact properties — only the listing fields change."""
+        merged = {**row_to_opp(row), **{k: v for k, v in (changes or {}).items() if v and k in _META}}
+        page_id = push_opportunity(merged)
+        if page_id:
+            clear_notion_dirty(row["source_id"])
+            return True
+        return False
+
+    def _refresh(opp: dict) -> None:
+        # A listing we already hold changed (deadline / link / title): update its Notion page if it has one.
+        if dry_run:
+            return  # the CLI promises no Notion / Slack side effects in dry-run mode
+        sid = opp.get("source_id", "")
+        row = get_opps_by_ids([sid]).get(sid) if sid else None
+        if row and row.get("notion_page_id"):
+            _sync_page(row, opp)  # on failure the row stays notion_dirty and is retried next run
+
+    def _expired(opp: dict) -> None:
+        # The source closed a listing we hold: push the Expired status to its Notion page (the row is already
+        # notion_dirty, so a failed push is retried before the next scan).
+        if dry_run:
+            return
+        sid = opp.get("source_id", "")
+        row = get_opps_by_ids([sid]).get(sid) if sid else None
+        if row and row.get("notion_page_id"):
+            _sync_page(row)
+
+    init_db()  # schema (incl. the notion_dirty column) must exist before the retry query below
+    if not dry_run:
+        # Rows whose page is behind the database (an earlier push failed): retry before scanning.
+        for row in get_notion_dirty():
+            try:
+                _sync_page(row)
+            except Exception as e:
+                logger.warning("Notion retry failed for %s: %s", row.get("source_id"), e)
+
     stats = run_scan(
         sources=resolve_sources(source_override),
         days=days,
         on_progress=_progress,
         on_scored=_push,
+
+        on_refreshed=_refresh,
+        on_expired=_expired,
     )
     stats["notion_synced"] = notion_synced
     stats["slack_alerted"] = 0

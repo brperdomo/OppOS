@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 API_BASE = "https://webprocure.proactiscloud.com/wp-full-text-search"
 DETAIL_BASE = "https://webprocure.proactiscloud.com/wp-full-text-search/soldetail"
-BID_VIEW_BASE = "https://webprocure.proactiscloud.com/wp-web-public/#/bidboard/bid"
+BID_VIEW_BASE = "https://webprocure.proactiscloud.com/wp-web-public/en/#/bidboard/bid"  # the /en/ segment is required
 
 
 @dataclass
@@ -72,11 +72,13 @@ SEARCH_KEYWORDS = [
 
 PAGE_SIZE = 10
 
-# PROACTIS internal status codes (ctBidstatus.status)
-# 2=Started (draft), 4=Opened (accepting bids), 5=Reviewed,
-# 6=Finalized (awarded), 7=Deleted/Canceled, 9=Archived
-ACTIVE_STATUS_CODES = {2, 4}       # accepting submissions
-OPEN_PUBLIC_STATUSES = {"Open", "Active", "Under Evaluation"}
+# PROACTIS internal status codes (ctBidstatus.status), verified against the live RI/CT boards 2026-10-12:
+# 2 = Open (accepting responses), 4 = Opened / "Under Evaluation" (responses were opened — closed to vendors),
+# 6 = Awarded, 7 = Canceled / Retracted. Only 2 accepts submissions.
+ACTIVE_STATUS_CODES = {2}
+OPEN_PUBLIC_STATUSES = {"Open", "Active"}
+# Field semantics (there is no closeDate): startDate = posted / available, openDate = bid opening = the
+# vendor "End Date" (submission deadline).
 
 
 def _epoch_to_iso(ms: int | str | None) -> str | None:
@@ -197,8 +199,8 @@ def _record_to_opportunity(record: dict, site: ProactisSite) -> dict[str, Any]:
         "title": title[:500],
         "solicitation_number": bid_number,
         "notice_type": bid_type,
-        "posted_date": _epoch_to_iso(record.get("openDate")),
-        "response_deadline": _epoch_to_iso(record.get("closeDate")),
+        "posted_date": _epoch_to_iso(record.get("startDate")),
+        "response_deadline": _epoch_to_iso(record.get("openDate")),   # bid opening = submission deadline
         "agency": agency,
         "office": creator_org.get("name") or "",
         "naics_code": "",
@@ -214,38 +216,36 @@ def _record_to_opportunity(record: dict, site: ProactisSite) -> dict[str, Any]:
 
 
 def _is_active(record: dict) -> bool:
-    """Check if a bid is currently accepting submissions.
-
-    Checks both PROACTIS status fields AND the closeDate to filter out
-    bids whose deadline has already passed (even if status still says Open).
-    """
-    # Reject if closeDate is in the past
-    close_ms = record.get("closeDate")
-    if close_ms is not None:
+    """Accepting submissions: status 2 / publicStatus Open, and the bid opening (End Date) still ahead."""
+    open_ms = record.get("openDate")
+    if open_ms is not None:
         try:
-            close_dt = datetime.utcfromtimestamp(int(close_ms) / 1000)
-            if close_dt < datetime.utcnow():
+            if datetime.utcfromtimestamp(int(open_ms) / 1000) < datetime.utcnow():
                 return False
         except (ValueError, TypeError, OSError):
             pass
-
     bid_status = record.get("ctBidstatus") or {}
-    status_code = bid_status.get("status")
-    public_status = bid_status.get("publicStatus") or ""
+    try:
+        if int(bid_status.get("status")) in ACTIVE_STATUS_CODES:
+            return True
+    except (ValueError, TypeError):
+        pass
+    return (bid_status.get("publicStatus") or "") in OPEN_PUBLIC_STATUSES
 
-    # Check numeric status code first (most reliable)
-    if status_code is not None:
-        try:
-            if int(status_code) in ACTIVE_STATUS_CODES:
-                return True
-        except (ValueError, TypeError):
-            pass
 
-    # Fall back to public status string
-    if public_status in OPEN_PUBLIC_STATUSES:
-        return True
-
-    return False
+def lookup_opportunity(site: ProactisSite, bid_number: str) -> dict[str, Any] | None:
+    """Fetch one bid by its solicitation number (for re-syncing rows the wildcard window no longer covers).
+    Returns the opportunity dict with `active` set, or None when the portal no longer lists it."""
+    if not bid_number:
+        return None
+    with httpx.Client(timeout=30.0, follow_redirects=True, verify=False) as client:
+        recs = [r for r in _search_bids(client, site, query=f'"{bid_number}"', status_filter="", max_pages=1)
+                if (r.get("bidNumber") or "").strip().lower() == bid_number.strip().lower()]
+    if not recs:
+        return None
+    opp = _record_to_opportunity(recs[0], site)
+    opp["active"] = _is_active(recs[0])
+    return opp
 
 
 def fetch_opportunities(site: ProactisSite, limit: int = 200) -> list[dict[str, Any]]:
@@ -290,23 +290,33 @@ def fetch_opportunities(site: ProactisSite, limit: int = 200) -> list[dict[str, 
             if new_count:
                 logger.info("%s: '%s' added %d new bids", site.name, keyword, new_count)
 
-        # Filter for active bids (accepting submissions)
-        active_records = [r for r in all_records if _is_active(r)]
-        logger.info(
-            "%s: %d active out of %d total",
-            site.name, len(active_records), len(all_records),
-        )
+        # A re-issued bid carries rebuiltFromBidid: the original is retired in favour of the rebuilt one.
+        rebuilt_from = {r.get("rebuiltFromBidid") for r in all_records if r.get("rebuiltFromBidid")}
+        active_records, inactive_records = [], []
+        for r in all_records:
+            (active_records if _is_active(r) and r.get("bidid") not in rebuilt_from else inactive_records).append(r)
+        logger.info("%s: %d active out of %d total", site.name, len(active_records), len(all_records))
+        # An original the bounded searches no longer return is still retired by its replacement: emit it as an
+        # inactive stub so a stored copy is expired and the replacement is not folded onto it.
+        missing_originals = sorted(b for b in rebuilt_from if b not in seen_ids)
+        if missing_originals:
+            logger.info("%s: %d rebuilt original(s) outside the search window", site.name, len(missing_originals))
 
-        # Convert to opportunity dicts
-        for record in active_records[:limit]:
+        # Convert to opportunity dicts; inactive bids are returned too, flagged, so the pipeline can expire
+        # rows it already holds (an earlier scan may have stored them while they were open).
+        for record in active_records[:limit] + inactive_records:
             try:
                 opp = _record_to_opportunity(record, site)
+                opp["active"] = record in active_records
                 results.append(opp)
             except Exception as e:
                 logger.warning(
                     "%s: failed to parse bid %s: %s",
                     site.name, record.get("bidid", "?"), e,
                 )
+        for bid_id in missing_originals:
+            results.append({"source": site.key, "source_id": f"{site.state.lower()}-proactis-{bid_id}",
+                            "title": "", "url": "", "active": False, "rebuilt": True})
 
     logger.info("%s: %d opportunities scraped", site.name, len(results))
     return results

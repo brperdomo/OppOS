@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import timezone, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -230,14 +230,49 @@ _MIGRATIONS = [
     "ALTER TABLE opportunities ADD COLUMN attachment_text TEXT",
     "ALTER TABLE opportunities ADD COLUMN lob TEXT",
     "ALTER TABLE opportunities ADD COLUMN submitted_by TEXT",
+    "ALTER TABLE opportunities ADD COLUMN notion_dirty INTEGER DEFAULT 0",  # metadata changed after the Notion page was written
     "ALTER TABLE pursuits ADD COLUMN draft_json TEXT",
     "ALTER TABLE pursuits ADD COLUMN drafted_at TEXT",
     "ALTER TABLE pursuits ADD COLUMN details_saved_at TEXT",  # set once the SDR has saved Pursuit details; then those values are authoritative
 ]
 
 
+_CREATE_LINK_CHECKS_SQL = """
+    CREATE TABLE IF NOT EXISTS link_checks (
+        url TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        checked_at TEXT NOT NULL
+    )
+"""
+
+
+def get_link_checks(urls: list[str], max_age_days: int = 7) -> dict[str, tuple[str, float]]:
+    """Cached link statuses younger than max_age_days: url -> (status, checked_at as epoch seconds), so a
+    caller's memory cache inherits the original check time instead of restarting the TTL."""
+    out: dict[str, tuple[str, float]] = {}
+    cutoff = (datetime.utcnow() - timedelta(days=max_age_days)).isoformat()
+    for i in range(0, len(urls), 100):
+        chunk = [u for u in urls[i:i + 100] if u]
+        if not chunk:
+            continue
+        placeholders = ", ".join("?" for _ in chunk)
+        for r in _query(f"SELECT url, status, checked_at FROM link_checks WHERE url IN ({placeholders}) AND checked_at > ?", (*chunk, cutoff)):
+            try:
+                ts = datetime.fromisoformat(str(r["checked_at"])).replace(tzinfo=timezone.utc).timestamp()
+            except (TypeError, ValueError):
+                ts = 0.0
+            out[r["url"]] = (r["status"], ts)
+    return out
+
+
+def set_link_check(url: str, status: str) -> None:
+    _execute("INSERT INTO link_checks (url, status, checked_at) VALUES (?, ?, ?) ON CONFLICT(url) DO UPDATE SET status = excluded.status, checked_at = excluded.checked_at",
+             (url, status, datetime.utcnow().isoformat()))
+
+
 def init_db() -> None:
     _execute(_CREATE_TABLE_SQL)
+    _execute(_CREATE_LINK_CHECKS_SQL)
     _execute(_CREATE_META_SQL)
     _execute(_CREATE_HEALTH_SQL)
     _execute(_CREATE_PURSUITS_SQL)
@@ -268,6 +303,110 @@ def get_meta(key: str) -> str | None:
 def is_seen(source_id: str) -> bool:
     rows = _query("SELECT 1 FROM opportunities WHERE source_id = ?", (source_id,))
     return len(rows) > 0
+
+
+_ACTIVE_STATUSES = ("new", "qualified", "expiring_soon", "in_progress")
+_META_FIELDS = ("title", "agency", "solicitation_number", "response_deadline", "posted_date", "url", "description", "notice_type")
+
+
+def _norm_key(text: str) -> str:
+    import re as _re
+    t = (text or "").lower()
+    t = _re.sub(r"\((?:request for|rfi|rfp|rfq|re-?issue|addendum|amendment|revised)[^)]*\)", " ", t)  # "(Request for Information)" suffixes
+    t = _re.sub(r"\b(request for (information|proposals?|quotes?|qualifications?)|rfi|rfp|rfq|rfqu|re-?issued?|addendum|amendment|revised|v\d+)\b", " ", t)
+    return _re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+
+def find_duplicate(opp: dict[str, Any]) -> dict[str, Any] | None:
+    """An existing active row for the same posting: same source + solicitation number, or same source +
+    normalised title (portals re-post the same solicitation under a new id for addenda / re-issues)."""
+    source = opp.get("source") or ""
+    placeholders = ", ".join("?" for _ in _ACTIVE_STATUSES)
+    sol = (opp.get("solicitation_number") or "").strip()
+    if sol:
+        rows = _query(f"SELECT * FROM opportunities WHERE source = ? AND solicitation_number = ? AND source_id != ? AND pipeline_status IN ({placeholders}) LIMIT 1",
+                      (source, sol, opp.get("source_id", ""), *_ACTIVE_STATUSES))
+        if rows:
+            return rows[0]
+    key = _norm_key(opp.get("title") or "")
+    if len(key) < 12:
+        return None
+    rows = _query(f"SELECT * FROM opportunities WHERE source = ? AND source_id != ? AND pipeline_status IN ({placeholders})",
+                  (source, opp.get("source_id", ""), *_ACTIVE_STATUSES))
+    for r in rows:
+        r_sol = (r.get("solicitation_number") or "").strip().lower()
+        if sol and r_sol and r_sol != sol.lower():
+            continue  # two identifiers that disagree are two solicitations, whatever the title says
+        if _norm_key(r.get("title") or "") == key and (r.get("agency") or "").strip().lower() == (opp.get("agency") or "").strip().lower():
+            return r
+    return None
+
+
+def meta_changes(opp: dict[str, Any], cur: dict[str, Any]) -> dict[str, Any]:
+    """Listing metadata fields whose fetched value differs from the stored row (empty fetched values never overwrite)."""
+    return {f: opp.get(f) for f in _META_FIELDS if opp.get(f) and str(opp.get(f)) != str(cur.get(f) or "")}
+
+
+def refresh_opportunity_meta(opp: dict[str, Any]) -> bool:
+    """Update listing metadata (deadline, dates, url, title…) of a row we already hold when the source now
+    reports different values — scans re-fetch listings, and a corrected deadline or link must land."""
+    rows = _query("SELECT * FROM opportunities WHERE source_id = ?", (opp.get("source_id", ""),))
+    if not rows:
+        return False
+    cur = rows[0]
+    changes = meta_changes(opp, cur)
+    if not changes:
+        return False
+    sets = ", ".join(f"{k} = ?" for k in changes)
+    # A row that already has a Notion page is marked dirty until the page is updated, so a failed push is retried.
+    dirty = ", notion_dirty = 1" if cur.get("notion_page_id") else ""
+    _execute(f"UPDATE opportunities SET {sets}, updated_at = ?{dirty} WHERE source_id = ?",
+             (*changes.values(), datetime.utcnow().isoformat(), opp["source_id"]))
+    return True
+
+
+def row_to_opp(row: dict[str, Any]) -> dict[str, Any]:
+    """A stored row in the in-memory opportunity shape the outputs expect: JSON columns decoded
+    (stage1/stage2/raw) and the contact columns folded into point_of_contact."""
+    opp = dict(row)
+    for col, key in (("stage1_json", "stage1"), ("stage2_json", "stage2"), ("raw_json", "raw")):
+        val = row.get(col)
+        if isinstance(val, str) and val:
+            try:
+                opp[key] = json.loads(val)
+            except json.JSONDecodeError:
+                opp[key] = {}
+        elif isinstance(val, dict):
+            opp[key] = val
+        else:
+            opp.setdefault(key, {})
+    opp["point_of_contact"] = {"name": row.get("contact_name") or "", "email": row.get("contact_email") or "", "phone": row.get("contact_phone") or ""}
+    try:
+        opp["fit_score"] = int(float(row.get("fit_score") or 0))
+    except (TypeError, ValueError):
+        opp["fit_score"] = 0
+    return opp
+
+
+def get_notion_dirty() -> list[dict[str, Any]]:
+    """Rows whose Notion page is behind the stored metadata (a push failed or never ran after a refresh)."""
+    return _query("SELECT * FROM opportunities WHERE notion_dirty = 1 AND notion_page_id IS NOT NULL AND notion_page_id != ''")
+
+
+def clear_notion_dirty(source_id: str) -> None:
+    _execute("UPDATE opportunities SET notion_dirty = 0 WHERE source_id = ?", (source_id,))
+
+
+def expire_if_active(source_id: str, reason: str) -> bool:
+    """Mark a row expired when its source now reports it closed/awarded/cancelled — only if it is still active here."""
+    rows = _query("SELECT pipeline_status FROM opportunities WHERE source_id = ?", (source_id,))
+    if not rows or rows[0]["pipeline_status"] not in ("new", "qualified", "expiring_soon"):
+        return False
+    set_pipeline_status(source_id, "expired", notes=reason)
+    # The Notion page (if any) still says New / Qualified: dirty until its status is pushed, so a failed push is retried.
+    _execute("UPDATE opportunities SET notion_dirty = 1 WHERE source_id = ? AND notion_page_id IS NOT NULL AND notion_page_id != ''",
+             (source_id,))
+    return True
 
 
 def upsert_opportunity(opp: dict[str, Any]) -> None:
