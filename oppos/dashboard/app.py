@@ -1565,6 +1565,12 @@ def _evidence_html(point) -> str:
     return f'<div class="evidence-quote">“{_esc(ev)}”</div>' if ev else ""
 
 
+def _app_link(page: str, sid: str) -> str:
+    """Address of one listing (page "") or pursuit (page "desk") in this app; relative when OPPOS_APP_URL is unset."""
+    base = (os.environ.get("OPPOS_APP_URL") or "").rstrip("/")
+    return f"{base}/{page}?open={sid}" if page else f"{base}/?open={sid}"
+
+
 def _deadline_tag(deadline: str | None) -> tuple[str, str]:
     """(css class, label) for the deadline pill."""
     if not deadline:
@@ -1763,7 +1769,9 @@ def render_card(opp: dict, tab_key: str, mode: str = "pool", extra_meta_html: st
             posted = opp.get("posted_date")
             st.markdown(f'<div class="detail-label" style="margin-bottom:6px;">Dates</div>'
                         f'<div class="detail-value">Posted {posted[:10] if posted else "unknown"} · {_esc(dl_txt)}</div>'
-                        f'<div class="detail-value" style="margin-top:6px;"><span class="detail-label">Source</span> {_esc(SOURCE_LABELS.get(opp.get("source", ""), opp.get("source", "")))}</div>',
+                        f'<div class="detail-value" style="margin-top:6px;"><span class="detail-label">Source</span> {_esc(SOURCE_LABELS.get(opp.get("source", ""), opp.get("source", "")))}</div>'
+                        f'<div class="detail-value" style="margin-top:6px;"><span class="detail-label">Share</span> '
+                        f'<a href="{_esc(_app_link("desk" if mode == "desk" else "", sid))}">link to this {"pursuit" if mode == "desk" else "listing"} in OppOS</a></div>',
                         unsafe_allow_html=True)
         desc = opp.get("description") or ""
         if desc:
@@ -1883,7 +1891,7 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
         due_txt, due_cls = ("Due today" if dleft == 0 else f"Due in {dleft}d · {str(due_raw)[:10]}"), ("pp-bad" if dleft <= 3 else "pp-warn" if dleft <= 7 else "pp-ok")
     reg_status = pursuit.get("registration_status") or "unknown"
     reg_cls = {"registered": "pp-ok", "not_required": "pp-ok", "in_progress": "pp-warn", "not_registered": "pp-bad"}.get(reg_status, "")
-    links = []
+    links = [f'<a href="{_esc(_app_link("desk", sid))}" title="Link to this pursuit — copy from the address bar or right-click to copy">Link to this</a>']
     if npid:
         links.append(f'<a href="https://notion.so/{str(npid).replace("-", "")}" target="_blank">Notion ↗</a>')
     if pursuit.get("slack_channel_id"):
@@ -2248,6 +2256,13 @@ def page_pool() -> None:
                 st.rerun()
 
         rows = [r for r in open_rows if _score_of(r) >= min_score or not _score_of(r)]
+        _open_q = st.query_params.get("open")
+        if _open_q:  # shared link to one listing: show it first regardless of the filters
+            _hit = next((r for r in open_rows if r.get("source_id") == _open_q), None)
+            if _hit:
+                rows = [_hit] + [r for r in rows if r.get("source_id") != _open_q]
+            else:
+                _flash("That listing is not open any more — it may be on someone's desk or archived.", icon="ℹ️")
         if source_filter:
             rows = [r for r in rows if r.get("source") in source_filter]
         if sort_by == "Deadline":
@@ -2382,6 +2397,9 @@ def page_desk() -> None:
                     st.rerun()
 
     if selected:
+        if st.query_params.get("open") != selected:
+            st.query_params["open"] = selected  # the address bar is the share link for this pursuit
+            st.session_state["desk_deeplink"] = selected  # our own update, not an incoming link: do not re-route the view
         p_ = next(p for _, p in ordered if p["source_id"] == selected)
         o = opps.get(selected)
         if o:
