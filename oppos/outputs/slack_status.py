@@ -101,7 +101,9 @@ def build_status_message(stage: str, opp: dict[str, Any], who: str, reason: str 
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": extra[:600]}]})
     buttons = []
     if APP_URL:
-        buttons.append({"type": "button", "text": {"type": "plain_text", "text": "Open on my desk"}, "url": f"{APP_URL}/desk"})
+        sid = opp.get("source_id") or ""
+        buttons.append({"type": "button", "text": {"type": "plain_text", "text": "Open on my desk"},
+                        "url": f"{APP_URL}/desk" + (f"?open={sid}" if sid else "")})  # deep link to this pursuit
     if notion_url or pursuit.get("notion_page_id") or opp.get("notion_page_id"):
         n = notion_url or f"https://notion.so/{str(pursuit.get('notion_page_id') or opp.get('notion_page_id')).replace('-', '')}"
         buttons.append({"type": "button", "text": {"type": "plain_text", "text": "Notion"}, "url": n})
