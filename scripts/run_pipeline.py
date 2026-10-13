@@ -27,7 +27,7 @@ from oppos.pipeline import notify_after_scan, resolve_sources, run_scan
 from oppos.scoring.qualifier import USAGE
 from oppos.sources.attachments import download_attachments
 from oppos.sources.registry import list_available
-from oppos.storage.db import clear_notion_dirty, get_notion_dirty, get_opps_by_ids, set_notion_page_id
+from oppos.storage.db import clear_notion_dirty, get_notion_dirty, get_opps_by_ids, init_db, row_to_opp, set_notion_page_id
 
 _META = ("title", "agency", "solicitation_number", "response_deadline", "posted_date", "url", "description", "notice_type")
 
@@ -59,8 +59,10 @@ def run(days: int = 30, dry_run: bool = False, source_override: list[str] | None
         logger.info("[%d/%d] Fetching from %s…", idx + 1, total, name)
 
     def _sync_page(row: dict, changes: dict | None = None) -> bool:
-        """Update an existing Notion page with the stored (plus freshly fetched) listing metadata."""
-        merged = {**row, **{k: v for k, v in (changes or {}).items() if v and k in _META}}
+        """Update an existing Notion page with the stored assessment plus the freshly fetched listing metadata.
+        The row is re-shaped first (stage2 / contacts / raw decoded) so the page keeps its pattern, industry,
+        similar win, deployment and contact properties — only the listing fields change."""
+        merged = {**row_to_opp(row), **{k: v for k, v in (changes or {}).items() if v and k in _META}}
         page_id = push_opportunity(merged)
         if page_id:
             clear_notion_dirty(row["source_id"])
@@ -76,6 +78,7 @@ def run(days: int = 30, dry_run: bool = False, source_override: list[str] | None
         if row and row.get("notion_page_id"):
             _sync_page(row, opp)  # on failure the row stays notion_dirty and is retried next run
 
+    init_db()  # schema (incl. the notion_dirty column) must exist before the retry query below
     if not dry_run:
         # Rows whose page is behind the database (an earlier push failed): retry before scanning.
         for row in get_notion_dirty():

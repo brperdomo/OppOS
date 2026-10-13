@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import timezone, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -245,17 +245,22 @@ _CREATE_LINK_CHECKS_SQL = """
 """
 
 
-def get_link_checks(urls: list[str], max_age_days: int = 7) -> dict[str, str]:
-    """Cached link statuses ('ok' | 'dead' | 'unknown') younger than max_age_days, keyed by url."""
-    out: dict[str, str] = {}
+def get_link_checks(urls: list[str], max_age_days: int = 7) -> dict[str, tuple[str, float]]:
+    """Cached link statuses younger than max_age_days: url -> (status, checked_at as epoch seconds), so a
+    caller's memory cache inherits the original check time instead of restarting the TTL."""
+    out: dict[str, tuple[str, float]] = {}
     cutoff = (datetime.utcnow() - timedelta(days=max_age_days)).isoformat()
     for i in range(0, len(urls), 100):
         chunk = [u for u in urls[i:i + 100] if u]
         if not chunk:
             continue
         placeholders = ", ".join("?" for _ in chunk)
-        for r in _query(f"SELECT url, status FROM link_checks WHERE url IN ({placeholders}) AND checked_at > ?", (*chunk, cutoff)):
-            out[r["url"]] = r["status"]
+        for r in _query(f"SELECT url, status, checked_at FROM link_checks WHERE url IN ({placeholders}) AND checked_at > ?", (*chunk, cutoff)):
+            try:
+                ts = datetime.fromisoformat(str(r["checked_at"])).replace(tzinfo=timezone.utc).timestamp()
+            except (TypeError, ValueError):
+                ts = 0.0
+            out[r["url"]] = (r["status"], ts)
     return out
 
 
@@ -357,6 +362,29 @@ def refresh_opportunity_meta(opp: dict[str, Any]) -> bool:
     _execute(f"UPDATE opportunities SET {sets}, updated_at = ?{dirty} WHERE source_id = ?",
              (*changes.values(), datetime.utcnow().isoformat(), opp["source_id"]))
     return True
+
+
+def row_to_opp(row: dict[str, Any]) -> dict[str, Any]:
+    """A stored row in the in-memory opportunity shape the outputs expect: JSON columns decoded
+    (stage1/stage2/raw) and the contact columns folded into point_of_contact."""
+    opp = dict(row)
+    for col, key in (("stage1_json", "stage1"), ("stage2_json", "stage2"), ("raw_json", "raw")):
+        val = row.get(col)
+        if isinstance(val, str) and val:
+            try:
+                opp[key] = json.loads(val)
+            except json.JSONDecodeError:
+                opp[key] = {}
+        elif isinstance(val, dict):
+            opp[key] = val
+        else:
+            opp.setdefault(key, {})
+    opp["point_of_contact"] = {"name": row.get("contact_name") or "", "email": row.get("contact_email") or "", "phone": row.get("contact_phone") or ""}
+    try:
+        opp["fit_score"] = int(float(row.get("fit_score") or 0))
+    except (TypeError, ValueError):
+        opp["fit_score"] = 0
+    return opp
 
 
 def get_notion_dirty() -> list[dict[str, Any]]:

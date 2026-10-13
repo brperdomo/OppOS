@@ -321,9 +321,9 @@ def probe_links(urls: list[str], workers: int | None = None, limit: int | None =
         if c is not None and c != DEFERRED:  # a deferred mark is a promise to probe later, never a cached answer
             results[u] = c
     try:
-        for u, st in get_link_checks([u for u in todo if u not in results], max_age_days=LINK_CACHE_TTL_DAYS).items():
+        for u, (st, ts) in get_link_checks([u for u in todo if u not in results], max_age_days=LINK_CACHE_TTL_DAYS).items():
             results[u] = st
-            _LINK_CACHE[u] = (st, time.time())
+            _LINK_CACHE[u] = (st, ts)  # original check time — reading never extends a verdict's life
     except Exception as e:
         logger.warning("link cache unavailable: %s", e)
     pending = [u for u in todo if u not in results]
