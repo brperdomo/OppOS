@@ -750,7 +750,8 @@ def _welcome() -> None:
             '<div class="welcome-title">Three steps from an RFP to a submitted response</div>'
             '<ol>'
             '<li><b>Find RFPs</b> is everything our scanner found at public portals that nobody has taken yet, scored for fit '
-            '(how well it matches what Nutrient sells, 0 to 100; 65 and up is worth a look). Use <b>Grab</b> on anything you want to evaluate.</li>'
+            '(how well it matches what Nutrient sells, 0 to 100; 65 and up is worth a look). Use <b>Grab</b> on anything you want to evaluate. '
+            'Got one from elsewhere? <b>Add an RFP</b> takes a link, a file, or just what you know.</li>'
             '<li>Grabbed RFPs sit on <b>My desk</b>. Decide: <b>Start pursuing</b> opens a Notion page and a Slack channel and starts reminders, '
             'or <b>Put it back</b> for someone else.</li>'
             '<li>For a pursuit, <b>Draft response</b> writes a first answer to every requirement; open the document, review the marked spots, '
@@ -1002,66 +1003,97 @@ def _after_manual_submit(result: dict) -> None:
         st.warning(f"Submitted, but could not auto-claim: {e}")
 
 
-@st.dialog("Submit Manual RFP", width="large")
+def _go_to_desk(sid: str) -> None:
+    """Open My desk with this pursuit selected."""
+    st.session_state["desk_selected_Mine"] = sid
+    st.session_state["pursuit_view"] = "Mine"
+    st.session_state.pop("manual_result", None)
+    st.switch_page(_PAGE_DESK)
+
+
+@st.dialog("Add an RFP", width="large")
 def _manual_rfp_dialog() -> None:
-    st.markdown(
-        '<div style="font-size: 13px; color: var(--text-tertiary); margin-bottom: 12px;">'
-        "Paste a link to any RFP page or upload a PDF/DOCX. It is scored through the same pipeline, "
-        f"attributed to <strong>{_esc(CURRENT_USER['name'])}</strong>, and claimed for you so it shows in your Pursuits.</div>",
-        unsafe_allow_html=True,
-    )
-    url_tab, file_tab = st.tabs(["Paste URL", "Upload File"])
+    """Three ways in, one outcome: the RFP lands on the person's desk, grabbed for them."""
+    st.caption(f"Found one the scanner missed, or sourced it yourself? Add it here. It is attributed to you and lands on your desk, grabbed.")
+    how = st.segmented_control("How do you have it?", ["I have a link", "I have the document", "I'll type it in"],
+                               default="I have a link", key="manual_how", label_visibility="collapsed")
+    result = st.session_state.get("manual_result")
 
-    with url_tab:
-        manual_url = st.text_input("RFP URL", key="manual_url_input", placeholder="https://procurement.example.com/rfp/12345")
-        if st.button("Analyze URL", key="manual_url_submit", use_container_width=True, disabled=not manual_url):
-            with st.status("Analyzing RFP...", expanded=True) as status:
+    if how == "I have a link" and not result:
+        st.caption("Paste the listing page or a direct link to the RFP file. The page and its documents are read and the fit scored.")
+        manual_url = st.text_input("Link", key="manual_url_input", placeholder="https://procurement.example.gov/bid/12345", label_visibility="collapsed")
+        if st.button("Add from link", key="manual_url_submit", type="primary", disabled=not manual_url):
+            with st.status("Reading the RFP…", expanded=True) as status:
                 result = _run_manual_url(manual_url)
-                if result.get("error"):
-                    status.update(label=f"Failed: {result['error']}", state="error")
-                else:
-                    status.update(label=f"Score: {result.get('fit_score', 0)}/100 — {result.get('title', 'Untitled')[:50]}", state="complete")
+                status.update(label="Failed" if result.get("error") else "Added", state="error" if result.get("error") else "complete")
             _after_manual_submit(result)
             st.session_state["manual_result"] = result
             if result.get("_att_files"):
                 st.session_state[f"att_files_{result.get('source_id', '')}"] = result["_att_files"]
+            st.rerun(scope="fragment")
 
-    with file_tab:
-        uploaded = st.file_uploader("Upload PDF or DOCX", type=["pdf", "docx"], key="manual_file_upload")
-        if st.button("Analyze File", key="manual_file_submit", use_container_width=True, disabled=uploaded is None):
+    elif how == "I have the document" and not result:
+        st.caption("Upload the RFP as PDF or Word. The text is read and the fit scored.")
+        uploaded = st.file_uploader("RFP document", type=["pdf", "docx"], key="manual_file_upload", label_visibility="collapsed")
+        if st.button("Add from file", key="manual_file_submit", type="primary", disabled=uploaded is None):
             file_bytes = uploaded.read()
-            with st.status(f"Analyzing {uploaded.name}...", expanded=True) as status:
+            with st.status(f"Reading {uploaded.name}…", expanded=True) as status:
                 result = _run_manual_file(file_bytes, uploaded.name)
-                if result.get("error"):
-                    status.update(label=f"Failed: {result['error']}", state="error")
-                else:
-                    status.update(label=f"Score: {result.get('fit_score', 0)}/100 — {result.get('title', 'Untitled')[:50]}", state="complete")
+                status.update(label="Failed" if result.get("error") else "Added", state="error" if result.get("error") else "complete")
             _after_manual_submit(result)
             st.session_state["manual_result"] = result
             if result.get("_att_files"):
                 st.session_state[f"att_files_{result.get('source_id', '')}"] = result["_att_files"]
+            st.rerun(scope="fragment")
 
-    manual_result = st.session_state.get("manual_result")
-    if manual_result:
-        if manual_result.get("error"):
-            st.error(f"Could not process: {manual_result['error']}")
+    elif how == "I'll type it in" and not result:
+        st.caption("No link or file needed. Only the title is required; add what you know and fill in the rest from your desk later.")
+        from oppos.sources.manual import submit_details
+        c1, c2 = st.columns([3, 2])
+        with c1:
+            t_title = st.text_input("What is it?", key="manual_t_title", placeholder="RFI — Document workflow platform")
+            t_agency = st.text_input("Who is asking?", key="manual_t_agency", placeholder="Agency, department, or company")
+            t_url = st.text_input("Link, if there is one", key="manual_t_url", placeholder="https://")
+        with c2:
+            t_deadline = st.date_input("Response due", value=None, key="manual_t_deadline", format="YYYY-MM-DD")
+            t_sol = st.text_input("Solicitation number", key="manual_t_sol", placeholder="Optional")
+            t_contact = st.text_input("Contact", key="manual_t_contact", placeholder="Name or email, optional")
+        t_desc = st.text_area("What are they asking for?", key="manual_t_desc", height=120,
+                              placeholder="Paste the summary or scope from the email or call notes. Used to score the fit and to draft the response.")
+        t_score = st.checkbox("Score the fit now from this description", value=True, key="manual_t_score", disabled=not t_desc.strip())
+        if st.button("Add to my desk", key="manual_t_submit", type="primary", disabled=not t_title.strip()):
+            contact_email = t_contact.strip() if "@" in t_contact else ""
+            fields = {"title": t_title, "agency": t_agency, "url": t_url, "response_deadline": t_deadline.isoformat() if t_deadline else "",
+                      "solicitation_number": t_sol, "description": t_desc,
+                      "contact_name": "" if contact_email else t_contact.strip(), "contact_email": contact_email}
+            with st.status("Adding…", expanded=True) as status:
+                result = submit_details(fields, score=bool(t_score and t_desc.strip()), on_progress=lambda step, d="": st.write(d))
+                status.update(label="Failed" if result.get("error") else "Added", state="error" if result.get("error") else "complete")
+            _after_manual_submit(result)
+            st.session_state["manual_result"] = result
+            st.rerun(scope="fragment")
+
+    if result:
+        if result.get("error"):
+            st.error(f"Could not add it: {result['error']}")
+            if st.button("Try again", key="manual_retry"):
+                st.session_state.pop("manual_result", None)
+                st.rerun(scope="fragment")
         else:
-            s2 = manual_result.get("stage2") or {}
-            st.success(f"Added and claimed for you — **{manual_result.get('title', 'Untitled')}** scored "
-                       f"**{manual_result.get('fit_score', 0)}/100** ({lob_label(manual_result.get('lob')) or 'unrouted'})")
-            with st.expander("Analysis details", expanded=True):
-                if manual_result.get("agency"):
-                    st.write(f"**Agency:** {manual_result['agency']}")
-                st.write(f"**Score:** {manual_result.get('fit_score', 0)}/100 — {manual_result.get('recommended_action', '?')}")
-                if s2.get("summary"):
-                    st.write(f"_{s2['summary']}_")
-                if s2.get("strengths"):
-                    st.write("**Strengths:** " + points_text(s2["strengths"], 3))
-                if s2.get("risks"):
-                    st.write("**Risks:** " + points_text(s2["risks"], 3))
-    if st.button("Done", key="manual_done", use_container_width=True):
-        st.session_state.pop("manual_result", None)
-        st.rerun()
+            s2 = result.get("stage2") or {}
+            fit = int(_score_of(result))
+            st.success(f"**{result.get('title', 'Untitled')[:90]}** is on your desk, grabbed for you"
+                       + (f" · fit {fit}/100 ({lob_label(result.get('lob')) or 'unrouted'})" if fit else " · not scored yet"))
+            if s2.get("summary"):
+                st.caption(s2["summary"])
+            b1, b2 = st.columns(2)
+            with b1:
+                if st.button("Open on my desk", key="manual_open_desk", type="primary", use_container_width=True):
+                    _go_to_desk(result.get("source_id", ""))
+            with b2:
+                if st.button("Add another", key="manual_another", use_container_width=True):
+                    st.session_state.pop("manual_result", None)
+                    st.rerun(scope="fragment")
 
 
 def _ensure_files_exist(opp: dict, selected_paths: list) -> list:
@@ -2178,6 +2210,7 @@ def page_pool() -> None:
         if st.button("Add an RFP", use_container_width=True, disabled=not CURRENT_USER.get("can_work")):
             _manual_rfp_dialog()
     h3.caption((f"Everything the scanner found that nobody has taken yet. Grab anything worth a look — it moves to your desk. "
+                f"Sourced one yourself? Add an RFP takes a link, a file, or just what you know. "
                 if CURRENT_USER.get("can_work") else f"Everything the scanner found that nobody has taken yet. {NO_ACCESS_NOTE} ")
                + f"Last scan {_ago(_cached_meta('last_scan'))}.")
 
@@ -2504,12 +2537,11 @@ def page_admin() -> None:
 
 _welcome()
 
+_PAGE_POOL = st.Page(page_pool, title="Find RFPs", icon=":material/search:", default=True)  # served at /
+_PAGE_DESK = st.Page(page_desk, title="My desk", icon=":material/person:", url_path="desk")
+_PAGE_ADMIN = st.Page(page_admin, title="Admin", icon=":material/settings:", url_path="admin")
 _nav = st.navigation(
-    [
-        st.Page(page_pool, title="Find RFPs", icon=":material/search:", default=True),  # served at /
-        st.Page(page_desk, title="My desk", icon=":material/person:", url_path="desk"),
-        st.Page(page_admin, title="Admin", icon=":material/settings:", url_path="admin"),
-    ],
+    [_PAGE_POOL, _PAGE_DESK, _PAGE_ADMIN],
     position="top",
 )
 _nav.run()
