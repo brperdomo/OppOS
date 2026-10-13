@@ -187,8 +187,10 @@ def release_claim(opp: dict[str, Any], user: dict[str, Any], reason: str = "") -
     add_pursuit_event(sid, user.get("email", ""), "released", reason or "Released back to the pool")
 
 
-def board_rows(pursuits: list[dict[str, Any]], opps: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    """Flatten open pursuits for the team board / Slack 'in flight' section."""
+def board_rows(pursuits: list[dict[str, Any]], opps: dict[str, dict[str, Any]],
+               last_activity: dict[str, str | None] | None = None) -> list[dict[str, Any]]:
+    """Flatten open pursuits for the team board / Slack 'in flight' section. `last_activity` (source_id → latest
+    event timestamp) lets a caller that already loaded the events skip one query per pursuit."""
     from oppos.scoring.lobs import lob_label
     from oppos.storage.db import last_pursuit_activity
 
@@ -208,7 +210,8 @@ def board_rows(pursuits: list[dict[str, Any]], opps: dict[str, dict[str, Any]]) 
             "due": due or "",
             "days_left": days_until(due),
             "checklist": f"{done}/{total}",
-            "last_activity": (last_pursuit_activity(p["source_id"]) or p.get("updated_at") or "")[:10],
+            "last_activity": ((last_activity[p["source_id"]] if last_activity is not None and p["source_id"] in last_activity
+                               else last_pursuit_activity(p["source_id"])) or p.get("updated_at") or "")[:10],
         })
     rows.sort(key=lambda r: (r["days_left"] if r["days_left"] is not None else 9999, r["owner"]))
     return rows
