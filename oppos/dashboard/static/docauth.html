@@ -93,7 +93,10 @@
       }
     }
     if (!system) system = await DocAuth.createDocAuthSystem({});
-    const doc = await system.import(new TextEncoder().encode(cfg.md), { format: 'markdown', fileName: cfg.stem + '.md' });
+    // Prefer the Word file (page setup, logo header, footer); the Markdown is the fallback.
+    const doc = cfg.docx
+      ? await system.import(Uint8Array.from(atob(cfg.docx), ch => ch.charCodeAt(0)), { format: 'docx', fileName: cfg.stem + '.docx' })
+      : await system.import(new TextEncoder().encode(cfg.md), { format: 'markdown', fileName: cfg.stem + '.md' });
     const editor = await system.createEditor(document.getElementById('editor'), { document: doc });
     const save = async (format, ext, mime, extra, suffix) => {
       status.textContent = 'Exporting ' + (suffix ? 'PDF/A' : ext.toUpperCase()) + '…';
