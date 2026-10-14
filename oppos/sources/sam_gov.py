@@ -180,6 +180,7 @@ def fetch_opportunities(
 
     seen_ids: set[str] = set()
     results: list[dict[str, Any]] = []
+    failures: list[str] = []
 
     with httpx.Client(timeout=30.0) as client:
         for keyword in keywords:
@@ -200,6 +201,12 @@ def fetch_opportunities(
                 data = resp.json()
             except (httpx.HTTPError, ValueError) as e:
                 logger.warning("SAM.gov query failed for '%s': %s", keyword, e)
+                code = getattr(getattr(e, "response", None), "status_code", None)
+                failures.append(f"{code or type(e).__name__}")
+                if code in (401, 403):
+                    # The key is rejected: every further query fails the same way. Fail the source loudly so
+                    # source health shows it (keys expire every 90 days and must be renewed on sam.gov).
+                    raise RuntimeError("SAM.gov rejected the API key (HTTP %s) — renew SAM_GOV_API_KEY on sam.gov" % code) from e
                 continue
 
             opps = data.get("opportunitiesData", [])
@@ -213,4 +220,6 @@ def fetch_opportunities(
                 results.append(_normalize_opportunity(raw_opp))
 
     logger.info("SAM.gov: %d unique opportunities across %d keyword queries", len(results), len(keywords))
+    if failures and len(failures) >= len(keywords):
+        raise RuntimeError(f"SAM.gov: all {len(keywords)} queries failed ({failures[0]})")
     return results

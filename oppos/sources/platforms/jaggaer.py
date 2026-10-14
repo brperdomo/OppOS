@@ -165,21 +165,36 @@ def fetch_opportunities(site: JaggaerSite, limit: int = 200) -> list[dict[str, A
 
     Supports both the legacy (pre-2025) and new PHX table formats.
     """
+    # The public list shows 20 events per page by default and the portal carries far more; PageSize / PageNum are
+    # honoured as query parameters, so ask for big pages and walk them until the "x-y of N" counter is exhausted.
+    page_size = max(20, min(limit, 200))
+    base = f"{site.base_url}/apps/Router/PublicEvent"
+    params: dict[str, Any] = {"PageSize": page_size}
     if site.customer_org:
-        list_url = f"{site.base_url}/apps/Router/PublicEvent?CustomerOrg={site.customer_org}"
-    else:
-        list_url = f"{site.base_url}/apps/Router/PublicEvent"
+        params["CustomerOrg"] = site.customer_org
 
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
     with httpx.Client(timeout=30.0, follow_redirects=True) as client:
         logger.info("Fetching %s (%s) public events…", site.name, site.state)
-        try:
-            resp = client.get(list_url)
-            resp.raise_for_status()
-        except httpx.HTTPError as e:
-            logger.error("%s listing failed: %s", site.name, e)
-            return []
-
-        results = _parse_list_page(resp.text, site)
+        for page in range(1, 11):  # hard stop: 10 pages × page_size
+            try:
+                resp = client.get(base, params={**params, "PageNum": page})
+                resp.raise_for_status()
+            except httpx.HTTPError as e:
+                if page == 1:
+                    logger.error("%s listing failed: %s", site.name, e)
+                    return []
+                logger.warning("%s page %d failed: %s", site.name, page, e)
+                break
+            rows = _parse_list_page(resp.text, site)
+            new = [r for r in rows if r.get("source_id") not in seen]
+            for r in new:
+                seen.add(r.get("source_id", ""))
+            results.extend(new)
+            total = re.search(r"\d+\s*-\s*(\d+) of (\d+)", resp.text)
+            if not new or not total or int(total.group(1)) >= int(total.group(2)) or len(results) >= limit:
+                break
 
     logger.info("%s: %d opportunities scraped", site.name, len(results))
     return results[:limit]

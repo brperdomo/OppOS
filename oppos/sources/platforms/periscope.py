@@ -203,6 +203,24 @@ SEARCH_KEYWORDS = [
 ]
 
 
+def _list_rows(html: str) -> list[dict[str, str]]:
+    """Rows of the open-bids results table (a full page or a PrimeFaces partial update): doc id, bid number,
+    organisation, buyer, title (Description column) and opening date."""
+    import html as _html
+    out: list[dict[str, str]] = []
+    for row in re.findall(r'<tr data-ri="\d+".*?</tr>', html, re.S):
+        href = re.search(r'href="([^"]*bidDetail[^"]*)"', row)
+        doc_id = _extract_doc_id(href.group(1).replace("&amp;", "&")) if href else None
+        if not doc_id:
+            continue
+        cells = [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", _html.unescape(c))).strip() for c in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)]
+        if len(cells) < 8:
+            continue
+        out.append({"doc_id": doc_id, "number": cells[0] or doc_id, "agency": cells[2], "buyer": cells[5],
+                    "title": cells[6] or cells[0], "deadline": _parse_date(cells[7]) or ""})
+    return out
+
+
 def _search_by_keyword(
     client: httpx.Client,
     base_url: str,
@@ -251,7 +269,7 @@ def _search_by_keyword(
     return doc_ids
 
 
-def fetch_opportunities(site: PeriscopeSite, limit: int = 200) -> list[dict[str, Any]]:
+def fetch_opportunities(site: PeriscopeSite, limit: int = 500, workers: int = 6) -> list[dict[str, Any]]:
     """Scrape open bids from a Periscope/SOVRA BuySpeed portal."""
     open_bids_url = f"{site.base_url}/bso/view/search/external/advancedSearchBid.xhtml?openBids=true"
     detail_base = f"{site.base_url}/bso/external/bidDetail.sda"
@@ -266,31 +284,51 @@ def fetch_opportunities(site: PeriscopeSite, limit: int = 200) -> list[dict[str,
             logger.error("%s listing page failed: %s", site.name, e)
             return []
 
-        seen_ids: set[str] = set()
+        # The open-bids table shows 25 rows per page; the rest sit behind a PrimeFaces AJAX paginator. Walk it
+        # (first=25, 50, …) until a page comes back empty. Each row carries number, organisation, title and
+        # opening date, so a bid we already hold needs no detail fetch — only new ones cost a round trip.
+        rows = _list_rows(resp.text)
+        vs = re.search(r'name="javax\.faces\.ViewState"[^>]*value="([^"]+)"', resp.text)
+        dt = "bidSearchResultsForm:bidResultId"
+        first = 25
+        while vs and first < 2000:
+            data = {"javax.faces.partial.ajax": "true", "javax.faces.source": dt, "javax.faces.partial.execute": dt,
+                    "javax.faces.partial.render": dt, f"{dt}_pagination": "true", f"{dt}_first": str(first), f"{dt}_rows": "25",
+                    f"{dt}_encodeFeature": "true", "bidSearchResultsForm": "bidSearchResultsForm", "javax.faces.ViewState": vs.group(1)}
+            try:
+                r2 = client.post(open_bids_url, data=data, headers={"Faces-Request": "partial/ajax", "X-Requested-With": "XMLHttpRequest",
+                                                                   "X-XSRF-TOKEN": client.cookies.get("XSRF-TOKEN") or ""})
+                r2.raise_for_status()
+            except httpx.HTTPError as e:
+                logger.warning("%s: paginator page at %d failed: %s", site.name, first, e)
+                break
+            more = [r for r in _list_rows(r2.text) if r["doc_id"] not in {x["doc_id"] for x in rows}]
+            if not more:
+                break
+            rows.extend(more)
+            first += 25
+        logger.info("%s: %d open bids listed across pages", site.name, len(rows))
+
+        try:  # bids we already hold: list data is enough to refresh / expire them (one query for the whole list)
+            from oppos.storage.db import get_opps_by_ids
+            held = set(get_opps_by_ids([f"{site.state.lower()}-{r['doc_id']}" for r in rows]))
+        except Exception:  # standalone use without a database
+            held = set()
         detail_ids: list[str] = []
-        for href in re.findall(r'href="([^"]*bidDetail[^"]*)"', resp.text):
-            href = href.replace("&amp;", "&")
-            doc_id = _extract_doc_id(href)
-            if doc_id and doc_id not in seen_ids:
-                seen_ids.add(doc_id)
-                detail_ids.append(doc_id)
+        for row in rows:
+            sid = f"{site.state.lower()}-{row['doc_id']}"
+            if sid in held:
+                results.append({
+                    "source": site.key, "source_id": sid, "title": row["title"][:500], "solicitation_number": row["number"],
+                    "agency": row["agency"], "response_deadline": row["deadline"], "posted_date": None,
+                    "url": f"{detail_base}?docId={row['doc_id']}&external=true&parentUrl=close",
+                    "place_of_performance": site.place_default, "active": True,
+                })
+            else:
+                detail_ids.append(row["doc_id"])
+        logger.info("%s: %d already held, %d new to fetch in detail", site.name, len(rows) - len(detail_ids), len(detail_ids))
 
-        logger.info("%s: found %d from default listing", site.name, len(detail_ids))
-
-        for keyword in SEARCH_KEYWORDS:
-            kw_ids = _search_by_keyword(client, site.base_url, keyword)
-            new_count = 0
-            for doc_id in kw_ids:
-                if doc_id not in seen_ids:
-                    seen_ids.add(doc_id)
-                    detail_ids.append(doc_id)
-                    new_count += 1
-            if new_count:
-                logger.info("%s: '%s' added %d new bids", site.name, keyword, new_count)
-
-        logger.info("%s: %d total unique bids to fetch", site.name, len(detail_ids))
-
-        for doc_id in detail_ids[:limit]:
+        def _detail(doc_id: str) -> dict[str, Any] | None:
             try:
                 resp = client.get(
                     detail_base,
@@ -299,7 +337,7 @@ def fetch_opportunities(site: PeriscopeSite, limit: int = 200) -> list[dict[str,
                 resp.raise_for_status()
             except httpx.HTTPError as e:
                 logger.warning("%s: failed to fetch detail %s: %s", site.name, doc_id, e)
-                continue
+                return None
 
             dp = _DetailParser()
             dp.feed(resp.text)
@@ -336,7 +374,17 @@ def fetch_opportunities(site: PeriscopeSite, limit: int = 200) -> list[dict[str,
                 "place_of_performance": fields.get("Location", site.place_default),
                 "raw": fields,
             }
-            results.append(opp)
+            return opp
+
+        # New bids: fetch their detail pages concurrently (each is one round trip of ~0.5-1 s).
+        from concurrent.futures import ThreadPoolExecutor
+        todo = detail_ids[:limit]
+        if len(detail_ids) > limit:
+            logger.info("%s: %d new bids, fetching the first %d this scan (the rest next scan)", site.name, len(detail_ids), limit)
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            for opp in pool.map(_detail, todo):
+                if opp:
+                    results.append(opp)
 
     logger.info("%s: %d opportunities scraped", site.name, len(results))
     return results
