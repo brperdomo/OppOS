@@ -58,11 +58,6 @@ SITES: dict[str, PeriscopeSite] = {
         base_url="https://arbuy.arkansas.gov",
         place_default="Arkansas",
     ),
-    "arizona_app": PeriscopeSite(
-        key="arizona_app", state="AZ", name="Arizona Procurement Portal",
-        base_url="https://app.az.gov",
-        place_default="Arizona",
-    ),
     "california_caleprocure": PeriscopeSite(
         key="california_caleprocure", state="CA", name="Cal eProcure",
         base_url="https://caleprocure.ca.gov",

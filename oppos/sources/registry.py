@@ -60,10 +60,16 @@ def _load_registry() -> dict[str, tuple[str, FetchFn]]:
     for key, site in i_sites.items():
         _REGISTRY[key] = (f"{site.name} ({site.state})", _bind(i_fetch, site))
 
-    # --- SAP/Ariba states (4) ---
+    # --- SAP/Ariba states ---
     from oppos.sources.platforms.sap_ariba import SITES as s_sites, fetch_opportunities as s_fetch
     for key, site in s_sites.items():
         _REGISTRY[key] = (f"{site.name} ({site.state})", _bind(s_fetch, site))
+
+    # --- Portals read through their own JSON endpoints (no browser needed) ---
+    from oppos.sources.platforms.state_json import fetch_louisiana, fetch_mississippi, fetch_north_carolina
+    _REGISTRY["mississippi_magic"] = ("MAGIC Mississippi (MS)", lambda **kw: fetch_mississippi())
+    _REGISTRY["north_carolina_evp"] = ("NC eProcurement (NC)", lambda **kw: fetch_north_carolina())
+    _REGISTRY["louisiana_lapac"] = ("LaPAC Louisiana (LA)", lambda **kw: fetch_louisiana())
 
     # --- PROACTIS/WebProcure states (3) ---
     from oppos.sources.platforms.proactis import SITES as pr_sites, fetch_opportunities as pr_fetch
