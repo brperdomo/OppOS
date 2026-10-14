@@ -353,18 +353,24 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
             if need:
                 w(f"*Must include: {need}*")
                 w("")
+            is_approach = bool(re.search(r"approach|scope|solution|technical|requirement|methodolog|functional|response|capabilit|work plan|implementation|schedule", key))
+            is_summary = bool(re.search(r"executive|summary|overview|introduction|understanding", key))
             if re.search(r"cover|transmittal|letter of intent", key):
                 w(f"[TEAM TO PROVIDE] — cover letter on Nutrient letterhead, signed by an authorised signatory, addressed to {buyer}, "
                   f"referencing {subject}." )
-            elif re.search(r"executive|summary|overview|introduction|understanding", key):
+            elif is_approach and not answers_placed:
+                # "Project understanding, approach and schedule": open with the summary, then every requirement answer.
+                if is_summary:
+                    w(str(draft.get("executive_summary") or "[TEAM TO PROVIDE] — executive summary.").strip())
+                    w("")
+                _answers("####")
+                answers_placed = True
+            elif is_summary:
                 w(str(draft.get("executive_summary") or "[TEAM TO PROVIDE] — executive summary.").strip())
                 if themes:
                     w("")
                     for t in themes:
                         w(f"- {t}")
-            elif not answers_placed and re.search(r"approach|scope|solution|technical|requirement|methodolog|functional|response|capabilit|work plan|implementation", key):
-                _answers("####")
-                answers_placed = True
             elif re.search(r"team|staff|personnel|experience|qualification|firm|reference|past performance|organi[sz]ation", key):
                 w(bp.get("team") or "[TEAM TO PROVIDE] — project team, qualifications and references.")
             elif re.search(r"pric|cost|fee|budget|rate", key):
