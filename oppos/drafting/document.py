@@ -296,6 +296,16 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
     w(f"- **Deadline:** {deadline}")
     if q_deadline:
         w(f"- **Questions due:** {q_deadline}")
+    if _known(sub.get("email_to")):
+        w(f"- **Send to:** {sub['email_to']}")
+    if _known(sub.get("email_subject")):
+        w(f"- **Subject line (as required):** {sub['email_subject']}")
+    if _known(sub.get("delivery")):
+        w(f"- **Delivery:** {sub['delivery']}")
+    if _known(sub.get("file_naming")):
+        w(f"- **File name:** {sub['file_naming']}")
+    if _known(sub.get("page_limit")):
+        w(f"- **Page limit:** {sub['page_limit']}")
     for f in sub.get("format_requirements") or []:
         if draft.get("required_forms") and str(f).startswith("Required form/attachment:"):
             continue  # listed once, below
@@ -308,24 +318,72 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
     w("")
 
     # Requirement-by-requirement responses, under the RFP's own sections
-    w("## Responses to the solicitation")
-    w("")
-    if not reqs:
-        w("[NOT DRAFTED] — no requirements were drafted.")
-        w("")
-    for section, items in _grouped(reqs):
-        w(f"### {section}")
-        w("")
-        for r in items:
-            head = f"**{r.get('id', '')}** — {str(r.get('text') or '').strip()}"
-            cite = _cite(r)
-            w(head + (f" *({cite})*" if cite else ""))
+    def _answers(level: str = "###") -> None:
+        if not reqs:
+            w("[NOT DRAFTED] — no requirements were drafted.")
             w("")
-            w(str(r.get("response") or NOT_DRAFTED_MARK).strip())
-            if r.get("human_todo"):
+        for section, items in _grouped(reqs):
+            w(f"{level} {section}")
+            w("")
+            for r in items:
+                head = f"**{r.get('id', '')}** — {str(r.get('text') or '').strip()}"
+                cite = _cite(r)
+                w(head + (f" *({cite})*" if cite else ""))
                 w("")
-                w(f"> ✎ {r['human_todo']}")
+                w(str(r.get("response") or NOT_DRAFTED_MARK).strip())
+                if r.get("human_todo"):
+                    w("")
+                    w(f"> ✎ {r['human_todo']}")
+                w("")
+
+    required = [x for x in (sub.get("required_sections") or []) if isinstance(x, dict) and x.get("title")]
+    if required:
+        # The solicitation prescribes the response's structure: follow it section by section, in its order, and
+        # put our material where it belongs; anything we have nothing for is a visible placeholder.
+        w("## Response, in the order the solicitation requires")
+        w("")
+        w("*The sections below follow the solicitation's required proposal structure. Each heading is the solicitation's own.*")
+        w("")
+        answers_placed = False
+        for x in sorted(required, key=lambda x: int(x.get("order") or 0)):
+            title_x, need = str(x["title"]).strip(), str(x.get("must_include") or "").strip()
+            key = f"{title_x} {need}".lower()
+            w(f"### {title_x}")
             w("")
+            if need:
+                w(f"*Must include: {need}*")
+                w("")
+            if re.search(r"cover|transmittal|letter of intent", key):
+                w(f"[TEAM TO PROVIDE] — cover letter on Nutrient letterhead, signed by an authorised signatory, addressed to {buyer}, "
+                  f"referencing {subject}." )
+            elif re.search(r"executive|summary|overview|introduction|understanding", key):
+                w(str(draft.get("executive_summary") or "[TEAM TO PROVIDE] — executive summary.").strip())
+                if themes:
+                    w("")
+                    for t in themes:
+                        w(f"- {t}")
+            elif not answers_placed and re.search(r"approach|scope|solution|technical|requirement|methodolog|functional|response|capabilit|work plan|implementation", key):
+                _answers("####")
+                answers_placed = True
+            elif re.search(r"team|staff|personnel|experience|qualification|firm|reference|past performance|organi[sz]ation", key):
+                w(bp.get("team") or "[TEAM TO PROVIDE] — project team, qualifications and references.")
+            elif re.search(r"pric|cost|fee|budget|rate", key):
+                w("[SALES TO PROVIDE] — pricing in the format the solicitation requires. Nutrient does not include pricing in a draft; "
+                  "see the public pricing page for structure.")
+            elif re.search(r"form|attachment|certification|exception|terms|signature|affidavit|insurance", key):
+                forms = draft.get("required_forms") or []
+                w("[TEAM TO PROVIDE] — completed and signed: " + ("; ".join(forms) if forms else "the forms this section requires") + ".")
+            else:
+                w("[TEAM TO PROVIDE] — " + (need or "content for this section") + ".")
+            w("")
+        if not answers_placed:
+            w("## Responses to the solicitation")
+            w("")
+            _answers()
+    else:
+        w("## Responses to the solicitation")
+        w("")
+        _answers()
 
     # Delivery boilerplate — customer-facing prose, so it passes the same compliance/control gate as the draft's
     # overview text (and is re-checked against the current approval on every export).
@@ -373,6 +431,31 @@ def render_markdown(draft: dict[str, Any], opp: dict[str, Any], author: str = ""
 
     # Appendix C — internal
     w("## Appendix C: Internal review notes — REMOVE BEFORE SUBMISSION")
+    w("")
+    if any(_known(sub.get(k)) for k in ("email_to", "email_subject", "delivery", "file_naming")) or draft.get("required_forms"):
+        w("### Submission package")
+        w("")
+        if _known(sub.get("email_to")):
+            w(f"- Send to: {sub['email_to']}")
+        if _known(sub.get("email_subject")):
+            w(f"- Subject line, exactly: `{sub['email_subject']}`")
+        if _known(sub.get("delivery")):
+            w(f"- Attach / deliver: {sub['delivery']}")
+        if _known(sub.get("file_naming")):
+            w(f"- File name: {sub['file_naming']}")
+        if draft.get("required_forms"):
+            w(f"- Forms to complete and sign: {'; '.join(draft['required_forms'])}")
+        w(f"- Deadline: {deadline}" + (f" · questions by {q_deadline}" if q_deadline else ""))
+        if _known(sub.get("email_to")):
+            w("")
+            w("**Cover email (draft)**")
+            w("")
+            w(f"To: {sub['email_to']}  ")
+            w(f"Subject: {str(sub.get('email_subject') or f'Response to {subject} — Nutrient').replace('[Company Name]', 'Nutrient')}  ")
+            w("")
+            w(f"Please find attached Nutrient's response to {subject}" + (f", {sub['delivery'].rstrip('.')}." if _known(sub.get("delivery")) else ".")
+              + f" Our point of contact for this response is {author or '[TEAM TO PROVIDE]'}. We confirm the response is valid for the period stated in the solicitation.")
+        w("")
     w("")
     stats = draft.get("stats") or {}
     counts: dict[str, int] = {}
