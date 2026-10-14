@@ -14,6 +14,7 @@ Design principles:
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -269,7 +270,7 @@ _LINK_CACHE: dict[str, tuple[str, float]] = {}  # url -> (status, checked_at epo
 _LINK_ALIVE_STATUSES = {200, 201, 202, 203, 204, 301, 302, 303, 307, 308, 401, 403, 405, 406, 429}
 LINK_PROBE_TIMEOUT = 5.0
 LINK_PROBE_WORKERS = 8
-LINK_PROBE_MAX_PER_SOURCE = 150
+LINK_PROBE_MAX_PER_SOURCE = int(os.environ.get("LINK_PROBE_MAX_PER_SOURCE", "1000"))  # per source per scan; the rest wait for the next scan
 LINK_CACHE_TTL_DAYS = 7
 DEFERRED = "deferred"  # not probed this run (per-source cap) — the listing is held back, not stored
 
