@@ -2076,6 +2076,28 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
 
     _details = render_card(opp, "desk", "desk", extra_meta_html=strip, before_details=_actions, details=False)
 
+    # Portal registration status is team knowledge: let whoever knows it set it from here (see Admin for the full table).
+    _portal_key = str(pursuit.get("portal") or opp.get("source") or "")
+    _preg = PORTAL_REGS.get(_portal_key) or {}
+    if _portal_key and _portal_key != "manual" and (_preg.get("status") or "unknown") in ("unknown", "not_registered", "in_progress") \
+            and CURRENT_USER.get("can_work"):
+        from oppos.storage.db import upsert_portal_registration
+        g1, g2, g3 = st.columns([1.3, 1.3, 3.4], vertical_alignment="center")
+        _pname = _preg.get("display_name") or SOURCE_LABELS.get(_portal_key, _portal_key)
+        with g1:
+            if st.button("We're registered here", key=f"{k}_reg_yes", use_container_width=True):
+                upsert_portal_registration(_portal_key, status="registered")
+                save_pursuit_fields(sid, CURRENT_USER, registration_status="registered")
+                _flash(f"Recorded: Nutrient is registered on {_pname}", icon="✅")
+                st.rerun()
+        with g2:
+            if (_preg.get("status") or "unknown") != "in_progress" and st.button("Account requested", key=f"{k}_reg_req", use_container_width=True):
+                upsert_portal_registration(_portal_key, status="in_progress")
+                save_pursuit_fields(sid, CURRENT_USER, registration_status="in_progress")
+                _flash(f"Recorded: account requested on {_pname}", icon="⏳")
+                st.rerun()
+        g3.caption(f"Portal: {_pname}. Either answer applies to every RFP from it. Vendor ID, who holds the login and lead time: Admin → Portal registrations.")
+
     # ── Everything else, one tab strip ──────────────────────────
     t_check, t_resp, t_det, t_pd, t_act = st.tabs([f"Checklist · {done}/{total}", "Response" + (" ✓" if _draft else ""),
                                                    "About this RFP", "Pursuit details", f"Activity · {len(events)}"])
@@ -2511,12 +2533,22 @@ def page_desk() -> None:
     closed = sorted(by_stage["closed"], key=lambda x: x.get("closed_at") or x.get("updated_at") or "", reverse=True)
     if closed:
         with st.expander(f"Closed · {len(closed)}"):
+            from oppos.pursuits import reopen_pursuit
+            st.caption("Won, lost, abandoned or put back. Reopen brings one back to Pursuing on your desk.")
             for p_ in closed[:50]:
                 o = opps.get(p_["source_id"]) or {}
                 when = str(p_.get("closed_at") or p_.get("updated_at") or "")[:10]
-                st.markdown(f'<div class="pp-event">{_esc(when)} · <b>{_esc(stage_label(p_.get("status")))}</b> · '
+                r1, r2 = st.columns([6, 1], vertical_alignment="center")
+                r1.markdown(f'<div class="pp-event">{_esc(when)} · <b>{_esc(stage_label(p_.get("status")))}</b> · '
                             f'{_esc(p_.get("owner_name") or p_.get("owner_email") or "")} — {_esc(o.get("title") or p_["source_id"])}</div>',
                             unsafe_allow_html=True)
+                with r2:
+                    if o and CURRENT_USER.get("can_work") and st.button("Reopen", key=f"reopen_closed_{p_['source_id']}", use_container_width=True):
+                        reopen_pursuit(o, CURRENT_USER)
+                        st.session_state["desk_selected_Mine"] = p_["source_id"]
+                        st.session_state["pursuit_view"] = "Mine"
+                        _flash(f"Reopened — {o.get('title', '')[:60]} is back in Pursuing", icon="↩️")
+                        st.rerun()
             if len(closed) > 50:
                 st.caption(f"{len(closed) - 50} older closed items not shown.")
 
