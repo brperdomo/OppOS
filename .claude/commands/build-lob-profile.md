@@ -11,8 +11,8 @@ Rebuild `oppos/scoring/lobs/profiles/$ARGUMENTS.md` — the system-prompt contex
 |---|---|---|
 | `low_code` | `~/.claude/catalyst-data/*.md` (internal-knowledge.md win/loss + competitors, field-knowledge.md personas + objections, product files for capabilities) | `catalyst:catalyst` |
 | `workflow` | `~/.claude/sage-data/*.md`, the existing profile, past-win notes Bryan provides | `sage` |
-| `sdk` | nutrient.io customer stories (`/blog/categories/customer-stories/`, append `.md` for markdown), `/sdk/` product pages and guides, G2 themes, `gh repo list PSPDFKit` for platform coverage | `general-purpose` with WebFetch/WebSearch |
-| `dws` | nutrient.io `/api/` and DWS guides, customer stories mentioning the API | `general-purpose` |
+| `sdk` | `~/.claude/atlas-data/*.md` (solution-patterns.md fit matrix + decision tree, proof-points.md customers/competitors, internal-knowledge.md + field-knowledge.md win/loss and objections, web-sdk / mobile-sdks / server-sdks for capabilities); nutrient.io `/sdk/` pages only to fill gaps | `atlas` (Atlas — Nutrient SDK + Cloud/API SME; `general-purpose` with WebFetch if Atlas is not loaded) |
+| `dws` | `~/.claude/atlas-data/cloud-api.md` (DWS Processor / Viewer / Data Extraction / Signing), proof-points.md; nutrient.io `/api/` guides to fill gaps | `atlas` (`general-purpose` if not loaded) |
 
 If HubSpot is connected, add closed-won deals by LOB (industry, use case, size) — that is the strongest win evidence. Never use the Trust Center. Never invent pricing, certifications, or customers.
 
