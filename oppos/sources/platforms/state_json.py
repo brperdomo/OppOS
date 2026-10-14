@@ -105,6 +105,31 @@ def _us_date(raw: Any) -> str | None:
     return None
 
 
+def nc_attachments(solicitation_id: str) -> list[tuple[str, str]]:
+    """Files attached to one eVP solicitation: (file name, absolute URL). eVP stores them as Dynamics notes
+    (annotations), served by the portal's entity-notes service; the grid page only shows the metadata."""
+    out: list[tuple[str, str]] = []
+    with httpx.Client(timeout=40.0, follow_redirects=True, headers=_UA) as client:
+        page = client.get(f"{NC_BASE}/solicitations/details/", params={"id": solicitation_id})
+        page.raise_for_status()
+        g = re.search(r"/_services/entity-notes/([0-9a-f-]{36})", page.text)
+        tok_m = re.search(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"', client.get(f"{NC_BASE}/_layout/tokenhtml").text)
+        if not (g and tok_m):
+            logger.warning("NC eVP: notes service not found on %s", solicitation_id)
+            return out
+        body = {"regarding": {"Id": solicitation_id, "LogicalName": "evp_solicitation", "Name": None, "KeyAttributes": [], "RowVersion": None},
+                "sortExpression": "createdon DESC", "page": 1, "pageSize": 50}
+        resp = client.post(f"{NC_BASE}/_services/entity-notes/{g.group(1)}", json=body,
+                           headers={"__RequestVerificationToken": tok_m.group(1), "X-Requested-With": "XMLHttpRequest"})
+        resp.raise_for_status()
+        for n in resp.json().get("Records", []):
+            if str(n.get("HasAttachment")).lower() != "true" or not n.get("AttachmentUrl"):
+                continue
+            url = n["AttachmentUrl"]
+            out.append((str(n.get("AttachmentFileName") or "attachment.pdf"), url if url.startswith("http") else NC_BASE + url))
+    return out
+
+
 def _nc_attrs(rec: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for a in rec.get("Attributes", []):
