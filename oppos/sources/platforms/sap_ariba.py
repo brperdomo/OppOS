@@ -6,6 +6,7 @@ Covers: Florida (MFMP), Louisiana (LaPAC), Mississippi (MAGIC), North Carolina (
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
@@ -24,6 +25,8 @@ class SAPSite:
     base_url: str
     bids_path: str = ""
     place_default: str = ""
+    list_url: str = ""               # full URL when the list lives on another host
+    post_data: dict | None = None    # when the list is behind a search form (POST)
 
 
 SITES: dict[str, SAPSite] = {
@@ -33,29 +36,13 @@ SITES: dict[str, SAPSite] = {
         bids_path="/search/bids",
         place_default="Florida",
     ),
-    "north_carolina_evp": SAPSite(
-        key="north_carolina_evp", state="NC", name="NC eProcurement",
-        base_url="https://evp.nc.gov",
-        bids_path="/solicitations/",
-        place_default="North Carolina",
-    ),
-    "mississippi_magic": SAPSite(
-        key="mississippi_magic", state="MS", name="MAGIC Mississippi",
-        base_url="https://www.ms.gov",
-        bids_path="/dfa/contract_bid_search/Bid",
-        place_default="Mississippi",
-    ),
     "south_carolina_scpro": SAPSite(
         key="south_carolina_scpro", state="SC", name="SC Procurement",
-        base_url="https://procurement.sc.gov",
-        bids_path="/doing-biz/bid-ops",
+        base_url="https://apps.sceis.sc.gov",
+        bids_path="/SCSolicitationWeb/solicitationSearch.do",
+        list_url="https://apps.sceis.sc.gov/SCSolicitationWeb/solicitationSearch.do",
+        post_data={"searchGroup": "", "searchStatus": "O", "searchLimit": "500", "btnSearch": "Search"},  # open solicitations
         place_default="South Carolina",
-    ),
-    "louisiana_lapac": SAPSite(
-        key="louisiana_lapac", state="LA", name="LaPAC Louisiana",
-        base_url="https://wwwcfprd.doa.louisiana.gov",
-        bids_path="/osp/lapac/pubmain.cfm",
-        place_default="Louisiana",
     ),
 }
 
@@ -110,7 +97,7 @@ class _BidListParser(HTMLParser):
 def _parse_date(date_str: str | None) -> str | None:
     if not date_str:
         return None
-    for fmt in ("%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y", "%Y-%m-%d",
+    for fmt in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y", "%Y-%m-%d",
                 "%b %d, %Y", "%d-%b-%Y"):
         try:
             return datetime.strptime(date_str.strip(), fmt).isoformat()
@@ -121,13 +108,13 @@ def _parse_date(date_str: str | None) -> str | None:
 
 def fetch_opportunities(site: SAPSite, limit: int = 200) -> list[dict[str, Any]]:
     """Scrape open bids from an SAP/Ariba procurement portal."""
-    list_url = f"{site.base_url}{site.bids_path}"
+    list_url = site.list_url or f"{site.base_url}{site.bids_path}"
     results: list[dict[str, Any]] = []
 
-    with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+    with httpx.Client(timeout=90.0, follow_redirects=True) as client:  # apps.sceis answers slowly
         logger.info("Fetching %s (%s) solicitations…", site.name, site.state)
         try:
-            resp = client.get(list_url)
+            resp = client.post(list_url, data=site.post_data) if site.post_data else client.get(list_url)
             resp.raise_for_status()
         except httpx.HTTPError as e:
             logger.error("%s listing failed: %s", site.name, e)
@@ -135,14 +122,35 @@ def fetch_opportunities(site: SAPSite, limit: int = 200) -> list[dict[str, Any]]
 
         parser = _BidListParser()
         parser.feed(resp.text)
+        # displaytag paging (South Carolina): the search result lives in the session, further pages are GETs
+        # with the table's page parameter; walk them until a page adds nothing new.
+        page_param = re.search(r"[?&](d-\d+-p)=\d+", resp.text)
+        if page_param:
+            seen_rows = {tuple(r) for r in parser._rows}
+            for page_no in range(2, 60):
+                try:
+                    more = client.get(list_url, params={page_param.group(1): page_no})
+                    more.raise_for_status()
+                except httpx.HTTPError as e:
+                    logger.warning("%s page %d failed: %s", site.name, page_no, e)
+                    break
+                extra = _BidListParser()
+                extra.feed(more.text)
+                new_rows = [(r, l) for r, l in zip(extra._rows, extra._all_links) if tuple(r) not in seen_rows]
+                if not new_rows:
+                    break
+                for r, l in new_rows:
+                    seen_rows.add(tuple(r))
+                    parser._rows.append(r)
+                    parser._all_links.append(l)
 
         for i, (row, links) in enumerate(zip(parser._rows, parser._all_links)):
             if i >= limit:
                 break
 
             cells = [c for c in row if c]
-            if len(cells) < 2:
-                continue
+            if len(cells) < 2 or cells[0].lower().startswith("solicitation number"):
+                continue  # header row
 
             detail_url = ""
             if links:
