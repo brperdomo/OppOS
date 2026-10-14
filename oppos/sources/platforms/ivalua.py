@@ -28,6 +28,12 @@ class IvaluaSite:
 
 
 SITES: dict[str, IvaluaSite] = {
+    "arizona_app": IvaluaSite(
+        key="arizona_app", state="AZ", name="Arizona APP",
+        base_url="https://app.az.gov",
+        bids_path="/page.aspx/en/rfp/request_browse_public",
+        place_default="Arizona",
+    ),
     "maryland_emma": IvaluaSite(
         key="maryland_emma", state="MD", name="eMMA Maryland",
         base_url="https://emma.maryland.gov",
@@ -115,7 +121,7 @@ class _SolicitationParser(HTMLParser):
 def _parse_date(date_str: str | None) -> str | None:
     if not date_str:
         return None
-    for fmt in ("%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y", "%Y-%m-%d",
+    for fmt in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y", "%Y-%m-%d",
                 "%b %d, %Y", "%d-%b-%Y", "%m/%d/%y"):
         try:
             return datetime.strptime(date_str.strip(), fmt).isoformat()
@@ -154,10 +160,18 @@ def fetch_opportunities(site: IvaluaSite, limit: int = 200) -> list[dict[str, An
                 href = links[0]
                 detail_url = href if href.startswith("http") else f"{site.base_url}{href}"
 
-            title = cells[1] if len(cells) > 1 else cells[0]
-            sol_num = cells[0]
-            agency = cells[2] if len(cells) > 2 else ""
-            deadline_str = cells[-1] if len(cells) > 2 else ""
+            posted_str = ""
+            if cells[0].lower().startswith("edit ") and len(cells) >= 6:
+                # Arizona layout: [Edit <title>, number, title, date, category, agency, status, …]; the date is the
+                # posting date (the due date is only on the detail page) and only "Open for Bidding" rows are live.
+                if len(cells) > 6 and "open" not in cells[6].lower():
+                    continue
+                sol_num, title, posted_str, agency, deadline_str = cells[1], cells[2], cells[3], cells[5], ""
+            else:
+                title = cells[1] if len(cells) > 1 else cells[0]
+                sol_num = cells[0]
+                agency = cells[2] if len(cells) > 2 else ""
+                deadline_str = cells[-1] if len(cells) > 2 else ""
 
             opp = {
                 "source": site.key,
@@ -165,7 +179,7 @@ def fetch_opportunities(site: IvaluaSite, limit: int = 200) -> list[dict[str, An
                 "title": title[:500],
                 "solicitation_number": sol_num,
                 "notice_type": "",
-                "posted_date": None,
+                "posted_date": (_parse_date(posted_str) or "")[:10] or None,
                 "response_deadline": _parse_date(deadline_str),
                 "agency": agency,
                 "office": "",
