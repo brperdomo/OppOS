@@ -2352,8 +2352,10 @@ def page_pool() -> None:
                 st.text(err)
 
     def _set_aside(r: dict) -> bool:
-        """Rejected by the first pass and never looked at since: stored (so it is not re-scanned) but not a listing to show."""
-        if _score_of(r) or r.get("pipeline_notes"):
+        """Rejected by the first pass and never looked at by a person: stored (so it is not re-scanned) but not a
+        listing to show. Notes written by the app itself (the deadline sweep, auto-expiry) do not count as a person."""
+        notes = str(r.get("pipeline_notes") or "")
+        if _score_of(r) or (notes and not notes.startswith(("Deadline within", "Auto-"))):
             return False
         s1 = _parse_json(r.get("stage1_json"))
         return bool(s1) and not s1.get("relevant")
