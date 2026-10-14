@@ -37,10 +37,11 @@ def _streamlit_version() -> tuple[int, ...]:
         return (0, 0)
 
 
-EDITOR_REV = "5"  # bump when docauth.html changes so browsers do not serve a cached copy
+EDITOR_REV = "6"  # bump when docauth.html changes so browsers do not serve a cached copy
 
 
-def response_editor(markdown: str, file_stem: str, license_key: str = "", height: int = 760, viewer_license_key: str = "") -> None:
+def response_editor(markdown: str, file_stem: str, license_key: str = "", height: int = 760, viewer_license_key: str = "",
+                    docx: bytes | None = None) -> None:
     """Mount the Document Authoring editor with `markdown` loaded; downloads use `file_stem`. "Preview PDF" renders the
     export in Nutrient Web SDK (licensed with `viewer_license_key`, trial watermark without it).
 
@@ -54,8 +55,11 @@ def response_editor(markdown: str, file_stem: str, license_key: str = "", height
         st.error(f"The response editor needs Streamlit {MIN_STREAMLIT[0]}.{MIN_STREAMLIT[1]}+ (static pages are served as text/html); "
                  f"this is {st.__version__}. Upgrade Streamlit.")
         return
+    import base64
     payload = json.dumps({"md": markdown, "stem": file_stem, "licenseKey": license_key or "", "version": DOCAUTH_VERSION,
-                          "viewerBase": VIEWER_BASE, "viewerLicenseKey": viewer_license_key or ""}, ensure_ascii=False)
+                          "viewerBase": VIEWER_BASE, "viewerLicenseKey": viewer_license_key or "",
+                          # The Word file carries what Markdown cannot: page setup, the logo header and the footer.
+                          "docx": base64.b64encode(docx).decode("ascii") if docx else ""}, ensure_ascii=False)
     payload_id = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
     rel = EDITOR_PATH.lstrip("/")
     components.html(

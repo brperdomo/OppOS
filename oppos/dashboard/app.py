@@ -2227,25 +2227,31 @@ def _render_response(opp: dict, pursuit: dict, _draft: dict, k: str) -> None:
         # draft by the Nutrient Document Authoring SDK in the browser; nothing is uploaded anywhere.)
         from oppos.dashboard.docauth import response_editor
         from oppos.drafting.document import file_stem, render_markdown
+        from oppos.drafting.docx_export import markdown_to_docx
         _reg = PORTAL_REGS.get(str(pursuit.get("portal") or "")) or {}
         _stem = file_stem(opp)
         _open_key = f"{k}_doc_open"
-        rc1, rc2 = st.columns([1, 4])
+        _md = render_markdown(_draft, opp, author=CURRENT_USER.get("name", ""),
+                              pursuit=dict(pursuit, portal_name=_reg.get("display_name") or ""))
+        _subject = " — ".join(x for x in ((opp.get("agency") or "").strip(), (opp.get("solicitation_number") or "").strip()) if x) or (opp.get("title") or "")[:60]
+        _docx = markdown_to_docx(_md, subject=_subject, author=CURRENT_USER.get("name", ""))  # house layout: logo, footer, margins
+        rc1, rc2, rc3 = st.columns([1, 1, 3])
         with rc1:
+            st.download_button("Download as Word", data=_docx, file_name=f"{_stem}.docx", key=f"{k}_doc_docx", use_container_width=True, type="primary",
+                               mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        with rc2:
             if not st.session_state.get(_open_key):
-                if st.button("Open response document", key=f"{k}_doc_open_btn", use_container_width=True, type="primary"):
+                if st.button("Open to edit / PDF", key=f"{k}_doc_open_btn", use_container_width=True):
                     st.session_state[_open_key] = True
                     st.rerun()
             elif st.button("Close document", key=f"{k}_doc_close_btn", use_container_width=True):
                 st.session_state[_open_key] = False
                 st.rerun()
-        rc2.caption("Executive summary, the answers under the RFP's own headings, delivery approach, requirements matrix and the "
-                    "security evidence appendix. Review the highlighted markers, edit in place, preview the PDF, then download it as a Word document or PDF."
-                    + (" Downloads carry an evaluation watermark until the licence key is set." if not DOCAUTH_LICENSE_KEY else ""))
+        rc3.caption("Nutrient's response layout: logo, footer with page numbers, our margins and fonts. The Word file is ready to send; "
+                    "open it here to edit in place, preview, or export PDF."
+                    + (" PDF exports carry an evaluation watermark until the licence key is set." if not DOCAUTH_LICENSE_KEY else ""))
         if st.session_state.get(_open_key):
-            _md = render_markdown(_draft, opp, author=CURRENT_USER.get("name", ""),
-                                  pursuit=dict(pursuit, portal_name=_reg.get("display_name") or ""))
-            response_editor(_md, _stem, DOCAUTH_LICENSE_KEY, viewer_license_key=VIEWER_LICENSE_KEY)
+            response_editor(_md, _stem, DOCAUTH_LICENSE_KEY, viewer_license_key=VIEWER_LICENSE_KEY, docx=_docx)
 
         if _draft.get("executive_summary"):
             st.markdown('<div class="detail-label" style="margin-top:14px;">Executive summary</div>', unsafe_allow_html=True)
