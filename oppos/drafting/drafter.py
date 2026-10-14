@@ -610,11 +610,17 @@ You have a documentation search tool connected to Nutrient's product docs. Use i
 - Portal instructions and form mechanics (how to log in, which tab to use, acknowledge amendments) are not requirements to sell against: answer "Acknowledged — <how we will comply>" with basis ["rfp"].
 - Where we genuinely cannot meet a requirement, say so plainly in the response (and list it in `do_not_claim`) — a credible partial answer beats an overclaim.
 - `open_questions` are questions worth submitting during the RFP's Q&A period. `assumptions` are the assumptions your draft relies on.
+- `submission` is how the response must be delivered, taken from the RFP's own instructions: quote the email address, the required subject line (keep placeholders such as [Company Name] exactly as written), what must be attached or signed, any portal alternative, file naming, page limits, copies. If the RFP prescribes the structure of the response (numbered sections, tabs, volumes, "the proposal must be organised as follows"), list every one in `required_sections` in the stated order, with what each must contain — the response document is assembled in that order.
 
 Respond with ONLY valid JSON matching this schema:
 {{
   "rfp_type": "<RFI | RFP | RFQ | sources_sought | other>",
-  "submission": {{"method": "<portal | email | mail | unknown>", "deadline": "<as stated or unknown>", "questions_deadline": "<Q&A cutoff as stated, or ''>", "format_requirements": ["<page limits, forms, sections required>"]}},
+  "submission": {{"method": "<portal | email | mail | unknown>", "deadline": "<as stated or unknown>", "questions_deadline": "<Q&A cutoff as stated, or ''>",
+                 "email_to": "<address proposals go to, or ''>", "email_subject": "<required subject line exactly as written, or ''>",
+                 "delivery": "<what to attach / sign / how many copies / portal alternative, as written, or ''>",
+                 "file_naming": "<required file name pattern, or ''>", "page_limit": "<as stated, or ''>",
+                 "required_sections": [{{"order": 1, "title": "<section / tab name as written>", "must_include": "<what it must contain>"}}],
+                 "format_requirements": ["<other format rules: fonts, margins, forms, order>"]}},
   "executive_summary": "<2–3 paragraphs we could open the response with>",
   "win_themes": ["<3–5 themes to carry through the response>"],
   "requirements": [
@@ -835,6 +841,14 @@ def _normalize(raw: dict[str, Any], lob_key: str, grounding: dict[str, Any] | No
         "submission": {"method": str(ext_sol.get("submission_method") or sub.get("method") or "unknown")[:200],
                        "deadline": str(ext_sol.get("submission_deadline") or sub.get("deadline") or "unknown")[:120],
                        "questions_deadline": str(ext_sol.get("questions_deadline") or sub.get("questions_deadline") or "")[:120],
+                       "email_to": str(sub.get("email_to") or "")[:200],
+                       "email_subject": str(sub.get("email_subject") or "")[:300],
+                       "delivery": str(sub.get("delivery") or "")[:600],
+                       "file_naming": str(sub.get("file_naming") or "")[:200],
+                       "page_limit": str(sub.get("page_limit") or "")[:120],
+                       "required_sections": [{"order": int(x.get("order") or i + 1), "title": str(x.get("title") or "")[:200],
+                                              "must_include": str(x.get("must_include") or "")[:600]}
+                                             for i, x in enumerate(sub.get("required_sections") or []) if isinstance(x, dict) and x.get("title")][:25],
                        "format_requirements": fmt[:30]},
         "required_forms": ext_forms,
         "evaluation_criteria": [{"criterion": str(c["criterion"])[:300], "weight": str(c.get("weight") or "")[:40]} for c in ext_criteria][:20],

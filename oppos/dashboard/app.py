@@ -1902,8 +1902,13 @@ def _submission_html(opp: dict, pursuit: dict, draft: dict | None) -> str:
         if reg.get("login_owner"):
             where += f" · login held by {_esc(str(reg['login_owner']))}"
     elif method == "email":
-        where = "By email" + (f' to <a href="mailto:{_esc(opp["contact_email"])}">{_esc(opp["contact_email"])}</a>' if opp.get("contact_email") else "")
-        if not opp.get("contact_email"):
+        to = str(sub.get("email_to") or opp.get("contact_email") or "")
+        where = "By email" + (f' to <a href="mailto:{_esc(to)}">{_esc(to)}</a>' if to else "")
+        if sub.get("email_subject"):
+            where += f' · subject line must be <code>{_esc(str(sub["email_subject"]))}</code>'
+        if sub.get("delivery"):
+            where += f" · {_esc(str(sub['delivery'])[:160])}"
+        if not to:
             missing.append("the address to send it to")
     elif method == "mail":
         where = "By mail / hand delivery" + (f" · {_esc(opp.get('office') or opp.get('place_of_performance') or '')}" if (opp.get("office") or opp.get("place_of_performance")) else "")
