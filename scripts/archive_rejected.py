@@ -22,7 +22,8 @@ def main() -> None:
     args = ap.parse_args()
     init_db()
     rows = _query("SELECT source_id, title, fit_score, stage1_json, pipeline_notes FROM opportunities "
-                  "WHERE pipeline_status = 'new' AND source_id NOT IN (SELECT source_id FROM pursuits WHERE status IN ('evaluating', 'active', 'submitted'))")
+                  "WHERE pipeline_status IN ('new', 'expiring_soon') "
+                  "AND source_id NOT IN (SELECT source_id FROM pursuits WHERE status IN ('evaluating', 'active', 'submitted'))")
     hits = []
     for r in rows:
         try:
@@ -30,7 +31,8 @@ def main() -> None:
             s1 = json.loads(r.get("stage1_json") or "{}") or {}
         except (TypeError, ValueError):
             continue
-        if fit == 0 and s1 and not s1.get("relevant") and not r.get("pipeline_notes"):
+        notes = str(r.get("pipeline_notes") or "")
+        if fit == 0 and s1 and not s1.get("relevant") and (not notes or notes.startswith(("Deadline within", "Auto-"))):
             hits.append((r, str(s1.get("reason") or "not a software fit")[:160]))
     print(f"{len(hits)} listing(s) rejected by the first pass still shown as New")
     for r, reason in hits[:10]:
