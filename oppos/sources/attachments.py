@@ -138,12 +138,50 @@ def download_periscope(
     return downloaded
 
 
+def download_named(opp: dict[str, Any], files: list[tuple[str, str]]) -> list[Path]:
+    """Download (file name, url) pairs into the opportunity's attachment folder."""
+    if not files:
+        return []
+    opp_dir = _ensure_dir(opp.get("source_id", "unknown"))
+    downloaded: list[Path] = []
+    with httpx.Client(timeout=90.0, follow_redirects=True,
+                      headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36"}) as client:
+        for i, (name, url) in enumerate(files):
+            try:
+                resp = client.get(url)
+                resp.raise_for_status()
+            except httpx.HTTPError as e:
+                logger.warning("Failed to download %s: %s", url, e)
+                continue
+            fname = _sanitize_filename(name) if name else f"attachment_{i + 1}.pdf"
+            if "." not in fname:
+                ct = resp.headers.get("content-type", "")
+                fname += ".docx" if ("word" in ct or "docx" in ct) else ".xlsx" if ("excel" in ct or "xlsx" in ct) else ".pdf"
+            path = opp_dir / fname
+            path.write_bytes(resp.content)
+            downloaded.append(path)
+            logger.info("Downloaded: %s (%d bytes)", path.name, len(resp.content))
+    return downloaded
+
+
 def download_attachments(opp: dict[str, Any]) -> list[Path]:
     """Download attachments based on the opportunity source."""
     source = opp.get("source", "")
 
     if source == "sam_gov":
         return download_sam_gov(opp)
+
+    if source == "north_carolina_evp":
+        # eVP keeps files as notes on the solicitation; resolve them now (the list grid never carries them).
+        from oppos.sources.platforms.state_json import nc_attachments
+        sid = str(opp.get("source_id") or "").replace("nc-evp-", "", 1)
+        return download_named(opp, nc_attachments(sid))
+
+    if source in ("mississippi_magic", "louisiana_lapac"):
+        links = list(opp.get("resource_links") or [])
+        if not links and source == "louisiana_lapac" and str(opp.get("url") or "").lower().endswith(".pdf"):
+            links = [opp["url"]]
+        return download_named(opp, [(u.rsplit("/", 1)[-1].split("?")[0] or f"attachment_{i + 1}.pdf", u) for i, u in enumerate(links)])
 
     if source in ("manual", "google_cse", "target_accounts"):
         # These sources download files inline or have no server-side attachments
