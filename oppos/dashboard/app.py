@@ -150,6 +150,20 @@ header[data-testid="stHeader"] a, header[data-testid="stHeader"] span { font-siz
 .sub-src { color: var(--text-tertiary); font-size: 12px; }
 .sub-missing { margin-top: 4px; color: var(--accent-orange); font-size: 12px; }
 .sub-box a { color: var(--accent-gold); text-decoration: none; }
+.opp-title { font-size: 17px; }
+.opp-line { margin-top: 6px; font-size: 12.5px; color: var(--text-tertiary); }
+.opp-line .deadline-urgent, .opp-line .reg-warn { color: var(--accent-orange); }
+.opp-line .deadline-expired, .opp-line .reg-bad { color: var(--accent-red); }
+.journey { display: flex; align-items: center; margin: 12px 0 8px; padding-top: 10px; border-top: 1px solid var(--border-subtle); font-size: 12.5px; }
+.journey .step { color: var(--text-tertiary); padding: 2px 0; }
+.journey .step + .step::before { content: ""; display: inline-block; width: 28px; height: 1px; background: var(--border-medium); margin: 0 10px; vertical-align: middle; }
+.journey .step.done { color: var(--text-secondary); }
+.journey .step.done::after { content: " ✓"; color: var(--accent-green); }
+.journey .step.current { color: var(--accent-gold); font-weight: 600; }
+.pp-facts { font-size: 12.5px; color: var(--text-tertiary); display: flex; align-items: center; }
+.pp-facts .pp-links { margin-left: auto; }
+.welcome-step { margin: 4px 0; }
+.welcome-step b { color: var(--accent-gold); font-weight: 600; margin-right: 4px; }
 .oppos-header-left {
     display: flex;
     align-items: center;
@@ -746,32 +760,25 @@ with _hc4:
 _show_flash()
 
 
-def _welcome() -> None:
-    """Three-step orientation, shown until the signed-in person dismisses it; "How it works" brings it back."""
+def _welcome(only_if_asked: bool = False) -> None:
+    """Three lines, the same three verbs the buttons use. Shown on Find RFPs until the person clicks Got it;
+    "How it works" in the header brings it back on any page."""
     key = f"welcome_seen:{CURRENT_USER.get('email', '')}"
-    if not st.session_state.get("show_welcome") and _cached_meta(key):
+    asked = st.session_state.get("show_welcome")
+    if not asked and (only_if_asked or _cached_meta(key)):
         return
     with st.container(border=True):
         st.markdown(
-            '<div class="welcome">'
-            '<div class="welcome-title">Three steps from an RFP to a submitted response</div>'
-            '<ol>'
-            '<li><b>Find RFPs</b> is everything our scanner found at public portals that nobody has taken yet, scored for fit '
-            '(how well it matches what Nutrient sells, 0 to 100; 65 and up is worth a look). Use <b>Grab</b> on anything you want to evaluate. '
-            'Got one from elsewhere? <b>Add an RFP</b> takes a link, a file, or just what you know.</li>'
-            '<li>Grabbed RFPs sit on <b>My desk</b>. Decide: <b>Start pursuing</b> opens a Notion page and a Slack channel and starts reminders, '
-            'or <b>Put it back</b> for someone else.</li>'
-            '<li>For a pursuit, <b>Draft response</b> writes a first answer to every requirement; open the document, review the marked spots, '
-            'download it as Word or PDF, submit it on the portal, then <b>Mark submitted</b> and later record Won or Lost.</li>'
-            '</ol>'
-            '<div class="welcome-note">Every click confirms itself in the corner, and the team sees each step in Slack. '
-            'The Team view on My desk shows what everyone else is working on.</div></div>',
-            unsafe_allow_html=True,
-        )
+            '<div class="welcome"><div class="welcome-title">Grab. Pursue. Submit.</div>'
+            '<div class="welcome-step"><b>Grab</b> anything in Find RFPs worth a look. It moves to your desk.</div>'
+            '<div class="welcome-step"><b>Pursue</b> it from your desk: Start pursuing opens Notion and Slack; Draft response writes the first draft.</div>'
+            '<div class="welcome-step"><b>Submit</b> the Word or PDF on the portal or by email, mark it submitted, then record the outcome.</div>'
+            '</div>', unsafe_allow_html=True)
         if st.button("Got it", key="welcome_done", type="primary"):
             set_meta(key, datetime.utcnow().isoformat())
             st.session_state["show_welcome"] = False
             st.rerun()
+
 
 # ── Data access for reruns ────────────────────────────────────────────────────
 # Streamlit re-runs this whole script on every click. Each Turso statement is a network round trip, so the
@@ -781,8 +788,6 @@ def _welcome() -> None:
 from oppos.storage import db as _db
 
 DEADLINE_SWEEP_MINUTES = 10
-
-
 @st.cache_resource(show_spinner=False)
 def _sweep_state() -> dict:
     """Process-wide (survives reruns — module-level assignments here are re-executed on every click)."""
@@ -1578,6 +1583,27 @@ def _app_link(page: str, sid: str) -> str:
     return f"{base}/{page}?open={sid}" if page else f"{base}/?open={sid}"
 
 
+def _due_phrase(deadline: str | None) -> str:
+    """'Due Nov 2 (in 18 days)', 'Due today', 'Overdue since Oct 10', or 'No deadline'."""
+    if not deadline:
+        return "No deadline"
+    from oppos.storage.db import _parse_deadline
+    dl = _parse_deadline(deadline)
+    if not dl:
+        return f"Due {deadline[:10]}"
+    if dl.tzinfo is not None:
+        dl = dl.replace(tzinfo=None)
+    days = int((dl.date() - datetime.utcnow().date()).days)
+    when = dl.strftime("%b %-d")
+    if days < 0:
+        return f"Overdue since {when}"
+    if days == 0:
+        return "Due today"
+    if days == 1:
+        return f"Due tomorrow ({when})"
+    return f"Due {when} (in {days} days)"
+
+
 def _deadline_tag(deadline: str | None) -> tuple[str, str]:
     """(css class, label) for the deadline pill."""
     if not deadline:
@@ -1656,21 +1682,24 @@ def render_card(opp: dict, tab_key: str, mode: str = "pool", extra_meta_html: st
     state_name = _esc(SOURCE_STATE_MAP.get(opp.get("source", ""), "") or SOURCE_LABELS.get(opp.get("source", ""), ""))
 
     dl_cls, dl_txt = _deadline_tag(opp.get("response_deadline"))
-    tags = [] if mode == "desk" else [f'<span class="opp-tag {dl_cls}">{_esc(dl_txt)}</span>']  # the desk strip carries the due date
+    bits: list[str] = []
+    if mode != "desk":
+        bits.append(f'<span class="{dl_cls}">{_esc(_due_phrase(opp.get("response_deadline")))}</span>')
     _lob_key = opp.get("lob") or s2.get("lob") or ""
     if _lob_key:
-        tags.append(f'<span class="opp-tag lob-tag">{_esc(lob_label(_lob_key))}</span>')
+        bits.append(_esc(lob_label(_lob_key)))
     if opp.get("attachment_text"):
-        tags.append('<span class="opp-tag">Docs scanned</span>')
+        bits.append("documents scanned")
     if opp.get("solicitation_number"):
-        tags.append(f'<span class="opp-tag">{_esc(opp["solicitation_number"])}</span>')
-    if mode == "archive" or pipeline_status in ("won", "lost", "skipped", "expired"):
-        tags.insert(0, f'<span class="pipeline-badge pipeline-{pipeline_status}">{PIPELINE_LABELS.get(pipeline_status, pipeline_status)}</span>')
+        bits.append(_esc(opp["solicitation_number"]))
     _badge = _reg_badge(PORTAL_REGS.get(opp.get("source") or ""))
     if _badge and _badge[1] != "reg-ok" and mode != "desk":
-        tags.append(f'<span class="reg-badge {_badge[1]}">{_esc(_badge[0])}</span>')
+        bits.append(f'<span class="{_badge[1]}">{_esc(_badge[0]).lower()}</span>')
     if opp.get("submitted_by"):
-        tags.append(f'<span class="opp-tag owner-tag">Added by {_esc(str(opp["submitted_by"]).split("@")[0])}</span>')
+        bits.append(f"added by {_esc(str(opp['submitted_by']).split('@')[0])}")
+    tags = [" · ".join(bits)] if bits else []
+    if mode == "archive" or pipeline_status in ("won", "lost", "skipped", "expired"):
+        tags.insert(0, f'<span class="pipeline-badge pipeline-{pipeline_status}">{PIPELINE_LABELS.get(pipeline_status, pipeline_status)}</span> ')
 
     is_new = False
     created = opp.get("created_at")
@@ -1686,7 +1715,7 @@ def render_card(opp: dict, tab_key: str, mode: str = "pool", extra_meta_html: st
         f'<div class="opp-card {card_cls}"><div class="opp-card-header"><div style="flex:1;">'
         f'{"<span class=\"new-badge\">NEW</span> " if is_new else ""}{title_html}'
         f'<div class="opp-subtitle"><strong>{state_name}</strong> &middot; {agency}</div>'
-        f'<div class="opp-meta">{"".join(tags)}</div></div>'
+        f'<div class="opp-line">{"".join(tags)}</div></div>'
         f'<div class="score-badge {_score_class(score)}"><div class="score-number">{score if score else "–"}</div><div class="score-label">Fit</div></div>'
         f'</div>{f"<div class=\"opp-summary\">{_esc(summary)}</div>" if summary else ""}'
         f'{extra_meta_html}</div>',
@@ -1995,13 +2024,18 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
         links.append(f'<a href="https://notion.so/{str(npid).replace("-", "")}" target="_blank">Notion ↗</a>')
     if pursuit.get("slack_channel_id"):
         links.append(f'<a href="{channel_url(pursuit["slack_channel_id"])}" target="_blank">#{_esc(pursuit.get("slack_channel_name") or "slack")} ↗</a>')
+    _steps = ["evaluating", "active", "submitted", "decided"]
+    _labels = {"evaluating": "Grabbed", "active": "Pursuing", "submitted": "Submitted", "decided": "Decided"}
+    _cur = _steps.index(_stage) if _stage in _steps else 0
+    journey = '<div class="journey">' + "".join(
+        f'<span class="step {"done" if i < _cur else "current" if i == _cur else ""}">{_labels[st_]}</span>'
+        for i, st_ in enumerate(_steps)) + "</div>"
+    facts = [_esc(owner), f'<span class="{due_cls}">{_esc(_due_phrase(due_raw))}</span>', f"{done}/{total} on the checklist"]
+    if reg_status not in ("unknown", "registered", "not_required"):
+        facts.append(f'<span class="{reg_cls}">{_esc(REGISTRATION_LABELS.get(reg_status, reg_status)).lower()}</span>')
     strip = (
-        f'<div class="pp-strip pp-in-card"><span class="pp-owner">{_esc(owner)}</span>'
-        f'<span class="pp-pill {"pp-ok" if _stage == "active" else ""}">{_esc(_stage_lbl(_stage))}</span>'
-        f'<span class="pp-pill {due_cls}">{due_txt}</span>'
-        + (f'<span class="pp-pill {reg_cls}">{_esc(REGISTRATION_LABELS.get(reg_status, reg_status))}</span>' if reg_status != "unknown" else "")
-        + f'<span class="pp-pill">{done}/{total} checklist done</span>'
-        + f'<span class="pp-links">{"".join(links)}</span></div>'
+        journey
+        + f'<div class="pp-facts">{" · ".join(facts)}<span class="pp-links">{"".join(links)}</span></div>'
         + (f'<div class="pp-next">Next: {_esc(pursuit["next_action"][:120])}</div>' if pursuit.get("next_action") else "")
         + _submission_html(opp, pursuit, _draft)
     )
@@ -2023,8 +2057,7 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
                     _release_claim(opp, CURRENT_USER)
                     _flash(f"Put back — {title[:60]} is in Find RFPs again", icon="↩️")
                     st.rerun()
-            a3.caption("Worth going after? Start pursuing: it opens a Notion page and a Slack channel for it and sets reminders. "
-                       "Not for us? Put it back for someone else.")
+            a3.caption("Opens a Notion page and a Slack channel and starts reminders.")
             return
         a1, a2, a3, a4 = st.columns([1, 1, 1, 3])
         if _stage == "active":
@@ -2076,8 +2109,7 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
                 st.caption(f"Draft from {_when} · {_st.get('requirements', 0)} requirements · {_st.get('needs_human', 0)} need your input"
                            + (" · appended to Notion" if (_draft.get("notion_append") or {}).get("complete") else "") + ". Open it under Response below.")
             elif _stage == "active":
-                st.caption("Next: Draft response writes a first answer to every requirement in the RFP."
-                           + (" For the best draft, load the RFP's documents first (Details → Documents)." if not opp.get("attachment_text") else ""))
+                st.caption("Writes a first answer to every requirement." + (" Load the RFP documents first for a better draft." if not opp.get("attachment_text") else ""))
 
     _details = render_card(opp, "desk", "desk", extra_meta_html=strip, before_details=_actions, details=False)
 
@@ -2339,16 +2371,15 @@ def _show_more(rows: list[dict], key: str, render, page: int = 25) -> None:
 
 def page_pool() -> None:
     """Find RFPs — the shared pool of unclaimed listings. Open ones to grab, or the archive."""
+    _welcome()
     h1, h2, h3 = st.columns([1, 1, 3])
     with h1:
         scan_clicked = st.button("Scan for new RFPs", use_container_width=True, type="primary")
     with h2:
         if st.button("Add an RFP", use_container_width=True, disabled=not CURRENT_USER.get("can_work")):
             _manual_rfp_dialog()
-    h3.caption((f"Everything the scanner found that nobody has taken yet. Grab anything worth a look — it moves to your desk. "
-                f"Sourced one yourself? Add an RFP takes a link, a file, or just what you know. "
-                if CURRENT_USER.get("can_work") else f"Everything the scanner found that nobody has taken yet. {NO_ACCESS_NOTE} ")
-               + f"Last scan {_ago(_cached_meta('last_scan'))}.")
+    h3.caption(("Found at public portals and scored for fit. Grab what is worth a look." if CURRENT_USER.get("can_work") else NO_ACCESS_NOTE)
+               + f"  \nLast scan {_ago(_cached_meta('last_scan'))}.")
 
     if scan_clicked:
         stats = _run_scan()
@@ -2425,6 +2456,7 @@ def page_pool() -> None:
 
 def page_desk() -> None:
     """My desk — what the signed-in user has claimed or is working, by stage; Team shows everyone's."""
+    _welcome(only_if_asked=True)
     import html as _html
     from oppos.pursuits import OPEN_STAGES, days_until as _du, stage_label
     from oppos.storage.db import add_pursuit_event, create_pursuit, get_opps_by_ids, get_pursuit_events_for
@@ -2461,9 +2493,8 @@ def page_desk() -> None:
     _next = sorted((d for d in (_du(p.get("submission_deadline")) for p in open_p) if d is not None))
     _cnt = lambda *sts: sum(1 for p in rows_p if p.get("status") in sts)
     with v2:
-        st.caption(f"{_cnt('evaluating')} grabbed · {_cnt('active')} pursuing · {_cnt('submitted')} submitted · "
-                   f"{_cnt('won')} won · {_cnt('lost', 'abandoned')} lost"
-                   + (f" · next due in {_next[0]}d" if _next and _next[0] >= 0 else " · an item is overdue" if _next else ""))
+        st.caption(f"{_cnt('evaluating')} grabbed · {_cnt('active')} pursuing · {_cnt('submitted')} submitted"
+                   + (f" · next due in {_next[0]} days" if _next and _next[0] > 1 else " · one is due now" if _next and _next[0] in (0, 1) else " · one is overdue" if _next else ""))
 
     # Legacy in-progress / submitted RFPs with no pursuit record — Team view can adopt them.
     _have = {p["source_id"] for p in all_p}
@@ -2492,9 +2523,9 @@ def page_desk() -> None:
         return
 
     # One line per pursuit, grouped by stage; the selected one opens as the workspace below.
-    sections = (("evaluating", "Grabbed — decide", "Go after it, or put it back."),
-                ("active", "Pursuing", "Draft, download, submit, mark submitted."),
-                ("submitted", "Submitted — waiting on the agency", "Record Won or Lost when you hear back."))
+    sections = (("evaluating", "Grabbed", "Go after it, or put it back."),
+                ("active", "Pursuing", "Draft, download, submit."),
+                ("submitted", "Submitted", "Record the outcome when you hear back."))
     ordered = [(stage, p_) for stage, _, _ in sections for p_ in by_stage[stage]]
     ids = [p_["source_id"] for _, p_ in ordered]
     sel_key = f"desk_selected_{_view}"
@@ -2568,6 +2599,7 @@ def page_desk() -> None:
 
 def page_admin() -> None:
     """Admin — source health, portal registrations, settings."""
+    _welcome(only_if_asked=True)
     from oppos.storage.db import get_source_health as _get_source_health
     _health_rows = [r for r in _get_source_health() if r.get("source") not in EXCLUDED_SOURCES]
     if _health_rows:
@@ -2699,8 +2731,6 @@ def page_admin() -> None:
     if not CURRENT_USER.get("is_admin"):
         st.caption("Members, sources and portal registrations are managed by admins (OPPOS_ADMINS).")
 
-
-_welcome()
 
 _PAGE_POOL = st.Page(page_pool, title="Find RFPs", icon=":material/search:", default=True)  # served at /
 _PAGE_DESK = st.Page(page_desk, title="My desk", icon=":material/person:", url_path="desk")
