@@ -1846,13 +1846,36 @@ def _run_draft(opp: dict, pursuit: dict) -> None:
     comp = compliance_status()
     with st.status(f"Drafting response: {title[:50]}…", expanded=True) as status:
         att = opp.get("attachment_text") or ""
-        st.write(f"📄 Using the RFP description" + (f" and {len(att):,} characters of attachment text" if att else " — no attachments loaded (load them first for a better draft)"))
+        att_dir = _att_dir(sid)
+        if not (att_dir.is_dir() and any(f.is_file() for f in att_dir.iterdir())):
+            # Nobody loaded the documents yet (or Cloud's disk was reset): fetch them now so the draft reads the RFP.
+            from oppos.sources.attachments import download_attachments
+            st.write("📎 Loading the RFP documents…")
+            try:
+                got = download_attachments(opp)
+            except Exception as e:
+                got = []
+                st.write(f"⚠️ Could not load the documents — {type(e).__name__}: {e}")
+            if got:
+                st.write(f"✓ Loaded {len(got)} document(s): " + ", ".join(p.name for p in got[:6]) + (" …" if len(got) > 6 else ""))
+        if not att and att_dir.is_dir():
+            from oppos.sources.extract_text import SCANNABLE_EXTENSIONS, extract_text_from_attachments
+            from oppos.storage.db import _execute
+            files = sorted(f for f in att_dir.iterdir() if f.is_file() and f.suffix.lower() in SCANNABLE_EXTENSIONS)
+            if files:
+                st.write(f"🔍 Reading {len(files)} document(s)…")
+                att = extract_text_from_attachments(files)
+                if att:
+                    opp["attachment_text"] = att
+                    # Keep the text so the next draft or re-score doesn't read the documents (and spend credits) again.
+                    _execute("UPDATE opportunities SET attachment_text=? WHERE source_id=?", (att, sid))
+        st.write(f"📄 Using the RFP description" + (f" and {len(att):,} characters from its documents" if att
+                                                     else " only — this listing has no documents OppOS can fetch"))
         st.write("🔒 Security items get the Trust Center standard answer (NDA access on request); explicit asks for a specific statement or artifact are "
                  + ("answered from the approved compliance file" if comp["approved"] else "marked [SECURITY TO CONFIRM]"))
 
         # Dogfood: Nutrient Data Extraction API maps the RFP PDFs to a requirements schema with page citations.
         extracted = None
-        att_dir = _att_dir(sid)
         pdfs = sorted(f for f in att_dir.iterdir() if f.is_file() and f.suffix.lower() == ".pdf") if att_dir.is_dir() else []
         if pdfs:
             from oppos.drafting.extraction import extract_rfp_requirements, extraction_available
@@ -2109,7 +2132,7 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
                 st.caption(f"Draft from {_when} · {_st.get('requirements', 0)} requirements · {_st.get('needs_human', 0)} need your input"
                            + (" · appended to Notion" if (_draft.get("notion_append") or {}).get("complete") else "") + ". Open it under Response below.")
             elif _stage == "active":
-                st.caption("Writes a first answer to every requirement." + (" Load the RFP documents first for a better draft." if not opp.get("attachment_text") else ""))
+                st.caption("Writes a first answer to every requirement, reading the RFP and its documents.")
 
     _details = render_card(opp, "desk", "desk", extra_meta_html=strip, before_details=_actions, details=False)
 
