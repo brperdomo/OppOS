@@ -260,6 +260,20 @@ _CREATE_REMINDERS_SQL = """
     )
 """
 
+_CREATE_COLLABORATORS_SQL = """
+    CREATE TABLE IF NOT EXISTS pursuit_collaborators (
+        source_id TEXT NOT NULL,
+        email TEXT NOT NULL,
+        name TEXT,
+        status TEXT NOT NULL,
+        note TEXT,
+        requested_at TEXT,
+        decided_at TEXT,
+        decided_by TEXT,
+        PRIMARY KEY (source_id, email)
+    )
+"""
+
 _CREATE_DOCUMENTS_SQL = """
     CREATE TABLE IF NOT EXISTS rfp_documents (
         source_id TEXT NOT NULL,
@@ -337,6 +351,7 @@ def init_db(force: bool = False) -> None:
     _execute(_CREATE_REGISTRATIONS_SQL)
     _execute(_CREATE_REMINDERS_SQL)
     _execute(_CREATE_DOCUMENTS_SQL)
+    _execute(_CREATE_COLLABORATORS_SQL)
     for migration in _MIGRATIONS:
         try:
             _execute(migration)
@@ -356,6 +371,27 @@ def save_document(source_id: str, name: str, size: int, pages: int | None, chars
         "status = excluded.status, note = excluded.note, text = excluded.text, read_at = excluded.read_at",
         (source_id, name, size, pages, chars, status, note, text, datetime.utcnow().isoformat()),
     )
+
+
+def request_collaborator(source_id: str, email: str, name: str, note: str = "") -> None:
+    """Ask to work on someone else's pursuit (status requested); asking again after a decline re-opens the request."""
+    _execute(
+        "INSERT INTO pursuit_collaborators (source_id, email, name, status, note, requested_at) VALUES (?, ?, ?, 'requested', ?, ?) "
+        "ON CONFLICT(source_id, email) DO UPDATE SET status = 'requested', note = excluded.note, requested_at = excluded.requested_at, "
+        "decided_at = NULL, decided_by = NULL",
+        (source_id, email.lower(), name, note, datetime.utcnow().isoformat()),
+    )
+
+
+def decide_collaborator(source_id: str, email: str, status: str, decided_by: str) -> None:
+    """status: approved | declined | removed."""
+    _execute("UPDATE pursuit_collaborators SET status = ?, decided_at = ?, decided_by = ? WHERE source_id = ? AND email = ?",
+             (status, datetime.utcnow().isoformat(), decided_by.lower(), source_id, email.lower()))
+
+
+def list_collaborators() -> list[dict[str, Any]]:
+    """Every request and collaborator (a small table: read whole and grouped by the caller)."""
+    return _query("SELECT * FROM pursuit_collaborators WHERE status IN ('requested', 'approved', 'declined') ORDER BY requested_at")
 
 
 def get_documents(source_id: str, with_text: bool = False) -> list[dict[str, Any]]:
