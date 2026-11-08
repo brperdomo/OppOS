@@ -128,6 +128,7 @@ ul.plain li { margin-bottom: 4px; }
 .stButton > button, [data-testid="stPopover"] > button, [data-testid="stDownloadButton"] > button, [data-testid="stLinkButton"] > a {
     font-size: 14px; font-weight: 500; min-height: 36px; padding: 4px 14px; border-radius: var(--radius-sm); }
 .stButton > button[kind="primary"], [data-testid="stPopover"] > button[kind="primary"] { color: #1d1708; font-weight: 600; }
+.stButton > button[kind="primary"]:disabled { background: var(--raised); border-color: var(--line); color: var(--faint); }
 [data-testid="stTabs"] [data-baseweb="tab"] { font-size: 14.5px; }
 [data-testid="stTabs"] [data-baseweb="tab-highlight"] { background: var(--text); }
 [data-testid="stExpander"] details { border: 1px solid var(--line); border-radius: var(--radius-sm); }
@@ -877,6 +878,24 @@ def _fit_reasons_html(s2: dict) -> str:
     return f'<div class="reasons">{col("Why it fits", fits)}{col("What to check", checks)}</div>'
 
 
+def _score_basis(opp: dict, s2: dict) -> str:
+    """What the fit score and its analysis were based on, in one plain sentence."""
+    b = s2.get("basis") or {}
+    when = ""
+    try:
+        when = " · scored " + datetime.fromisoformat(str(b.get("scored_at"))).strftime("%b %-d")
+    except (TypeError, ValueError):
+        pass
+    if b.get("documents"):
+        n = b["documents"]
+        return (f"Based on the listing and {n} document{'s' if n != 1 else ''} (up to 60,000 characters, solicitation first){when}. "
+                "What the RFP asks, below, covers every page.")
+    if b:
+        return f"Based on the listing only{when} — preliminary until the RFP's documents are read."
+    return ("Based on the listing and documents read earlier." if opp.get("attachment_text")
+            else "Based on the listing only — preliminary until the RFP's documents are read.")
+
+
 def _full_analysis(opp: dict, s2: dict) -> None:
     """Everything else the scorer wrote, folded away."""
     s1 = _parse_json(opp.get("stage1_json"))
@@ -885,6 +904,7 @@ def _full_analysis(opp: dict, s2: dict) -> None:
             st.caption(f"The first pass set this aside as not relevant: {s1.get('reason', '')}")
         return
     with st.expander("Full analysis"):
+        st.markdown(f'<div class="help" style="margin-bottom:8px">{_esc(_score_basis(opp, s2))}</div>', unsafe_allow_html=True)
         facts = [(l, v) for l, v in (("Closest win", s2.get("similar_win")), ("Industry", s2.get("industry")),
                                       ("Matches the pattern", str(s2.get("pattern_match") or "").replace("_", " ")),
                                       ("Suggested deployment", str(s2.get("deployment_recommendation") or "").replace("_", " ")))
@@ -1019,6 +1039,55 @@ def _render_brief(ext: dict) -> None:
         st.caption("Not extracted: " + "; ".join(skipped + errors)[:400])
 
 
+def _docs_status(docs: list[dict], ext: dict | None, job: dict) -> None:
+    """One line at the top of the RFP tab: what OppOS has done with the RFP's documents, and what uses it."""
+    n_read = sum(1 for d in docs if d["status"] == "read")
+    if job.get("state") == "reading":
+        msg = "OppOS is reading this RFP's documents and pulling out the requirements. The analysis appears here when it's done; you can leave the page."
+    elif not docs:
+        msg = ("No documents yet. Add the RFP's files below: OppOS reads them, pulls out what the RFP asks for, and re-scores the fit. "
+               "Draft response works from them.")
+    elif ext and ext.get("requirements"):
+        reqs = [r for r in ext["requirements"] if not r.get("superseded_by")]
+        mand = sum(1 for r in reqs if r.get("mandatory"))
+        msg = (f"OppOS read {n_read} document{'s' if n_read != 1 else ''} and pulled out {len(reqs)} requirements ({mand} mandatory). "
+               "The fit score, the analysis below and Draft response all use them.")
+    else:
+        msg = (f"OppOS read {n_read} document{'s' if n_read != 1 else ''}; the fit score and Draft response use them."
+               + (" Pulling out the requirements didn't finish — they'll be extracted when you draft." if job.get("extracted") is False else ""))
+    st.markdown(f'<div class="collab">{_esc(msg)}</div>', unsafe_allow_html=True)
+
+
+def _add_documents(opp: dict, k: str, job: dict) -> None:
+    """Upload the RFP's files (when the portal needs a login, or OppOS found none): they are read and analysed like
+    fetched ones, and the fit is re-scored."""
+    from oppos.sources.attachments import _sanitize_filename
+    from oppos.sources.extract_text import READABLE_EXTENSIONS
+    from oppos.sources.rfp_documents import folder, start_reading
+    with st.expander("Add RFP documents"):
+        st.markdown('<div class="help">PDF, Word, Excel or PowerPoint, as many as the RFP has. OppOS reads them, pulls out what the RFP '
+                    'asks for and re-scores the fit — a few minutes for a large RFP. Files with the same name replace the old copy.</div>',
+                    unsafe_allow_html=True)
+        files = st.file_uploader("RFP documents", accept_multiple_files=True, key=f"{k}_upload", label_visibility="collapsed",
+                                 type=sorted(e.lstrip(".") for e in READABLE_EXTENSIONS) + ["zip"])
+        busy = job.get("state") == "reading"
+        if files and st.button(f"Add and analyse {len(files)} file{'s' if len(files) != 1 else ''}", key=f"{k}_upload_go",
+                               type="primary", disabled=busy):
+            d = folder(opp.get("source_id", ""))
+            d.mkdir(parents=True, exist_ok=True)
+            for f in files:
+                path = d / _sanitize_filename(f.name)
+                path.write_bytes(f.getvalue())
+                if path.suffix.lower() == ".zip":
+                    from oppos.sources.attachments import _unzip
+                    _unzip(path)
+            start_reading(opp)
+            _flash(f"Added {len(files)} file{'s' if len(files) != 1 else ''} — OppOS is reading them now", icon="📄")
+            st.rerun()
+        if busy:
+            st.caption("Wait for the current read to finish, then add more.")
+
+
 def _render_documents(opp: dict, k: str, auto: bool, docs: list[dict] | None = None) -> None:
     """One list of the RFP's documents, as OppOS read them. `auto`: start reading without asking (a pursuit)."""
     from oppos.sources.rfp_documents import job_status, local_files, start_reading
@@ -1048,7 +1117,8 @@ def _render_documents(opp: dict, k: str, auto: bool, docs: list[dict] | None = N
             st.rerun()
         return
     n_read = sum(1 for d in docs if d["status"] == "read")
-    head = f"{len(docs)} document{'s' if len(docs) != 1 else ''}" + (", all read by OppOS" if n_read == len(docs) else f", {n_read} read by OppOS")
+    head = (f"{len(docs)} file{'s' if len(docs) != 1 else ''}" + (", all read by OppOS" if n_read == len(docs) else f", {n_read} read by OppOS")
+            + ". Download copies for yourself; OppOS already has them.")
     files = {f.name: f for f in local_files(sid)}
     with st.container(horizontal=True, vertical_alignment="center", key=f"{k}_docs_head"):
         st.markdown(f'<p class="muted" style="margin:0">{head}</p>', unsafe_allow_html=True)
@@ -1062,7 +1132,7 @@ def _render_documents(opp: dict, k: str, auto: bool, docs: list[dict] | None = N
                         zf.write(p_, arcname=p_.name)
                 return buf.getvalue()
             stem = re.sub(r"[^A-Za-z0-9]+", "-", (opp.get("solicitation_number") or opp.get("title") or sid))[:60].strip("-") or "rfp"
-            st.download_button(f"Download all {len(files)}", data=_zip_all, file_name=f"{stem}-documents.zip", mime="application/zip",
+            st.download_button(f"Download all {len(files)} (zip)", data=_zip_all, file_name=f"{stem}-documents.zip", mime="application/zip",
                                key=f"{k}_dl_all", on_click="ignore")
     for d in docs:
         if d["status"] == "read":
@@ -1124,7 +1194,7 @@ def _listing_dialog(opp: dict) -> None:
                 f'<div class="ws-sub">{_row_meta(opp)}</div></div>'
                 f'<div class="ws-fit"><b>{score or "–"}</b><span>fit</span></div></div>', unsafe_allow_html=True)
     if s2.get("summary"):
-        st.markdown(f'<p class="summary">{_esc(s2["summary"])}</p>', unsafe_allow_html=True)
+        st.markdown(f'<div class="help">{_esc(_score_basis(opp, s2))}</div><p class="summary">{_esc(s2["summary"])}</p>', unsafe_allow_html=True)
     with st.container(horizontal=True):
         if url:
             st.link_button("Open the listing", url)
@@ -1354,7 +1424,7 @@ def _edit_details_popover(opp: dict, pursuit: dict, k: str) -> None:
             st.rerun()
 
 
-def _next_step(opp: dict, pursuit: dict, draft: dict | None, k: str, slot) -> None:
+def _next_step(opp: dict, pursuit: dict, draft: dict | None, k: str, slot, docs_state: str = "read") -> None:
     """The one yellow button for the stage, then More."""
     from oppos.outputs.slack_alerts import build_sdr_message
     from oppos.pursuits import release_claim, transition_pursuit
@@ -1375,6 +1445,19 @@ def _next_step(opp: dict, pursuit: dict, draft: dict | None, k: str, slot) -> No
             with slot:
                 _pursue_opportunity(opp, reason=pursuit.get("reason") or "")
             st.rerun()
+    elif stage == "active" and not draft and docs_state == "reading":
+        st.button("Draft response", key=f"{k}_draft_wait", type="primary", disabled=True)
+    elif stage == "active" and not draft and docs_state == "none":
+        # No documents read: drafting would work from the listing's few lines, so ask first.
+        with st.popover("Draft response", type="primary"):
+            st.markdown("**OppOS hasn't read any of this RFP's documents.** A draft now would be written from the listing's short "
+                        "description only, so most answers would be generic or missing.")
+            st.markdown("Add the RFP's files under **RFP and documents** first; OppOS reads them and pulls out every requirement "
+                        "for the draft.")
+            if st.button("Draft from the listing anyway", key=f"{k}_draft_thin"):
+                with slot:
+                    _run_draft(opp, pursuit)
+                st.rerun()
     elif stage == "active" and not draft:
         if st.button("Draft response", key=f"{k}_draft", type="primary"):
             with slot:
@@ -1428,8 +1511,12 @@ def _next_step(opp: dict, pursuit: dict, draft: dict | None, k: str, slot) -> No
                 st.rerun()
 
 
-def _next_help(stage: str, draft: dict | None) -> str:
+def _next_help(stage: str, draft: dict | None, docs_state: str = "read") -> str:
     """One sentence under the yellow button: what it does."""
+    if stage == "active" and not draft and docs_state == "reading":
+        return "OppOS is still reading the RFP's documents (progress under RFP and documents). Draft response opens when it's done."
+    if stage == "active" and not draft and docs_state == "none":
+        return "No RFP documents yet. Add them under RFP and documents, then Draft response writes the first draft from them."
     if stage == "evaluating":
         return "Start pursuing creates a Notion page and a Slack channel for this RFP and starts deadline reminders. Not a fit? More → Put it back."
     if stage == "active" and not draft:
@@ -1520,22 +1607,25 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
     cur = next((i for i, (s, _) in enumerate(steps) if s == stage), 3)
     journey = '<div class="journey">' + '<i></i>'.join(
         f'<span class="step{" done" if i < cur else " now" if i == cur else ""}">{lbl}</span>' for i, (_, lbl) in enumerate(steps)) + "</div>"
+    from oppos.sources.rfp_documents import job_status, stored_extraction
+    docs = get_documents(sid)
+    ext = stored_extraction(sid) if docs else None
+    job = job_status(sid) or {}
+    n_read = sum(1 for d in docs if d["status"] == "read")
+    docs_state = "reading" if job.get("state") == "reading" else ("read" if n_read else "none")
     j1, j2 = st.columns([3, 2.2], vertical_alignment="center")
     j1.markdown(journey, unsafe_allow_html=True)
     slot = st.container()  # long operations report here, full width
     with j2, st.container(horizontal=True, horizontal_alignment="right"):
         if can_edit:
-            _next_step(opp, pursuit, draft, k, slot)
+            _next_step(opp, pursuit, draft, k, slot, docs_state)
         else:
             _ask_to_collaborate(opp, pursuit, k)
     if can_edit:
-        st.markdown(f'<div class="next-help">{_esc(_next_help(stage, draft))}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="next-help">{_esc(_next_help(stage, draft, docs_state))}</div>', unsafe_allow_html=True)
     if is_owner or CURRENT_USER.get("is_admin"):
         _collab_requests(opp, pursuit, k)
 
-    from oppos.sources.rfp_documents import stored_extraction
-    docs = get_documents(sid)
-    ext = stored_extraction(sid) if docs else None
     _render_facts(opp, pursuit, draft, can_edit, k, ext)
 
     # Fixed labels: a label that changes (a count) makes Streamlit treat it as a new tab and jump back to the first.
@@ -1543,15 +1633,21 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
     with t_resp:
         _render_response(opp, pursuit, draft, k)
     with t_rfp:
-        if ext:
-            _render_brief(ext)
-            st.markdown('<div class="rs-head" style="margin-top:14px">Documents</div>', unsafe_allow_html=True)
-        _render_documents(opp, k, auto=True, docs=docs)
+        _docs_status(docs, ext, job)
         if s2.get("summary"):
-            st.markdown(f'<p class="summary">{_esc(s2["summary"])}</p>', unsafe_allow_html=True)
+            st.markdown(f'<div class="rs-head">Is it worth pursuing? Fit {int(_score_of(opp)) or "–"}</div>'
+                        f'<div class="help">{_esc(_score_basis(opp, s2))}</div>'
+                        f'<p class="summary">{_esc(s2["summary"])}</p>', unsafe_allow_html=True)
         reasons = _fit_reasons_html(s2)
         if reasons:
             st.markdown(reasons, unsafe_allow_html=True)
+        if ext:
+            st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
+            _render_brief(ext)
+        st.markdown('<div class="rs-head" style="margin-top:16px">The files</div>', unsafe_allow_html=True)
+        _render_documents(opp, k, auto=True, docs=docs)
+        if can_edit:
+            _add_documents(opp, k, job)
         st.markdown(_listing_facts_html(opp), unsafe_allow_html=True)
         _full_analysis(opp, s2)
     with t_notes:
@@ -1580,7 +1676,8 @@ def _render_response(opp: dict, pursuit: dict, draft: dict | None, k: str) -> No
     """The draft: what needs a person first, the Word file and the editor, then every answer folded away."""
     if not draft:
         stage = pursuit.get("status") or "active"
-        st.markdown('<p class="muted">' + ("No draft yet. Draft response (above) writes a first answer to every requirement, reading the RFP and its documents."
+        st.markdown('<p class="muted">' + ("No draft yet. Draft response (above) writes a first answer to every requirement, from the documents under "
+                                           "RFP and documents — add them there first if the list is empty."
                                            if stage == "active" else "Start pursuing first; then Draft response writes the first draft.") + "</p>",
                     unsafe_allow_html=True)
         return
