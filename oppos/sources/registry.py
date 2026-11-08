@@ -90,6 +90,30 @@ def _load_registry() -> dict[str, tuple[str, FetchFn]]:
     return _REGISTRY
 
 
+# Why a source returns nothing (shown in Admin → Sources when a scan finds 0 listings). Kept current with the
+# coverage audits; a source not listed here that returns 0 is worth a look.
+SOURCE_NOTES: dict[str, str] = {
+    "maryland_emma": "Needs a person to pass a reCAPTCHA check — OppOS can't read it. Check eMMA directly.",
+    "alabama_alabamabuys": "Needs a person to pass a reCAPTCHA check — OppOS can't read it. Check the portal directly.",
+    "ohio_ohiobuys": "Needs a person to pass a reCAPTCHA check — OppOS can't read it. Check the portal directly.",
+    "north_dakota_ndbuys": "Needs a person to pass a reCAPTCHA check — OppOS can't read it. Check the portal directly.",
+    "minnesota_swift": "Blocks automated access (bot protection). Check the portal directly.",
+    "tennessee_edison": "Lists bids only after a supplier login.",
+    "california_caleprocure": "Built on a system OppOS has no reader for yet.",
+    "florida_mfmp": "Built on a system OppOS has no reader for yet.",
+    "oklahoma_omes": "Built on a system OppOS has no reader for yet.",
+    "new_york_sfs": "New York posts bids in the NY Contract Reporter, which OppOS doesn't read yet.",
+    "wisconsin_esupplier": "Wisconsin posts public bids on VendorNet, which OppOS doesn't read yet.",
+    "georgia_tgm": "Turns away automated requests with a browser check; reading it would mean imitating a browser (not done).",
+    "arkansas_arbuy": "Had no open bids at the last check.",
+    "colorado_vss": "Needs a headless browser; the daily scan installs one from Nov 9.",
+    "kentucky_emars": "Needs a headless browser; the daily scan installs one from Nov 9.",
+    "michigan_sigma": "Needs a headless browser; the daily scan installs one from Nov 9.",
+    "alaska_iris": "Needs a headless browser; the daily scan installs one from Nov 9.",
+    "maine_vss": "The portal's page changed; OppOS's reader needs updating.",
+    "west_virginia_wvoasis": "The portal's page changed; OppOS's reader needs updating.",
+}
+
 # Sources that are NOT state portals — excluded from "all_states" shortcut
 _NON_STATE_SOURCES = frozenset({
     "sam_gov", "google_cse", "target_accounts",
