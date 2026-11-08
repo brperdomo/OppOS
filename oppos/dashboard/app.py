@@ -54,7 +54,8 @@ try:
 except Exception as e:
     _secrets_errors.append(f"listing secrets: {e}")
 
-for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHROPIC_API_KEY", "SLACK_WEBHOOK_URL", "NUTRIENT_API_KEY", "NOTION_TOKEN", "NOTION_DATABASE_ID"):
+for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN", "SAM_GOV_API_KEY", "ANTHROPIC_API_KEY", "SLACK_WEBHOOK_URL", "NUTRIENT_API_KEY", "NOTION_TOKEN", "NOTION_DATABASE_ID",
+            "GITHUB_TOKEN", "GITHUB_REPO"):
     try:
         if hasattr(st, "secrets") and key in st.secrets:
             val = str(st.secrets[key]).strip().strip('"').strip("'")
@@ -935,6 +936,9 @@ def _score_basis(opp: dict, s2: dict) -> str:
     when = ""
     if b.get("scored_at"):
         when = " · scored " + _local_time(b["scored_at"])
+    adj = s2.get("score_adjustment") or {}
+    if adj and adj.get("to", 0) != adj.get("from", 0):
+        when += f" · restated {adj['from']} → {adj['to']} after setting aside {adj['unsupported']} claim{'s' if adj['unsupported'] != 1 else ''} the RFP doesn't support"
     if b.get("documents"):
         n = b["documents"]
         return (f"Based on the listing and {n} document{'s' if n != 1 else ''} (up to 60,000 characters, solicitation first){when}. "
@@ -954,6 +958,15 @@ def _full_analysis(opp: dict, s2: dict) -> None:
         return
     with st.expander("Full analysis"):
         st.markdown(f'<div class="help" style="margin-bottom:8px">{_esc(_score_basis(opp, s2))}</div>', unsafe_allow_html=True)
+        if s2.get("unsupported_claims"):
+            adj = s2.get("score_adjustment") or {}
+            st.markdown('<div class="rs-head">Not backed by the RFP — didn\'t count toward the score</div><ul class="plain">'
+                        + "".join(f"<li>{_esc(c)}</li>" for c in s2["unsupported_claims"]) + "</ul>"
+                        + (f'<div class="help">With these set aside the fit was restated from {adj["from"]} to {adj["to"]}.</div>'
+                           if adj and adj.get("to", 0) != adj.get("from", 0) else
+                           '<div class="help">Setting these aside didn\'t change the score.</div>' if adj else
+                           '<div class="help">Scored before OppOS set these aside; Score it again to restate it without them.</div>'),
+                        unsafe_allow_html=True)
         facts = [(l, v) for l, v in (("Closest win", s2.get("similar_win")), ("Industry", s2.get("industry")),
                                       ("Matches the pattern", str(s2.get("pattern_match") or "").replace("_", " ")),
                                       ("Suggested deployment", str(s2.get("deployment_recommendation") or "").replace("_", " ")))
@@ -964,9 +977,10 @@ def _full_analysis(opp: dict, s2: dict) -> None:
             if items:
                 st.markdown(f'<div class="rs-head">{head}</div><ul class="plain">'
                             + "".join(f"<li>{_esc(point_claim(p))}{_evidence_html(p)}</li>" for p in items) + "</ul>", unsafe_allow_html=True)
-        if s2.get("knowledge_gaps"):
-            st.markdown('<div class="rs-head">Not known from the listing</div><ul class="plain">'
-                        + "".join(f"<li>{_esc(str(g))}</li>" for g in s2["knowledge_gaps"]) + "</ul>", unsafe_allow_html=True)
+        gaps = [g for g in (s2.get("knowledge_gaps") or []) if str(g).rstrip(".") not in {str(c).rstrip(".") for c in s2.get("unsupported_claims") or []}]
+        if gaps:
+            st.markdown('<div class="rs-head">Not known yet (doesn\'t lower the score)</div><ul class="plain">'
+                        + "".join(f"<li>{_esc(str(g))}</li>" for g in gaps) + "</ul>", unsafe_allow_html=True)
         if s2.get("competitive_notes"):
             st.markdown(f'<div class="rs-head">Competition</div><p class="muted">{_esc(s2["competitive_notes"])}</p>', unsafe_allow_html=True)
 
@@ -2004,6 +2018,58 @@ def _show_more(rows: list[dict], key: str, render, page: int = 25) -> None:
 
 
 
+def _scan_state() -> str:
+    from oppos import scan_jobs
+    return (scan_jobs._job() or {}).get("state", "idle")
+
+
+def _scan_button(k: str, sources: list[str] | None = None, label: str = "Scan now") -> None:
+    """Start a scan in the background (on GitHub when a token is set); the status line shows its progress."""
+    from oppos import scan_jobs
+    busy = _scan_state() in ("queued", "running")
+    if st.button(label, key=f"scan_{k}", disabled=busy):
+        ok, msg = scan_jobs.start(CURRENT_USER.get("email", ""), sources)
+        _flash(msg, icon="🔎" if ok else "⚠️")
+        st.rerun()
+
+
+@st.fragment(run_every=6)
+def _scan_status_live() -> None:
+    from oppos import scan_jobs
+    job = scan_jobs.status()
+    if job.get("state") not in ("queued", "running"):
+        st.rerun()  # finished: redraw the page with the new listings
+    who = str(job.get("by") or "").split("@")[0].replace(".", " ").title()
+    if job.get("where") == "github":
+        msg = ("Scan queued on GitHub" if job["state"] == "queued" else "Scan running on GitHub") + f", started by {who} {_ago(job.get('started'))}."
+        msg += " New listings appear here when it finishes (usually 10–20 minutes)."
+        link = f' <a href="{_esc(job["url"])}" target="_blank">Follow it on GitHub</a>' if job.get("url") else ""
+    else:
+        done, total = int(job.get("done") or 0), int(job.get("total") or 0)
+        msg = (f"Scanning: {min(done + 1, total)} of {total} sources" + (f" — {job.get('current')}" if job.get("current") else "") if total
+               else "Scan starting…") + f". Started by {who} {_ago(job.get('started'))}; new listings appear here when it finishes."
+        link = ""
+    st.markdown(f'<div class="collab">{_esc(msg)}{link}</div>', unsafe_allow_html=True)
+
+
+def _scan_status() -> None:
+    """While a scan runs: a live status line. Just after one: what it found."""
+    from oppos import scan_jobs
+    job = scan_jobs.status()
+    state = job.get("state")
+    if state in ("queued", "running"):
+        _scan_status_live()
+    elif state in ("done", "failed") and job.get("finished", job.get("updated", "")) >= (datetime.utcnow() - timedelta(hours=2)).isoformat():
+        if state == "done":
+            st.markdown(f'<div class="help">Last scan finished {_ago(job.get("finished") or job.get("updated"))}'
+                        + (f": {_esc(job['summary'])}" if job.get("summary") else "") + ".</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div class="help"><span class="alert">The last scan didn\'t finish</span>'
+                        + (f": {_esc(job.get('error', ''))}" if job.get("error") else "")
+                        + (f' · <a href="{_esc(job["url"])}" target="_blank">see the run on GitHub</a>' if job.get("url") else "") + "</div>",
+                        unsafe_allow_html=True)
+
+
 def page_pool() -> None:
     """Find RFPs — one row per open listing; Good fit / All open / Archive."""
     _welcome()
@@ -2026,8 +2092,11 @@ def page_pool() -> None:
         view = st.segmented_control("Show", ["Good fit", "All open", "Archive"], default="Good fit", key="pool_view",
                                     label_visibility="collapsed", required=True)
     with v2, st.container(horizontal=True, horizontal_alignment="right"):
+        if CURRENT_USER.get("is_admin"):
+            _scan_button("pool")
         if st.button("Add an RFP", disabled=not CURRENT_USER.get("can_work")):
             _manual_rfp_dialog()
+    _scan_status()
 
     if view == "Archive":
         rows, _ = _unclaimed([r for r in all_rows if (r.get("pipeline_status") or "new") in ("won", "lost", "skipped", "expired")])
@@ -2040,7 +2109,7 @@ def page_pool() -> None:
                 else f"{len(open_rows)} open listings, best fit first")
         if claimed_n:
             line += f" · {claimed_n} on desks"
-        line += f" · checked daily, last scan {_ago(_cached_meta('last_scan'))}"
+        line += f" · checked daily, last scan {_ago(_cached_meta('last_scan'))}" if (_scan_state() not in ("queued", "running")) else ""
         st.markdown(f'<p class="muted">{line}</p>', unsafe_allow_html=True)
         if not CURRENT_USER.get("can_work"):
             st.caption(NO_ACCESS_NOTE)
@@ -2141,7 +2210,7 @@ def page_admin() -> None:
     """Admin — people, pursuits, sources, listings, portals, system."""
     _welcome(only_if_asked=True)
     from oppos.storage.db import get_source_health as _get_source_health
-    health = [r for r in _get_source_health() if r.get("source") not in EXCLUDED_SOURCES]
+    health = [r for r in _get_source_health() if r.get("source") not in EXCLUDED_SOURCES and r.get("source") in SOURCE_LABELS]  # retired sources drop off
     if not CURRENT_USER.get("is_admin"):
         st.markdown('<p class="muted">Admin tools are for admins (set in OPPOS_ADMINS). Below: how each source did on its last scan.</p>',
                     unsafe_allow_html=True)
@@ -2237,20 +2306,18 @@ def _admin_pursuits() -> None:
 def _admin_sources(health: list[dict]) -> None:
     from oppos.storage.db import archive_sources, count_active_by_sources, list_sources_in_db, set_excluded_sources
     from oppos.sources.registry import _load_registry
-    st.markdown(f'<p class="muted">The scan runs daily on GitHub; last scan {_ago(_cached_meta("last_scan"))}. '
-                'Running one here takes 10–20 minutes and alerts Slack like the daily one.</p>', unsafe_allow_html=True)
+    from oppos import scan_jobs as _sj
+    st.markdown(f'<p class="muted">The scan runs daily on GitHub; last scan {_ago(_cached_meta("last_scan"))}. Scan now runs in the background '
+                + ("on GitHub (with the headless browser some portals need)" if _sj.runs_on_github() else
+                   "inside the app — portals that need a browser are skipped; add a GITHUB_TOKEN secret to run it on GitHub instead")
+                + '; it takes 10–20 minutes and alerts Slack like the daily one.</p>', unsafe_allow_html=True)
+    _scan_status()
     registry = _load_registry()
     c1, c2, c3 = st.columns([2.2, 1, 1], vertical_alignment="bottom")
     one = c1.selectbox("Source", [""] + sorted(registry, key=lambda k: registry[k][0]), key="adm_src",
                        format_func=lambda k: "Every source" if not k else registry[k][0])
-    if c2.button("Scan now", key="adm_scan", type="primary", use_container_width=True):
-        from oppos.pipeline import run_scan
-        prog = st.progress(0, text="Starting…")
-        stats = run_scan(sources=[(one, registry[one][0], registry[one][1])] if one else None,
-                         on_progress=lambda i, n, name: prog.progress(i / max(n, 1), text=f"Scanning {name} ({i + 1}/{n})"))
-        set_meta("last_scan", datetime.utcnow().isoformat())
-        _flash(f"Scan done — {stats['fetched']} listings checked, {stats['new']} new" + (f", {len(stats['errors'])} source errors" if stats["errors"] else ""), icon="🔎")
-        st.rerun()
+    with c2:
+        _scan_button("admin", [one] if one else None)
     c3.link_button("Daily scan runs", "https://github.com/brperdomo/OppOS/actions/workflows/scan.yml", use_container_width=True)
     st.markdown('<div class="rs-head" style="margin-top:16px">How each source did</div>', unsafe_allow_html=True)
     _ok = sum(1 for r in health if int(r.get("last_count") or 0) and not r.get("last_error"))

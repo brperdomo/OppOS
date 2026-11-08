@@ -6,6 +6,9 @@ Each fetcher here calls the same request the portal's own page makes, so it need
   returns every open bid with description, buyer contact, category and PDF link.
 * Louisiana LaPAC — plain ColdFusion HTML, but one page per department (``dspBid.cfm?search=department&term=N``);
   the department list comes from ``deptbids.cfm``.
+* New York State Contract Reporter — ``GET /Ads/Search?Skip=&Top=`` returns the public list of open ads (title, CR#,
+  agency, dates, category, ad type) as HTML; each ad's full text needs a free NYSCR login, so the listing links to the
+  search for its CR number.
 * North Carolina eVP — a Dynamics 365 Power Pages entity grid; ``POST /_services/entity-grid-data.json/<grid>`` with
   the page's secure configuration and an anti-forgery token returns the solicitation records page by page.
 """
@@ -83,6 +86,73 @@ def fetch_mississippi(limit: int = 500) -> list[dict[str, Any]]:
             "active": status in ("open", ""),
         })
     logger.info("MAGIC Mississippi: %d bids (%d open)", len(out), sum(1 for o in out if o["active"]))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# New York State Contract Reporter
+# ---------------------------------------------------------------------------
+
+NY_BASE = "https://www.nyscr.ny.gov"
+_NY_FIELDS = ("Title", "CR#", "Agency", "Company", "Division", "Issue date", "Due date", "Location", "Category", "Vertical", "Ad type")
+_NY_UA = {"User-Agent": "OppOS/1.0 (Nutrient RFP monitor)"}
+
+
+def _ny_fields(block: str) -> dict[str, str]:
+    text = re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", block))).strip()
+    pat = "|".join(re.escape(f) for f in _NY_FIELDS)
+    out: dict[str, str] = {}
+    for m in re.finditer(rf"({pat}):\s*(.*?)(?=\s(?:{pat}):|\sLog in or sign up|$)", text):
+        out.setdefault(m.group(1), m.group(2).strip())
+    return out
+
+
+def _ny_date(raw: str | None) -> str | None:
+    try:
+        return datetime.strptime((raw or "").strip(), "%m/%d/%Y").date().isoformat()
+    except ValueError:
+        return None
+
+
+def fetch_new_york(limit: int = 1500, page: int = 100) -> list[dict[str, Any]]:
+    """Every open ad on the NYS Contract Reporter (state agencies, authorities, NYC, and subcontracting notices)."""
+    out: list[dict[str, Any]] = []
+    with httpx.Client(timeout=40.0, follow_redirects=True, headers=_NY_UA) as client:
+        logger.info("Fetching NYS Contract Reporter (NY) ads…")
+        for skip in range(0, limit, page):
+            resp = client.get(f"{NY_BASE}/Ads/Search", params={"Skip": skip, "Top": page})
+            resp.raise_for_status()
+            blocks = re.split(r'<div class="opp-list-item[^"]*"', resp.text)[1:]
+            if not blocks:
+                break
+            for b in blocks:
+                ad_id = (re.search(r'data-ad-id="(\d+)"', '<div class=""' + b[:300]) or [None, ""])[1]
+                f = _ny_fields(b)
+                cr = f.get("CR#") or ad_id
+                if not cr or not f.get("Title"):
+                    continue
+                sub = "subcontracting opportunity" in b.lower()
+                out.append({
+                    "source": "new_york_nyscr",
+                    "source_id": f"ny-cr-{cr}",
+                    "title": re.split(r"\s+Note:\s", re.sub(r"\s*This is a subcontracting opportunity\s*$", "", f["Title"], flags=re.I))[0][:300],
+                    "solicitation_number": cr,
+                    "notice_type": f.get("Ad type", "") + (" (subcontracting)" if sub else ""),
+                    "agency": f.get("Agency") or f.get("Company") or "",
+                    "office": f.get("Division", ""),
+                    "posted_date": _ny_date(f.get("Issue date")),
+                    "response_deadline": _ny_date(f.get("Due date")),
+                    "url": f"{NY_BASE}/Ads/Search?Keyword={cr}",
+                    "description": " · ".join(x for x in (f["Title"], f.get("Category", ""), f.get("Vertical", ""),
+                                                         f.get("Location", "")) if x),
+                    "point_of_contact": {"name": "", "email": "", "phone": ""},
+                    "place_of_performance": f.get("Location") or "New York",
+                    "resource_links": [],
+                    "raw": {"cr": cr, "category": f.get("Category"), "ad_type": f.get("Ad type"), "subcontracting": sub},
+                })
+            if len(blocks) < page:
+                break
+    logger.info("NYS Contract Reporter: %d open ads", len(out))
     return out
 
 

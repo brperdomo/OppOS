@@ -26,7 +26,7 @@ from oppos.config import (
     STAGE1_FIT_THRESHOLD,
 )
 from oppos.scoring.lobs import DEFAULT_LOB, LOBS, LOB, get_lob
-from oppos.scoring.schema import normalize_points
+from oppos.scoring.schema import normalize_points, point_claim
 
 logger = logging.getLogger(__name__)
 
@@ -640,6 +640,8 @@ def _normalize_stage2(result: dict[str, Any], lob: LOB, title: str = "", corpus:
     risks_in = normalize_points(out.get("risks"))
     out["risks"], gaps = _ground_risks(risks_in, gaps, title=title, corpus=corpus)
     out["knowledge_gaps"] = cap_gaps(gaps, len(risks_in) - len(out["risks"]))
+    kept_claims = {r.get("claim") for r in out["risks"]}
+    out["unsupported_claims"] = [r.get("claim", "") for r in risks_in if r.get("claim") not in kept_claims][:12]
 
     try:
         score = int(round(float(out.get("fit_score", 0) or 0)))
@@ -671,6 +673,52 @@ def _normalize_stage2(result: dict[str, Any], lob: LOB, title: str = "", corpus:
     out["industry"] = str(out.get("industry", "") or "")
     out["competitive_notes"] = str(out.get("competitive_notes", "") or "")
     return out
+
+
+RESTATE_PROMPT = """You scored a public-sector RFP for fit with {lob}. The app checked your risks against the RFP's own text and
+these were NOT supported by it — they are assumptions, now listed as unknowns. Unknowns must not lower a fit score.
+
+Unsupported (do not count them): {unsupported}
+
+What the RFP does support —
+Strengths: {strengths}
+Risks: {risks}
+Unknowns: {gaps}
+
+Your original fit_score was {score} with this summary: {summary}
+
+Restate the assessment as if the unsupported claims had never been made: the fit_score may stay the same or go up, never
+down; rewrite the summary (same length and style) without relying on the unsupported claims; keep recommended_action
+one of pursue | investigate | skip. Reply with JSON only:
+{{"fit_score": <int>, "recommended_action": "<pursue|investigate|skip>", "summary": "<text>"}}"""
+
+
+def _restate_without_unsupported(client: Any, out: dict[str, Any], lob: LOB, title: str) -> None:
+    """The model scored while it believed claims the RFP doesn't support; restate score and summary without them, so
+    assumptions can't drag a fit down. Records both numbers (score_adjustment)."""
+    before = int(out.get("fit_score") or 0)
+    pts = lambda items: "; ".join(point_claim(p) for p in items) or "none"
+    prompt = RESTATE_PROMPT.format(lob=lob.label, unsupported="; ".join(out["unsupported_claims"]),
+                                   strengths=pts(out.get("strengths") or []), risks=pts(out.get("risks") or []),
+                                   gaps="; ".join((out.get("knowledge_gaps") or [])[:8]) or "none",
+                                   score=before, summary=out.get("summary", ""))
+    try:
+        resp = client.messages.create(model=SCORING_MODEL_STAGE2, max_tokens=700, messages=[{"role": "user", "content": prompt}])
+        _track(resp)
+        text = "".join(getattr(b, "text", "") for b in resp.content)
+        data = json.loads(_extract_json(text))
+        after = max(before, min(100, int(round(float(data.get("fit_score", before))))))
+        if lob.depth != "full":
+            after = min(after, lob.thin_score_cap)
+        out["fit_score"] = after
+        out["fit_tier"] = min(out.get("fit_tier") or 3, _tier_for(after)) if after > before else out.get("fit_tier")
+        if str(data.get("recommended_action", "")).lower() in _ACTIONS and not (lob.depth != "full" and data["recommended_action"] == "pursue"):
+            out["recommended_action"] = str(data["recommended_action"]).lower()
+        if str(data.get("summary") or "").strip():
+            out["summary"] = str(data["summary"]).strip()
+        out["score_adjustment"] = {"from": before, "to": after, "unsupported": len(out["unsupported_claims"])}
+    except Exception as e:  # the grounded lists still show; the score stays as first given
+        logger.warning("Restating '%s' without unsupported claims failed: %s", title, e)
 
 
 def _stage2_failure(lob: LOB, message: str) -> dict[str, Any]:
@@ -743,6 +791,8 @@ def stage2_score(
                     return out
                 raise
             out = _normalize_stage2(result, lob, title=str(opportunity.get("title") or ""), corpus=opp_text)
+            if out.get("unsupported_claims") and not truncated:
+                _restate_without_unsupported(client, out, lob, title)
             if truncated:
                 logger.warning("Stage 2 output truncated at %d tokens for '%s' — raise STAGE2_MAX_TOKENS", max_tokens, title)
                 out["truncated"] = True

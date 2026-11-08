@@ -66,7 +66,10 @@ def _load_registry() -> dict[str, tuple[str, FetchFn]]:
         _REGISTRY[key] = (f"{site.name} ({site.state})", _bind(s_fetch, site))
 
     # --- Portals read through their own JSON endpoints (no browser needed) ---
-    from oppos.sources.platforms.state_json import fetch_louisiana, fetch_mississippi, fetch_north_carolina
+    from oppos.sources.platforms.state_json import fetch_louisiana, fetch_mississippi, fetch_new_york, fetch_north_carolina
+    _REGISTRY["new_york_nyscr"] = ("NYS Contract Reporter (NY)", lambda **kw: fetch_new_york())
+    from oppos.sources.platforms.vendornet import fetch_opportunities as wi_fetch
+    _REGISTRY["wisconsin_vendornet"] = ("VendorNet Wisconsin (WI)", lambda **kw: wi_fetch())
     _REGISTRY["mississippi_magic"] = ("MAGIC Mississippi (MS)", lambda **kw: fetch_mississippi())
     _REGISTRY["north_carolina_evp"] = ("NC eProcurement (NC)", lambda **kw: fetch_north_carolina())
     _REGISTRY["louisiana_lapac"] = ("LaPAC Louisiana (LA)", lambda **kw: fetch_louisiana())
@@ -102,14 +105,13 @@ SOURCE_NOTES: dict[str, str] = {
     "california_caleprocure": "Built on a system OppOS has no reader for yet.",
     "florida_mfmp": "Built on a system OppOS has no reader for yet.",
     "oklahoma_omes": "Built on a system OppOS has no reader for yet.",
-    "new_york_sfs": "New York posts bids in the NY Contract Reporter, which OppOS doesn't read yet.",
-    "wisconsin_esupplier": "Wisconsin posts public bids on VendorNet, which OppOS doesn't read yet.",
+    "wisconsin_vendornet": "Needs a headless browser: read by the daily scan on GitHub, not by a scan started inside the app.",
     "georgia_tgm": "Turns away automated requests with a browser check; reading it would mean imitating a browser (not done).",
     "arkansas_arbuy": "Had no open bids at the last check.",
-    "colorado_vss": "Needs a headless browser; the daily scan installs one from Nov 9.",
-    "kentucky_emars": "Needs a headless browser; the daily scan installs one from Nov 9.",
-    "michigan_sigma": "Needs a headless browser; the daily scan installs one from Nov 9.",
-    "alaska_iris": "Needs a headless browser; the daily scan installs one from Nov 9.",
+    "colorado_vss": "Blocks automated browsers (\"Web Page Blocked\"). Check the portal directly.",
+    "kentucky_emars": "Needs a headless browser: read by the daily scan on GitHub, not by a scan started inside the app.",
+    "michigan_sigma": "Blocks automated browsers. Check the portal directly.",
+    "alaska_iris": "Needs a headless browser: read by the daily scan on GitHub, not by a scan started inside the app.",
     "maine_vss": "The portal's page changed; OppOS's reader needs updating.",
     "west_virginia_wvoasis": "The portal's page changed; OppOS's reader needs updating.",
 }

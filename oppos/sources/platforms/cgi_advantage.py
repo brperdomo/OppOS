@@ -121,16 +121,12 @@ def _render_solicitations(site: CGISite) -> list[list[str]]:
 
     try:
         with sync_playwright() as pw:
+            # A plain headless browser: these are public pages that only need JavaScript. Nothing here hides that it
+            # is automated (no anti-detection flags) — a portal that blocks automation stays unread.
             try:
-                browser = pw.chromium.launch(
-                    channel="chrome", headless=False,
-                    args=["--disable-blink-features=AutomationControlled"],
-                )
+                browser = pw.chromium.launch(channel="chrome", headless=True)  # installed Chrome (local runs)
             except Exception:
-                browser = pw.chromium.launch(
-                    headless=False,
-                    args=["--disable-blink-features=AutomationControlled"],
-                )
+                browser = pw.chromium.launch(headless=True)  # Playwright's Chromium (the daily scan installs it)
 
             ctx = browser.new_context(
                 viewport={"width": 1280, "height": 720}, locale="en-US",

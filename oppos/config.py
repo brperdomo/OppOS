@@ -89,8 +89,8 @@ SOURCE_STATE_MAP: dict[str, str] = {
     "kansas_esupplier": "Kansas",
     "minnesota_swift": "Minnesota",
     "oklahoma_omes": "Oklahoma",
-    "wisconsin_esupplier": "Wisconsin",
-    "new_york_sfs": "New York",
+    "wisconsin_vendornet": "Wisconsin",
+    "new_york_nyscr": "New York",
     # Ivalua (6)
     "maryland_emma": "Maryland",
     "virginia_eva": "Virginia",
