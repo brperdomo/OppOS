@@ -72,638 +72,138 @@ st.set_page_config(page_title="OppOS — Nutrient", page_icon=NUTRIENT_ICON_SVG,
 
 NUTRIENT_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&display=swap');
 
+/* One accent (the next step), one warning colour (time pressure and unknowns that block a submission), greys
+   for everything else. Archivo matches the response documents. */
 :root {
-    --bg-primary: #1a1414;
-    --bg-secondary: #231e1e;
-    --bg-tertiary: #302b2b;
-    --bg-card: #231e1e;
-    --text-primary: #efebe7;
-    --text-secondary: #c2b8ae;
-    --text-tertiary: #897e70;
-    --accent-gold: #f0c966;
-    --accent-green: #6eb479;
-    --accent-red: #f25f45;
-    --accent-pink: #de9dcc;
-    --accent-orange: #e8944c;
-    --border-subtle: rgba(104, 89, 75, 0.3);
-    --border-medium: rgba(104, 89, 75, 0.6);
-    --radius-sm: 8px;
-    --radius-md: 12px;
-    --radius-lg: 16px;
+    --bg: #171413; --surface: #201c1a; --raised: #2a2522; --line: #3a3330;
+    --text: #efe9e3; --muted: #a39a92; --faint: #6f6761;
+    --accent: #f0c966; --alert: #e8836b;
+    /* older names still used by inline styles */
+    --text-primary: var(--text); --text-secondary: var(--muted); --text-tertiary: var(--faint);
+    --accent-gold: var(--accent); --border-subtle: var(--line); --border-medium: var(--line);
+    --radius-sm: 7px;
 }
+.stApp { background: var(--bg); }
+.stApp, .stApp :is(p, li, label, button, input, textarea, h1, h2, h3, h4, a, td, th, div, code) { font-family: 'Archivo', system-ui, sans-serif; }
+.stApp code { font-family: ui-monospace, Menlo, monospace; font-size: .9em; }
 
-.stApp {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
-}
-
-/* Hide Streamlit chrome — but keep the header: it hosts the page navigation */
-#MainMenu, footer {visibility: hidden;}
-/* Reruns: keep the previous frame fully visible while the next one renders (no grey fade), and hide the
-   "running" status widget that flickers on every click. Real long operations still use st.spinner/st.status. */
+/* Streamlit chrome: keep the header (it hosts the navigation), hide the rest; no grey fade on reruns */
+#MainMenu, footer { visibility: hidden; }
 .stApp [data-stale="true"], .element-container[data-stale="true"], [data-stale="true"] { opacity: 1 !important; transition: none !important; }
 [data-testid="stStatusWidget"] { visibility: hidden !important; }
-.stDeployButton, [data-testid="stAppDeployButton"], [data-testid="stToolbarActions"] {display: none;}
-header[data-testid="stHeader"] { background: var(--bg-primary); }  /* opaque: content scrolls under it */
-header[data-testid="stHeader"] a, header[data-testid="stHeader"] span { font-size: 14px; }
+.stDeployButton, [data-testid="stAppDeployButton"], [data-testid="stToolbarActions"] { display: none; }
+header[data-testid="stHeader"] { background: var(--bg); }
+.block-container { padding-top: 2rem !important; max-width: 1240px !important; }
 
-/* Main container */
-.block-container {
-    padding-top: 2rem !important;
-    max-width: 1200px !important;
-}
+/* Header */
+.oppos-header { display: flex; align-items: center; }
+.oppos-header-left { display: flex; align-items: center; gap: 10px; }
+.oppos-header h1 { font-size: 22px !important; font-weight: 700; margin: 0; padding: 0 !important; letter-spacing: -.01em; }
+.nutrient-logo-mark svg { width: 26px; height: 19px; display: block; }
+.who { font-size: 13px; color: var(--faint); text-align: right; }
+.welcome { font-size: 15px; line-height: 1.55; color: var(--muted); }
+.welcome-title { font-size: 17px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.welcome-step b { color: var(--text); font-weight: 600; margin-right: 4px; }
 
-/* Custom header */
-.oppos-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 6px 0 4px 0;
-    margin-bottom: 4px;
-}
-.who { font-size: 12px; color: var(--text-tertiary); text-align: right; }
-.welcome { font-size: 14px; line-height: 1.55; color: var(--text-secondary); }
-.welcome-title { font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px; }
-.welcome ol { margin: 0 0 8px 18px; padding: 0; }
-.welcome li { margin: 4px 0; }
-.welcome b { color: var(--text-primary); font-weight: 600; }
-.welcome-note { font-size: 12px; color: var(--text-tertiary); }
-.pp-in-card { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-subtle); }
-.pp-next { margin-top: 6px; font-size: 13px; color: var(--text-primary); }
-.pp-next::before { content: '→ '; color: var(--accent-gold); }
-.desk-section { margin: 18px 0 6px; font-size: 12px; letter-spacing: .02em; color: var(--text-tertiary); }
-.desk-section span { margin-left: 8px; color: var(--text-tertiary); opacity: .8; }
-.desk-row { padding: 8px 12px; border-left: 3px solid transparent; }
-.desk-row.sel { border-left-color: var(--accent-gold); background: rgba(240, 201, 102, 0.06); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
-.desk-title { font-size: 15px; font-weight: 600; color: var(--text-primary); }
-.desk-sub { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; }
-.desk-sub .desk-warn { color: var(--accent-orange); }
-.desk-sub .desk-bad { color: var(--accent-red); }
-.desk-meta { font-size: 12px; color: var(--text-secondary); text-align: right; }
-.desk-meta .opp-tag { margin-left: 6px; }
-.desk-workspace { margin-top: 22px; border-top: 1px solid var(--border-medium); padding-top: 14px; }
-.sub-box { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: rgba(255,255,255,0.025); font-size: 13px; line-height: 1.7; color: var(--text-secondary); }
-.sub-title { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px; }
-.sub-k { display: inline-block; min-width: 56px; color: var(--text-tertiary); font-size: 12px; }
-.sub-ok { color: var(--accent-green); } .sub-warn { color: var(--accent-orange); } .sub-bad { color: var(--accent-red); }
-.sub-src { color: var(--text-tertiary); font-size: 12px; }
-.sub-missing { margin-top: 4px; color: var(--accent-orange); font-size: 12px; }
-.sub-box a { color: var(--accent-gold); text-decoration: none; }
-.opp-title { font-size: 17px; }
-.opp-line { margin-top: 6px; font-size: 12.5px; color: var(--text-tertiary); }
-.opp-line .deadline-urgent, .opp-line .reg-warn { color: var(--accent-orange); }
-.opp-line .deadline-expired, .opp-line .reg-bad { color: var(--accent-red); }
-.journey { display: flex; align-items: center; margin: 12px 0 8px; padding-top: 10px; border-top: 1px solid var(--border-subtle); font-size: 12.5px; }
-.journey .step { color: var(--text-tertiary); padding: 2px 0; }
-.journey .step + .step::before { content: ""; display: inline-block; width: 28px; height: 1px; background: var(--border-medium); margin: 0 10px; vertical-align: middle; }
-.journey .step.done { color: var(--text-secondary); }
-.journey .step.done::after { content: " ✓"; color: var(--accent-green); }
-.journey .step.current { color: var(--accent-gold); font-weight: 600; }
-.pp-facts { font-size: 12.5px; color: var(--text-tertiary); display: flex; align-items: center; }
-.pp-facts .pp-links { margin-left: auto; }
-.welcome-step { margin: 4px 0; }
-.welcome-step b { color: var(--accent-gold); font-weight: 600; margin-right: 4px; }
-.oppos-header-left {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-}
-.oppos-header h1 {
-    font-family: 'Inter', sans-serif;
-    font-size: 26px;
-    font-weight: 700;
-    color: var(--text-primary);
-    margin: 0;
-    letter-spacing: -0.5px;
-}
-.oppos-header .subtitle {
-    font-size: 13px;
-    color: var(--text-tertiary);
-    font-weight: 400;
-}
-.nutrient-logo-mark {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-.nutrient-logo-mark svg {
-    width: 32px;
-    height: 32px;
-}
-.nutrient-brand {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--text-tertiary);
-    font-size: 12px;
-    font-weight: 500;
-    letter-spacing: 0.3px;
-}
-.nutrient-brand svg {
-    height: 16px;
-    width: auto;
-    opacity: 0.7;
-}
-.nutrient-brand:hover svg {
-    opacity: 1;
-}
+/* Text helpers */
+.muted { color: var(--muted); font-size: 14px; margin: 0 0 8px; }
+.faint { color: var(--faint); }
+.alert { color: var(--alert); }
+.summary { color: var(--muted); font-size: 14.5px; line-height: 1.55; max-width: 80ch; margin: 6px 0 12px; }
+.rs-head { font-size: 14.5px; font-weight: 600; color: var(--text); margin: 6px 0 6px; }
+ul.plain { margin: 0 0 10px; padding-left: 18px; color: var(--muted); font-size: 14px; }
+ul.plain li { margin-bottom: 4px; }
+.evidence-quote { color: var(--faint); font-size: 13px; margin: 2px 0 4px; }
+.kvs { margin: 14px 0 6px; }
+.kv { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 14px; font-size: 14px; padding: 4px 0; color: var(--text); }
+.kv > span { color: var(--muted); }
+.kv a, .ws-links a, .fact a, a.quiet-link { color: var(--accent); text-decoration: none; }
+.empty-state { padding: 36px 0; color: var(--muted); }
+.empty-state h3 { font-size: 16px !important; font-weight: 500; color: var(--muted); }
 
-/* Footer */
-.oppos-footer {
-    text-align: center;
-    padding: 32px 0 16px 0;
-    margin-top: 48px;
-    border-top: 1px solid var(--border-subtle);
-    color: var(--text-tertiary);
-    font-size: 12px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-}
-.oppos-footer svg {
-    height: 14px;
-    width: auto;
-    opacity: 0.5;
-}
+/* Buttons, tabs, inputs */
+.stButton > button, [data-testid="stPopover"] > button, [data-testid="stDownloadButton"] > button, [data-testid="stLinkButton"] > a {
+    font-size: 14px; font-weight: 500; min-height: 36px; padding: 4px 14px; border-radius: var(--radius-sm); }
+.stButton > button[kind="primary"], [data-testid="stPopover"] > button[kind="primary"] { color: #1d1708; font-weight: 600; }
+[data-testid="stTabs"] [data-baseweb="tab"] { font-size: 14.5px; }
+[data-testid="stTabs"] [data-baseweb="tab-highlight"] { background: var(--text); }
+[data-testid="stExpander"] details { border: 1px solid var(--line); border-radius: var(--radius-sm); }
+[data-testid="stExpander"] summary { font-size: 14px; color: var(--muted); }
+[data-testid="stCaptionContainer"] { font-size: 13px; }
+[data-testid="stDownloadButton"] > button[kind="tertiary"], .stButton > button[kind="tertiary"] { color: var(--accent); }
 
-/* Stats bar */
-.stats-bar {
-    display: flex;
-    gap: 24px;
-    padding: 16px 24px;
-    background: var(--bg-secondary);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--border-subtle);
-    border-top: 2px solid var(--accent-gold);
-    margin-bottom: 24px;
-}
-.stat-item {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-.stat-value {
-    font-size: 24px;
-    font-weight: 700;
-    color: var(--text-primary);
-}
-.stat-value.gold { color: var(--accent-gold); }
-.stat-value.green { color: var(--accent-green); }
-.stat-value.pink { color: var(--accent-pink); }
-.stat-label {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--text-tertiary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
+/* Find RFPs rows */
+[class*="st-key-row_"] { border-bottom: 1px solid var(--line); padding: 8px 0; }
+[class*="st-key-row_"] .stButton > button[kind="tertiary"] { padding: 0; min-height: 0; font-size: 16px; font-weight: 600; color: var(--text); text-align: left; justify-content: flex-start; }
+[class*="st-key-row_"] .stButton > button[kind="tertiary"]:hover { color: var(--accent); }
+.score { font-size: 20px; font-weight: 700; text-align: center; color: var(--text); }
+.score.low { color: var(--muted); }
+.rmeta { color: var(--muted); font-size: 13.5px; margin-top: -4px; }
+.rwhy { color: var(--muted); font-size: 13.5px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 88ch; }
 
-/* Opportunity cards */
-.opp-card {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-subtle);
-    border-left: 4px solid var(--text-tertiary);
-    border-radius: var(--radius-md);
-    padding: 20px 24px;
-    margin-bottom: 24px;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-}
-.opp-card:hover {
-    border-color: var(--border-medium);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-}
-.opp-card.score-high-card { border-left-color: var(--accent-green); }
-.opp-card.score-mid-card { border-left-color: var(--accent-gold); }
-.opp-card.score-low-card { border-left-color: var(--text-tertiary); }
-.opp-card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 16px;
-    margin-bottom: 12px;
-}
-.opp-title {
-    font-size: 17px;
-    font-weight: 600;
-    color: var(--text-primary);
-    text-decoration: none;
-    line-height: 1.35;
-}
-.opp-title:hover {
-    color: var(--accent-gold);
-}
-a.opp-title { color: var(--text-primary); text-decoration: none; }
-a.opp-title:hover { color: var(--accent-gold); }
-.opp-subtitle {
-    font-size: 13px;
-    color: var(--text-secondary);
-    margin-top: 4px;
-    line-height: 1.4;
-}
+/* My desk rail: the radio list reads as a list of pursuits */
+.st-key-desk_rail [role="radiogroup"] { gap: 2px; }
+.st-key-desk_rail [role="radiogroup"] > label { padding: 9px 12px; border-left: 3px solid transparent; border-radius: 0 6px 6px 0; width: 100%; margin: 0; }
+.st-key-desk_rail [role="radiogroup"] > label:has(input:checked) { background: var(--raised); border-left-color: var(--accent); }
+.st-key-desk_rail [role="radiogroup"] > label > div:first-child { display: none; }
+.st-key-desk_rail [role="radiogroup"] p { font-size: 14px; font-weight: 500; line-height: 1.3; }
+.st-key-desk_rail [data-testid="stCaptionContainer"] { font-size: 12.5px; color: var(--muted); }
+.closed-row { font-size: 13.5px; color: var(--muted); padding-top: 6px; }
+.closed-row span { display: block; color: var(--faint); font-size: 12.5px; }
 
-.opp-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-top: 8px;
-}
-.opp-tag {
-    display: inline-flex;
-    align-items: center;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 500;
-    border: none;
-    color: var(--text-secondary);
-    background: var(--bg-tertiary);
-}
-.opp-tag.source {
-    background: rgba(222, 157, 204, 0.1);
-    color: var(--accent-pink);
-}
-.opp-tag.deadline {
-    background: rgba(240, 201, 102, 0.1);
-    color: var(--accent-gold);
-}
+/* Pursuit workspace */
+.ws-head { display: flex; justify-content: space-between; gap: 20px; margin-bottom: 6px; }
+.ws-title { font-size: 22px; font-weight: 700; line-height: 1.25; letter-spacing: -.01em; }
+.ws-title a { color: var(--text); text-decoration: none; }
+.ws-title a:hover { color: var(--accent); }
+.ws-sub { color: var(--muted); font-size: 14px; margin-top: 4px; }
+.ws-links { font-size: 13.5px; margin-top: 4px; }
+.ws-links a + a { margin-left: 14px; }
+.ws-fit { text-align: right; flex: none; }
+.ws-fit b { display: block; font-size: 26px; font-weight: 700; line-height: 1; }
+.ws-fit span { font-size: 12px; color: var(--muted); }
+.journey { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 14px; }
+.journey i { width: 22px; height: 1px; background: var(--line); }
+.journey .step { color: var(--faint); }
+.journey .step.done { color: var(--muted); }
+.journey .step.now { color: var(--text); font-weight: 600; }
+[class*="st-key-facts_"] { background: var(--surface); border-radius: 8px; padding: 14px 18px; margin: 10px 0 4px; gap: 6px !important; }
+.fact { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 14px; font-size: 14.5px; padding: 3px 0; }
+.fact > span, .fact-label { color: var(--muted); font-size: 14.5px; }
+[class*="st-key-facts_"] [data-testid="stElementContainer"] { margin: 0; }
+[class*="st-key-acct_"] { margin: 6px 0 4px; }
+.doc-reading { color: var(--muted); font-size: 14px; padding: 4px 0 8px; }
+.doc { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; font-size: 14.5px; }
+.doc .ext { font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; text-align: center; padding: 1px 0; }
+.doc .dmeta { color: var(--faint); font-size: 13px; white-space: nowrap; }
+.reasons { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin: 12px 0 4px; font-size: 14px; }
+.reasons ul { margin: 0; padding-left: 18px; color: var(--muted); }
+.reasons li { margin-bottom: 5px; }
+.draftline { margin: 0; font-size: 14.5px; color: var(--muted); }
+.draftline b { color: var(--text); }
+.todo { border-top: 1px solid var(--line); margin: 12px 0; }
+.todo-row { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14.5px; }
+.todo-row .tid { color: var(--faint); font-size: 13px; }
+.twhy { color: var(--muted); font-size: 13.5px; margin-top: 2px; }
+.ans-head { margin-top: 16px; font-weight: 600; font-size: 14px; }
+.ans-head span { margin-left: 10px; color: var(--faint); font-weight: 400; font-size: 13px; }
+.ans-req { color: var(--muted); font-size: 13.5px; margin: 2px 0 6px; }
+.event { font-size: 13.5px; color: var(--muted); padding: 3px 0; }
+.event span { color: var(--faint); margin-right: 10px; }
 
-/* Score badge */
-.score-badge {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-width: 64px;
-    height: 64px;
-    border-radius: var(--radius-md);
-    background: var(--bg-tertiary);
-    border: none;
-    flex-shrink: 0;
-}
-.score-number {
-    font-size: 26px;
-    font-weight: 700;
-    line-height: 1;
-}
-.score-label {
-    font-size: 9px;
-    font-weight: 600;
-    color: var(--text-tertiary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-top: 2px;
-}
-.score-high .score-number { color: var(--accent-green); }
-.score-mid .score-number { color: var(--accent-gold); }
-.score-low .score-number { color: var(--text-tertiary); }
+/* Admin */
+.health-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.health-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.health-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); color: var(--text); }
+.health-note { color: var(--faint); font-size: 13px; }
 
-/* AI summary line */
-.opp-summary {
-    font-size: 13px;
-    color: var(--text-secondary);
-    line-height: 1.5;
-    margin-top: 8px;
-    padding-top: 10px;
-    border-top: 1px solid var(--border-subtle);
-    font-style: italic;
+@media (max-width: 760px) {
+    .reasons { grid-template-columns: 1fr; }
+    .fact, .kv { grid-template-columns: 1fr; gap: 2px; }
+    .rwhy { white-space: normal; }
 }
-
-/* Detail grid */
-.detail-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 12px;
-    margin-top: 12px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border-subtle);
-}
-.detail-item {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-.detail-label {
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--text-tertiary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-.detail-value {
-    font-size: 14px;
-    color: var(--text-secondary);
-    font-weight: 400;
-}
-.detail-value a {
-    color: var(--accent-gold);
-    text-decoration: none;
-}
-.detail-value a:hover {
-    text-decoration: underline;
-}
-
-/* Expander overrides */
-.streamlit-expanderHeader {
-    font-family: 'Inter', sans-serif !important;
-    font-size: 13px !important;
-    font-weight: 600 !important;
-    color: var(--text-secondary) !important;
-    background: var(--bg-tertiary) !important;
-    border-radius: var(--radius-sm) !important;
-    border: 1px solid var(--border-subtle) !important;
-}
-div[data-testid="stExpander"] {
-    border: 1px solid var(--border-subtle) !important;
-    border-radius: var(--radius-sm) !important;
-    background: var(--bg-tertiary) !important;
-}
-div[data-testid="stExpander"] details {
-    border: none !important;
-}
-
-/* Assessment section */
-.assessment-section {
-    padding: 16px;
-    background: var(--bg-tertiary);
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border-subtle);
-    margin-top: 8px;
-}
-.assessment-summary {
-    font-size: 14px;
-    line-height: 1.6;
-    color: var(--text-secondary);
-    margin-bottom: 16px;
-}
-.strength-item {
-    color: var(--accent-green);
-    font-size: 13px;
-    padding: 4px 0;
-}
-.risk-item {
-    color: var(--accent-red);
-    font-size: 13px;
-    padding: 4px 0;
-}
-
-/* Filter bar */
-div[data-testid="stHorizontalBlock"] {
-    gap: 12px !important;
-}
-
-/* Slider overrides */
-div[data-testid="stSlider"] label {
-    font-size: 13px !important;
-    font-weight: 500 !important;
-    color: var(--text-tertiary) !important;
-}
-
-/* Multiselect overrides */
-div[data-testid="stMultiSelect"] label,
-div[data-testid="stSelectbox"] label {
-    font-size: 13px !important;
-    font-weight: 500 !important;
-    color: var(--text-tertiary) !important;
-}
-
-/* Download button */
-div[data-testid="stDownloadButton"] button {
-    background: var(--bg-tertiary) !important;
-    border: 1px solid var(--border-subtle) !important;
-    color: var(--accent-gold) !important;
-    font-size: 12px !important;
-    border-radius: var(--radius-sm) !important;
-    transition: all 0.2s ease;
-}
-div[data-testid="stDownloadButton"] button:hover {
-    border-color: var(--accent-gold) !important;
-    background: rgba(240, 201, 102, 0.1) !important;
-}
-
-/* Divider */
-hr {
-    border-color: var(--border-subtle) !important;
-    margin: 8px 0 !important;
-}
-
-/* Source health */
-.health-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.health-table th { text-align: left; color: var(--text-tertiary); font-weight: 500; font-size: 11px;
-    text-transform: uppercase; letter-spacing: .04em; padding: 6px 8px; border-bottom: 1px solid var(--border-subtle); }
-.health-table td { padding: 6px 8px; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); vertical-align: top; }
-.health-note { color: var(--text-tertiary); font-size: 12px; }
-
-/* LOB chip, evidence, unknowns */
-.opp-tag.lob-tag { border: 1px solid var(--accent-gold); color: var(--accent-gold); background: transparent; }
-.evidence-quote { color: var(--text-tertiary); font-size: 12px; font-style: italic; margin: 2px 0 6px 14px; }
-.gap-item { color: var(--text-secondary); font-size: 13px; padding: 2px 0; }
-
-/* Registration badge + pursuit panel */
-.reg-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 6px; border: 1px solid currentColor; }
-.reg-ok { color: #7fc29b; }
-.reg-warn { color: var(--accent-orange); }
-.reg-bad { color: var(--accent-red); }
-.pp-strip { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 2px 0 10px; font-size: 13px; color: var(--text-secondary); }
-.pp-owner { font-weight: 500; color: var(--text-primary, #efebe7); }
-.pp-pill { padding: 2px 10px; border-radius: 10px; border: 1px solid var(--border-subtle); color: var(--text-secondary); font-size: 12px; }
-.pp-ok { border-color: #7fc29b; color: #7fc29b; }
-.pp-warn { border-color: var(--accent-orange); color: var(--accent-orange); }
-.pp-bad { border-color: var(--accent-red); color: var(--accent-red); }
-.pp-links { margin-left: auto; font-size: 12px; }
-.pp-links a { color: var(--accent-gold); text-decoration: none; margin-left: 8px; }
-.pp-event { font-size: 12px; color: var(--text-tertiary); padding: 2px 0; }
-.pp-event b { color: var(--text-secondary); font-weight: 500; }
-
-/* Owner chip */
-.opp-tag.owner-tag { background: rgba(240, 201, 102, 0.12); color: var(--accent-gold); }
-.board-link a { color: var(--text-primary, #efebe7); text-decoration: none; }
-.board-link a:hover { color: var(--accent-gold); }
-
-/* Empty state */
-.empty-state {
-    text-align: center;
-    padding: 48px 24px;
-    color: var(--text-tertiary);
-    background: var(--bg-secondary);
-    border: 1px dashed var(--border-subtle);
-    border-radius: var(--radius-md);
-}
-.empty-state h3 {
-    color: var(--text-secondary);
-    font-weight: 500;
-    font-size: 14px;
-    margin-bottom: 0;
-    line-height: 1.5;
-}
-
-/* Contact section */
-.contact-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 0;
-    font-size: 14px;
-    color: var(--text-secondary);
-}
-.contact-row a {
-    color: var(--accent-gold);
-    text-decoration: none;
-}
-
-/* Pipeline status badges */
-.pipeline-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 10px;
-    border-radius: 100px;
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-.pipeline-new {
-    background: rgba(222, 157, 204, 0.15);
-    color: var(--accent-pink);
-    border: 1px solid rgba(222, 157, 204, 0.3);
-}
-.pipeline-qualified {
-    background: rgba(100, 160, 240, 0.15);
-    color: #64a0f0;
-    border: 1px solid rgba(100, 160, 240, 0.3);
-}
-.pipeline-in_progress {
-    background: rgba(240, 201, 102, 0.15);
-    color: var(--accent-gold);
-    border: 1px solid rgba(240, 201, 102, 0.3);
-}
-.pipeline-submitted {
-    background: rgba(110, 180, 121, 0.15);
-    color: var(--accent-green);
-    border: 1px solid rgba(110, 180, 121, 0.3);
-}
-.pipeline-won {
-    background: rgba(110, 180, 121, 0.3);
-    color: var(--accent-green);
-    border: 1px solid rgba(110, 180, 121, 0.5);
-}
-.pipeline-lost {
-    background: rgba(242, 95, 69, 0.15);
-    color: var(--accent-red);
-    border: 1px solid rgba(242, 95, 69, 0.3);
-}
-.pipeline-skipped {
-    background: rgba(137, 126, 112, 0.1);
-    color: var(--text-tertiary);
-    border: 1px solid rgba(137, 126, 112, 0.2);
-}
-.pipeline-expiring_soon {
-    background: rgba(232, 148, 76, 0.2);
-    color: var(--accent-orange);
-    border: 1px solid rgba(232, 148, 76, 0.4);
-    animation: pulse-warning 2s ease-in-out infinite;
-}
-.pipeline-expired {
-    background: rgba(242, 95, 69, 0.15);
-    color: var(--accent-red);
-    border: 1px solid rgba(242, 95, 69, 0.3);
-    text-decoration: line-through;
-}
-@keyframes pulse-warning {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.7; }
-}
-.opp-tag.deadline-urgent {
-    background: rgba(232, 148, 76, 0.2);
-    color: var(--accent-orange);
-    font-weight: 600;
-}
-.opp-tag.deadline-expired {
-    background: rgba(242, 95, 69, 0.15);
-    color: var(--accent-red);
-    text-decoration: line-through;
-}
-
-/* NEW badge */
-.new-badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 2px 8px;
-    border-radius: 100px;
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    background: rgba(242, 95, 69, 0.2);
-    color: var(--accent-red);
-    border: 1px solid rgba(242, 95, 69, 0.4);
-    animation: pulse-new 2s ease-in-out infinite;
-}
-@keyframes pulse-new {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.6; }
-}
-
-/* Scan button */
-div[data-testid="stButton"] > button.scan-btn {
-    background: linear-gradient(135deg, var(--accent-gold), #e0b44e) !important;
-    color: var(--bg-primary) !important;
-    font-weight: 700 !important;
-    font-size: 14px !important;
-    border: none !important;
-    border-radius: var(--radius-sm) !important;
-    padding: 10px 24px !important;
-    letter-spacing: 0.3px;
-    transition: all 0.2s ease;
-}
-div[data-testid="stButton"] > button.scan-btn:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(240, 201, 102, 0.3) !important;
-}
-.scan-result {
-    padding: 16px 24px;
-    background: rgba(110, 180, 121, 0.1);
-    border: 1px solid rgba(110, 180, 121, 0.3);
-    border-radius: var(--radius-md);
-    margin-bottom: 16px;
-    color: var(--accent-green);
-    font-size: 14px;
-    font-weight: 500;
-}
-.scan-result.no-new {
-    background: rgba(137, 126, 112, 0.1);
-    border-color: rgba(137, 126, 112, 0.3);
-    color: var(--text-secondary);
-}
-.last-scan {
-    font-size: 12px;
-    color: var(--text-tertiary);
-    margin-top: 4px;
-}
-
-/* Streamlit tabs override */
-div[data-testid="stTabs"] button[data-baseweb="tab"] {
-    font-family: 'Inter', sans-serif !important;
-    font-size: 14px !important;
-    font-weight: 600 !important;
-    padding: 10px 20px !important;
-}
-div[data-testid="stTabs"] [data-baseweb="tab-highlight"] {
-    background-color: var(--accent-gold) !important;
-}
-/* Quieter controls: one action row per item, folds instead of stacked panels */
-[data-testid="stExpander"] details { border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: transparent; }
-[data-testid="stExpander"] summary { font-size: 13px; color: var(--text-secondary); padding: 6px 12px; }
-[data-testid="stExpander"] summary:hover { color: var(--text-primary); }
-.stButton > button, [data-testid="stPopover"] > button { font-size: 13px; padding: 4px 12px; min-height: 34px; border-radius: var(--radius-sm); }
-.stButton > button[kind="secondary"], [data-testid="stPopover"] > button { border-color: var(--border-medium); }
-[data-testid="stCaptionContainer"] { font-size: 12px; }
-.opp-card { margin-bottom: 8px; }
-hr { margin: 14px 0 !important; opacity: 0.5; }
-[data-testid="stTabs"] [data-baseweb="tab"] { font-size: 14px; }
 </style>
 """
 
@@ -745,7 +245,7 @@ def _show_flash() -> None:
 
 CURRENT_USER = require_login()
 
-_hc1, _hc2, _hc3, _hc4 = st.columns([4, 2.4, 1, 1], vertical_alignment="center")
+_hc1, _hc2, _hc3, _hc4 = st.columns([4, 2.6, 1.25, 0.9], vertical_alignment="center")
 _role = " · Admin" if CURRENT_USER.get("is_admin") else ""
 _mode = "" if CURRENT_USER.get("authenticated") else " · local dev mode"
 _hc1.markdown(f'<div class="oppos-header"><div class="oppos-header-left">'
@@ -899,6 +399,7 @@ def _rows_by_status(status: str, min_score: int = 0) -> list[dict]:
 def get_by_pipeline_status(status: str, min_score: int = 0) -> list[dict]:
     return _visible(_rows_by_status(status, min_score))
 
+GOOD_FIT = 40  # Find RFPs 'Good fit' view: fit score at or above this
 PIPELINE_LABELS = {
     "new": "New",
     "qualified": "Qualified",
@@ -1108,47 +609,6 @@ def _manual_rfp_dialog() -> None:
                     st.rerun(scope="fragment")
 
 
-def _ensure_files_exist(opp: dict, selected_paths: list) -> list:
-    """Verify selected files exist on disk; re-download if missing."""
-    from oppos.sources.attachments import download_attachments
-
-    missing = [f for f in selected_paths if not f.exists()]
-    if not missing:
-        return selected_paths
-
-    # Re-download all attachments for this RFP, then map back to selected
-    raw_json = opp.get("raw_json") or "{}"
-    try:
-        raw = json.loads(raw_json) if isinstance(raw_json, str) else (raw_json or {})
-    except (json.JSONDecodeError, TypeError):
-        raw = {}
-
-    # Reconstruct opp dict with fields that download_attachments needs
-    download_opp = dict(opp)
-    if raw.get("resourceLinks"):
-        download_opp["resource_links"] = raw["resourceLinks"]
-
-    redownloaded = download_attachments(download_opp)
-    if not redownloaded:
-        return selected_paths  # return originals — caller will handle missing files
-
-    # Build a name → path map from freshly downloaded files
-    fresh_map = {f.name: f for f in redownloaded}
-
-    # Update session state with new paths
-    sid = opp.get("source_id", "")
-    state_key = f"att_files_{sid}"
-    st.session_state[state_key] = [str(f) for f in redownloaded]
-
-    # Map selected files to fresh paths
-    refreshed = []
-    for f in selected_paths:
-        if f.name in fresh_map:
-            refreshed.append(fresh_map[f.name])
-        elif f.exists():
-            refreshed.append(f)
-    return refreshed
-
 
 def _pursue_opportunity(opp: dict, reason: str = "") -> None:
     """Full Pursue flow: Notion push → pursuit record (owner = you) → Slack channel or alert."""
@@ -1288,288 +748,7 @@ def _push_to_notion(opp: dict) -> None:
             st.error(f"Error: {e}")
 
 
-def _run_ocr_and_score(opp: dict, selected_paths: list, tab_key: str) -> None:
-    """Extract text from selected files, merge with existing, re-score, and move to Qualified."""
-    from oppos.scoring.qualifier import qualify
-    from oppos.sources.extract_text import extract_file, MAX_TOTAL_TEXT
-    from oppos.storage.db import upsert_opportunity
 
-    old_score = int(opp.get("fit_score") or 0)
-    title = opp.get("title", "Untitled")
-    existing_text = opp.get("attachment_text") or ""
-
-    with st.status(f"Scanning: {title[:60]}", expanded=True) as status:
-        # Verify files exist on disk; re-download if Streamlit Cloud cleaned them up
-        missing = [f for f in selected_paths if not f.exists()]
-        if missing:
-            st.write(f"⚠️ {len(missing)} file(s) not found on disk — re-downloading...")
-            selected_paths = _ensure_files_exist(opp, selected_paths)
-
-        # Check again after re-download attempt
-        still_missing = [f for f in selected_paths if not f.exists()]
-        if still_missing:
-            for f in still_missing:
-                st.write(f"  ❌ {f.name} — file not found (could not re-download)")
-            selected_paths = [f for f in selected_paths if f.exists()]
-            if not selected_paths:
-                status.update(label="Scan failed: All files missing", state="error")
-                st.error("Files were cleaned up and could not be re-downloaded. Try clicking 'Load Attachments' again.")
-                return
-
-        pdf_count = sum(1 for f in selected_paths if f.suffix.lower() == ".pdf")
-        docx_count = sum(1 for f in selected_paths if f.suffix.lower() == ".docx")
-        parts = []
-        if pdf_count:
-            parts.append(f"{pdf_count} PDF(s) via Nutrient OCR")
-        if docx_count:
-            parts.append(f"{docx_count} DOCX (local, no credits)")
-        st.write(f"🔍 **Extracting text from {' + '.join(parts)}...**")
-
-        all_text = []
-        total_chars = 0
-
-        for i, file_path in enumerate(selected_paths):
-            if total_chars >= MAX_TOTAL_TEXT:
-                st.write(f"  ⏭️ {file_path.name} — skipped (text limit reached)")
-                continue
-
-            is_docx = file_path.suffix.lower() == ".docx"
-            method = "local parse" if is_docx else "Nutrient OCR"
-            st.write(f"  ⏳ ({i+1}/{len(selected_paths)}) Processing **{file_path.name}** ({method})...")
-            result = extract_file(file_path)
-
-            if result.get("error"):
-                st.write(f"  ❌ {file_path.name} — {result['error']}")
-                continue
-
-            credits = result.get("credits_remaining", "n/a")
-            credit_info = "" if is_docx else f" (credits left: {credits})"
-            pages_info = f"{result['pages']} pages," if result['pages'] else ""
-            st.write(
-                f"  ✅ {file_path.name} — {result['chars']:,} chars "
-                f"{pages_info}{credit_info}"
-            )
-
-            if result["text"]:
-                all_text.append(f"--- {file_path.name} ---\n{result['text']}")
-                total_chars += result["chars"]
-
-        new_text = "\n\n".join(all_text)
-
-        if not new_text:
-            status.update(label="Scan failed: Could not extract text", state="error")
-            return
-
-        if existing_text:
-            combined_text = (existing_text + "\n\n" + new_text)[:MAX_TOTAL_TEXT]
-            st.write(f"📎 Merged with previously scanned text ({len(existing_text):,} chars existing)")
-        else:
-            combined_text = new_text[:MAX_TOTAL_TEXT]
-
-        st.divider()
-        st.write(f"🧠 **Total context: {len(combined_text):,} chars** — Scoring with Claude...")
-
-        try:
-            scored = qualify(opp, attachment_text=combined_text)
-            scored["attachment_text"] = combined_text
-            upsert_opportunity(scored)
-            # Keep expiring_soon status if already set — don't reset to qualified
-            _current_status = opp.get("pipeline_status") or "new"
-            _post_scan_status = _current_status if _current_status == "expiring_soon" else "qualified"
-            set_pipeline_status(
-                opp["source_id"], _post_scan_status,
-                notes=f"Deep scan: {len(combined_text):,} chars from {len(selected_paths)} file(s)",
-            )
-        except Exception as e:
-            status.update(label="Scan failed: Scoring error", state="error")
-            st.error(f"Scoring failed: {type(e).__name__}: {e}")
-            # Save OCR text even if scoring fails so credits aren't wasted
-            opp["attachment_text"] = combined_text
-            upsert_opportunity(opp)
-            st.write("💾 OCR text saved — you can re-score later without using credits.")
-            return
-
-        new_score = scored.get("fit_score", 0)
-        delta = new_score - old_score
-        delta_str = f"+{delta}" if delta > 0 else str(delta)
-
-        st.write(f"**Score: {old_score} → {new_score} ({delta_str})**")
-
-        s2 = scored.get("stage2") or {}
-        if s2.get("summary"):
-            st.divider()
-            st.write("📋 **Post-Scan Analysis**")
-            st.write(s2["summary"])
-        if s2.get("strengths"):
-            st.write("**Strengths:** " + points_text(s2["strengths"]))
-        if s2.get("risks"):
-            st.write("**Risks:** " + points_text(s2["risks"]))
-        if s2.get("recommended_action"):
-            st.write(f"**Recommendation:** {s2['recommended_action']}")
-
-        if _post_scan_status == "expiring_soon":
-            st.write("⚠️ **Scored — stays in Expiring Soon (deadline approaching).**")
-        else:
-            st.write("📂 **Moved to Qualified tab for review.**")
-
-        status.update(
-            label=f"Scan complete — Score: {old_score} → {new_score} ({delta_str})",
-            state="complete",
-        )
-
-
-def _get_scanned_filenames(attachment_text: str) -> set[str]:
-    """Parse '--- filename ---' headers from cached attachment text."""
-    import re
-    return set(re.findall(r"^--- (.+?) ---$", attachment_text, re.MULTILINE))
-
-
-def _render_deep_scan(opp: dict, tab_key: str, slot=None) -> None:
-    """Render the Deep Scan UI: load attachments, select files, scan & score."""
-    from oppos.sources.attachments import download_attachments
-    from pathlib import Path
-
-    sid = opp.get("source_id", "")
-    state_key = f"att_files_{sid}"
-    existing_text = opp.get("attachment_text") or ""
-    scanned_files = _get_scanned_filenames(existing_text) if existing_text else set()
-
-    if scanned_files:
-        _scan_score = int(opp.get("fit_score") or 0)
-        st.markdown(
-            f'<div style="font-size: 12px; color: var(--accent-green); margin-bottom: 4px;">'
-            f'✅ {len(scanned_files)} file(s) scanned — current score: <strong>{_scan_score}/100</strong></div>',
-            unsafe_allow_html=True,
-        )
-
-    # Step 1: Load Attachments
-    lc1, lc2 = st.columns([1, 3])
-    with lc1:
-        load_btn = st.button(
-            "Load Attachments",
-            key=f"loadatt_{tab_key}_{sid}",
-            use_container_width=True,
-        )
-    with lc2:
-        st.caption("Downloads the RFP documents so they can be scanned (Nutrient OCR) and the fit re-scored on the full text.")
-
-    if load_btn:
-        with st.spinner("Downloading attachments..."):
-            # Reconstruct resource_links from raw_json if not present
-            # (DB rows don't store resource_links as a top-level field)
-            download_opp = dict(opp)
-            if not download_opp.get("resource_links"):
-                raw_json = opp.get("raw_json") or "{}"
-                try:
-                    raw = json.loads(raw_json) if isinstance(raw_json, str) else (raw_json or {})
-                except (json.JSONDecodeError, TypeError):
-                    raw = {}
-                if raw.get("resourceLinks"):
-                    download_opp["resource_links"] = raw["resourceLinks"]
-            att_files = download_attachments(download_opp)
-        if att_files:
-            st.session_state[state_key] = [str(f) for f in att_files]
-        else:
-            st.warning("No attachments found for this RFP.")
-            return
-
-    # Step 2: Show file list with checkboxes
-    if state_key in st.session_state:
-        from oppos.sources.extract_text import SCANNABLE_EXTENSIONS
-
-        def _pdf_page_count(fpath: Path) -> int | None:
-            try:
-                from pypdf import PdfReader
-                return len(PdfReader(str(fpath)).pages)
-            except Exception:
-                return None
-
-        def _format_size(size_bytes: int) -> str:
-            if size_bytes >= 1_048_576:
-                return f"{size_bytes / 1_048_576:.1f} MB"
-            return f"{size_bytes / 1024:.0f} KB"
-
-        att_files = [Path(p) for p in st.session_state[state_key]]
-        scannable = [f for f in att_files if f.suffix.lower() in SCANNABLE_EXTENSIONS]
-        other = [f for f in att_files if f.suffix.lower() not in SCANNABLE_EXTENSIONS]
-
-        pdf_count = sum(1 for f in scannable if f.suffix.lower() == ".pdf")
-        docx_count = sum(1 for f in scannable if f.suffix.lower() == ".docx")
-        type_parts = []
-        if pdf_count:
-            type_parts.append(f"{pdf_count} PDFs")
-        if docx_count:
-            type_parts.append(f"{docx_count} DOCX")
-        st.markdown(
-            f'<div style="font-size: 13px; margin: 8px 0 4px 0;">'
-            f'<strong>{len(att_files)} files</strong> ({", ".join(type_parts)}, {len(other)} other)</div>',
-            unsafe_allow_html=True,
-        )
-
-        selected = []
-        for f in att_files:
-            ext = f.suffix.lower()
-            is_scannable = ext in SCANNABLE_EXTENSIONS
-            already_scanned = f.name in scanned_files
-            size_bytes = f.stat().st_size if f.exists() else 0
-            size_str = _format_size(size_bytes)
-
-            if ext == ".pdf":
-                icon, method = "📄", "Nutrient OCR"
-                pages = _pdf_page_count(f)
-                page_str = f", {pages} pg" if pages else ""
-            elif ext == ".docx":
-                icon, method = "📝", "local parse, no credits"
-                page_str = ""
-            else:
-                icon, method = "📎", ""
-                page_str = ""
-
-            label = f"{icon} {f.name} ({size_str}{page_str})"
-
-            if already_scanned:
-                st.markdown(
-                    f'<div style="font-size: 13px; color: var(--accent-green); padding: 4px 0 4px 24px;">'
-                    f'✅ {label} — already scanned</div>',
-                    unsafe_allow_html=True,
-                )
-            elif is_scannable:
-                hint = f" — {method}" if method else ""
-                checked = st.checkbox(f"{label}{hint}", value=True, key=f"cb_{tab_key}_{sid}_{f.name}")
-                if checked:
-                    selected.append(f)
-            else:
-                st.markdown(
-                    f'<div style="font-size: 12px; color: var(--text-tertiary); padding: 2px 0 2px 24px;">'
-                    f'{label} (not scannable)</div>',
-                    unsafe_allow_html=True,
-                )
-
-        if selected:
-            scan_btn = st.button(
-                f"Scan {len(selected)} Selected & Score",
-                key=f"scansel_{tab_key}_{sid}",
-                use_container_width=False,
-            )
-            if scan_btn:
-                with (slot or st.container()):
-                    _run_ocr_and_score(opp, selected, tab_key)
-                _flash(f"Scanned and scored — {opp.get('title', '')[:60]}", icon="📊")
-                st.rerun()
-        elif scannable and not any(f.name not in scanned_files for f in scannable):
-            _rescore_col1, _rescore_col2 = st.columns([1, 3])
-            with _rescore_col1:
-                if st.button("Re-Score", key=f"rescore_{tab_key}_{sid}", use_container_width=True):
-                    with (slot or st.container()):
-                        _run_ocr_and_score(opp, scannable, tab_key)
-                    _flash(f"Re-scored — {opp.get('title', '')[:60]}", icon="📊")
-                    st.rerun()
-            with _rescore_col2:
-                st.markdown(
-                    '<div style="font-size: 12px; color: var(--text-tertiary); padding-top: 8px;">'
-                    'All files scanned — re-score with existing text to update fit score</div>',
-                    unsafe_allow_html=True,
-                )
 
 
 def _evidence_html(point) -> str:
@@ -1603,23 +782,6 @@ def _due_phrase(deadline: str | None) -> str:
         return f"Due tomorrow ({when})"
     return f"Due {when} (in {days} days)"
 
-
-def _deadline_tag(deadline: str | None) -> tuple[str, str]:
-    """(css class, label) for the deadline pill."""
-    if not deadline:
-        return "deadline", "No deadline"
-    from oppos.storage.db import _parse_deadline
-    dl = _parse_deadline(deadline)
-    if not dl:
-        return "deadline", f"Due {deadline[:10]}"
-    if dl.tzinfo is not None:
-        dl = dl.replace(tzinfo=None)
-    days = (dl - datetime.utcnow()).total_seconds() / 86400
-    if days < 0:
-        return "deadline-expired", f"Expired {deadline[:10]}"
-    if days <= 7:
-        return "deadline-urgent", f"Due in {max(0, int(days))}d · {deadline[:10]}"
-    return "deadline", f"Due {deadline[:10]}"
 
 
 def _parse_json(raw) -> dict:
@@ -1669,166 +831,543 @@ def _score_batch(batch: list[dict]) -> None:
     _flash(f"Scored {ok} listing{'s' if ok != 1 else ''}" + (f" · {len(errs)} failed" if errs else ""), icon="📊" if not errs else "⚠️")
 
 
-def render_card(opp: dict, tab_key: str, mode: str = "pool", extra_meta_html: str = "", before_details=None, details: bool = True):
-    """One opportunity. `mode`: 'pool' (Find RFPs — Grab / Skip / Score actions), 'desk' (actions live in the
-    pursuit panel), 'archive' (closed — Reopen only)."""
-    s2 = _parse_json(opp.get("stage2_json"))
-    sid = opp.get("source_id", "")
-    score = int(_score_of(opp))
-    title = _esc(opp.get("title") or "Untitled")
-    agency = _esc(opp.get("agency") or "Unknown agency")
-    url = opp.get("url") or ""
-    pipeline_status = opp.get("pipeline_status") or "new"
-    state_name = _esc(SOURCE_STATE_MAP.get(opp.get("source", ""), "") or SOURCE_LABELS.get(opp.get("source", ""), ""))
 
-    dl_cls, dl_txt = _deadline_tag(opp.get("response_deadline"))
-    bits: list[str] = []
-    if mode != "desk":
-        bits.append(f'<span class="{dl_cls}">{_esc(_due_phrase(opp.get("response_deadline")))}</span>')
-    _lob_key = opp.get("lob") or s2.get("lob") or ""
-    if _lob_key:
-        bits.append(_esc(lob_label(_lob_key)))
-    if opp.get("attachment_text"):
-        bits.append("documents scanned")
+# ── Listing analysis, in plain words ──────────────────────────────────────────
+
+def _fit_reasons_html(s2: dict) -> str:
+    """'Why it fits' and 'What to check', three each at most — the part of the analysis a person acts on."""
+    fits = [point_claim(s) for s in (s2.get("strengths") or [])][:3]
+    checks = [point_claim(r) for r in (s2.get("risks") or [])][:2] + [str(g) for g in (s2.get("knowledge_gaps") or [])]
+    checks = checks[:3]
+    if not fits and not checks:
+        return ""
+    col = lambda head, items: (f'<div><div class="rs-head">{head}</div><ul>' + "".join(f"<li>{_esc(i)}</li>" for i in items) + "</ul></div>") if items else ""
+    return f'<div class="reasons">{col("Why it fits", fits)}{col("What to check", checks)}</div>'
+
+
+def _full_analysis(opp: dict, s2: dict) -> None:
+    """Everything else the scorer wrote, folded away."""
+    s1 = _parse_json(opp.get("stage1_json"))
+    if not s2:
+        if s1 and not s1.get("relevant"):
+            st.caption(f"The first pass set this aside as not relevant: {s1.get('reason', '')}")
+        return
+    with st.expander("Full analysis"):
+        facts = [(l, v) for l, v in (("Closest win", s2.get("similar_win")), ("Industry", s2.get("industry")),
+                                      ("Matches the pattern", str(s2.get("pattern_match") or "").replace("_", " ")),
+                                      ("Suggested deployment", str(s2.get("deployment_recommendation") or "").replace("_", " ")))
+                 if v and v != "other"]
+        if facts:
+            st.markdown("".join(f'<div class="kv"><span>{_esc(l)}</span>{_esc(str(v))}</div>' for l, v in facts), unsafe_allow_html=True)
+        for head, items in (("Strengths", s2.get("strengths")), ("Risks", s2.get("risks"))):
+            if items:
+                st.markdown(f'<div class="rs-head">{head}</div><ul class="plain">'
+                            + "".join(f"<li>{_esc(point_claim(p))}{_evidence_html(p)}</li>" for p in items) + "</ul>", unsafe_allow_html=True)
+        if s2.get("knowledge_gaps"):
+            st.markdown('<div class="rs-head">Not known from the listing</div><ul class="plain">'
+                        + "".join(f"<li>{_esc(str(g))}</li>" for g in s2["knowledge_gaps"]) + "</ul>", unsafe_allow_html=True)
+        if s2.get("competitive_notes"):
+            st.markdown(f'<div class="rs-head">Competition</div><p class="muted">{_esc(s2["competitive_notes"])}</p>', unsafe_allow_html=True)
+
+
+def _listing_facts_html(opp: dict) -> str:
+    """Contact, dates, source and the description when it says more than the title."""
+    contact = " · ".join(_esc(str(c)) for c in (opp.get("contact_name"), opp.get("contact_email"), opp.get("contact_phone")) if c)
+    rows = [("Contact", contact or '<span class="muted">Not listed</span>'),
+            ("Posted", _esc(str(opp.get("posted_date") or "")[:10]) or '<span class="muted">Unknown</span>'),
+            ("Source", _esc(SOURCE_LABELS.get(opp.get("source", ""), opp.get("source", ""))))]
     if opp.get("solicitation_number"):
-        bits.append(_esc(opp["solicitation_number"]))
-    _badge = _reg_badge(PORTAL_REGS.get(opp.get("source") or ""))
-    if _badge and _badge[1] != "reg-ok" and mode != "desk":
-        bits.append(f'<span class="{_badge[1]}">{_esc(_badge[0]).lower()}</span>')
-    if opp.get("submitted_by"):
-        bits.append(f"added by {_esc(str(opp['submitted_by']).split('@')[0])}")
-    tags = [" · ".join(bits)] if bits else []
-    if mode == "archive" or pipeline_status in ("won", "lost", "skipped", "expired"):
-        tags.insert(0, f'<span class="pipeline-badge pipeline-{pipeline_status}">{PIPELINE_LABELS.get(pipeline_status, pipeline_status)}</span> ')
+        rows.append(("Number", _esc(opp["solicitation_number"])))
+    desc = (opp.get("description") or "").strip()
+    title = (opp.get("title") or "").strip().lower()
+    if desc and len(desc) > len(title) + 60:
+        rows.append(("Description", _esc(desc[:1500])))
+    return '<div class="kvs">' + "".join(f'<div class="kv"><span>{l}</span><div>{v}</div></div>' for l, v in rows) + "</div>"
 
-    is_new = False
-    created = opp.get("created_at")
-    if created:
-        try:
-            is_new = (datetime.now(timezone.utc) - datetime.fromisoformat(created).replace(tzinfo=timezone.utc)) < timedelta(hours=24)
-        except (ValueError, TypeError):
-            pass
-    title_html = f'<a class="opp-title" href="{_esc(url)}" target="_blank">{title}</a>' if url else f'<span class="opp-title">{title}</span>'
-    card_cls = "score-high-card" if score >= 65 else ("score-mid-card" if score >= 40 else "score-low-card")
-    summary = s2.get("summary") or ""
-    st.markdown(
-        f'<div class="opp-card {card_cls}"><div class="opp-card-header"><div style="flex:1;">'
-        f'{"<span class=\"new-badge\">NEW</span> " if is_new else ""}{title_html}'
-        f'<div class="opp-subtitle"><strong>{state_name}</strong> &middot; {agency}</div>'
-        f'<div class="opp-line">{"".join(tags)}</div></div>'
-        f'<div class="score-badge {_score_class(score)}"><div class="score-number">{score if score else "–"}</div><div class="score-label">Fit</div></div>'
-        f'</div>{f"<div class=\"opp-summary\">{_esc(summary)}</div>" if summary else ""}'
-        f'{extra_meta_html}</div>',
-        unsafe_allow_html=True,
-    )
 
-    slot = st.container()  # long operations report here, full width, above the details
-    if before_details:
-        before_details(slot)
+# ── RFP documents ─────────────────────────────────────────────────────────────
 
-    if mode == "pool":
-        from oppos.pursuits import claim_opportunity as _claim
-        _open_p = OPEN_PURSUITS.get(sid)
-        c1, c2, c3, c4 = st.columns([1, 1, 1, 3])
-        if _open_p:
-            c4.caption(f"Owned by {_open_p.get('owner_name') or _open_p.get('owner_email')} — on their desk.")
-        elif not CURRENT_USER.get("can_work"):
-            c4.caption(NO_ACCESS_NOTE)
+def _size_txt(n) -> str:
+    n = int(n or 0)
+    return f"{n / 1_048_576:.1f} MB" if n >= 1_048_576 else f"{max(1, n // 1024)} KB"
+
+
+@st.fragment(run_every=4)
+def _reading_progress(sid: str) -> None:
+    """Shown while documents are read in the background; reruns the page when the read finishes."""
+    from oppos.sources.rfp_documents import job_status
+    job = job_status(sid) or {}
+    if job.get("state") != "reading":
+        st.rerun()
+    done, total, cur = int(job.get("done") or 0), int(job.get("total") or 0), job.get("current") or ""
+    st.markdown(f'<div class="doc-reading">Reading the RFP\'s documents{f" ({min(done + 1, total)} of {total})" if total else ""}'
+                f'{": " + _esc(cur) if cur else ""}…</div>', unsafe_allow_html=True)
+
+
+def _render_documents(opp: dict, k: str, auto: bool, docs: list[dict] | None = None) -> None:
+    """One list of the RFP's documents, as OppOS read them. `auto`: start reading without asking (a pursuit)."""
+    from oppos.sources.rfp_documents import job_status, local_files, start_reading
+    from oppos.storage.db import get_documents
+    sid = opp.get("source_id", "")
+    docs = get_documents(sid) if docs is None else docs
+    job = job_status(sid)
+    if not docs and not job and auto and CURRENT_USER.get("can_work"):
+        start_reading(opp)
+        job = job_status(sid)
+    if job and job.get("state") == "reading":
+        _reading_progress(sid)
+        if not docs:
+            return
+    if not docs:
+        if job and job.get("state") == "failed":
+            st.markdown(f'<p class="muted">Couldn\'t read the documents: {_esc(job.get("error") or "unknown error")}.</p>', unsafe_allow_html=True)
+        elif job and job.get("state") == "done":
+            st.markdown('<p class="muted">No documents came with this listing. Open the listing to check for files posted there.</p>', unsafe_allow_html=True)
+        if CURRENT_USER.get("can_work") and st.button("Read the RFP's documents" if not job else "Try again", key=f"{k}_docs_read"):
+            start_reading(opp)
+            _flash("Reading the RFP's documents — the list fills in as they're read", icon="📄")
+            st.rerun()
+        return
+    n_read = sum(1 for d in docs if d["status"] == "read")
+    head = f"{len(docs)} document{'s' if len(docs) != 1 else ''}" + (", all read by OppOS" if n_read == len(docs) else f", {n_read} read by OppOS")
+    st.markdown(f'<p class="muted">{head}</p>', unsafe_allow_html=True)
+    files = {f.name: f for f in local_files(sid)}
+    for d in docs:
+        if d["status"] == "read":
+            meta = f'{d["pages"]} pages' if d.get("pages") else _size_txt(d.get("size"))
+        elif d["status"] == "unreadable":
+            meta = '<span class="faint">not read</span>'
         else:
-            with c1:
-                if st.button("Grab", key=f"grab_{tab_key}_{sid}", use_container_width=True, type="primary"):
-                    _claim(opp, CURRENT_USER)
-                    _flash(f"Grabbed — {opp.get('title', '')[:60]} is on My desk", icon="✋")
-                    st.rerun()
-            with c2:
-                with st.popover("Skip", use_container_width=True):
-                    reason = st.text_input("Why?", key=f"skip_reason_{tab_key}_{sid}", placeholder="Not a fit — staffing RFP")
-                    if st.button("Confirm skip", key=f"skip_go_{tab_key}_{sid}", use_container_width=True):
-                        _change_status(opp, "skipped", reason or "Skipped", pipeline_status)
-                        _flash(f"Skipped — {opp.get('title', '')[:60]}", icon="⏭️")
-                        st.rerun()
-            if not score:
-                with c3:
-                    if st.button("Get a fit score", key=f"score_{tab_key}_{sid}", use_container_width=True):
-                        _score_one(opp, slot)
-                        st.rerun()
-    elif mode == "archive":
-        if pipeline_status in ("skipped", "expired", "lost") and sid not in OPEN_PURSUITS and CURRENT_USER.get("can_work"):
-            if st.button("Reopen", key=f"reopen_{tab_key}_{sid}"):
-                set_pipeline_status(sid, "new", notes="Reopened from Archive")
-                _flash(f"Reopened — {opp.get('title', '')[:60]}", icon="↩️")
+            meta = f'<span class="alert">couldn\'t read</span>'
+        ext = (Path(d["name"]).suffix.lstrip(".") or "file").upper()[:4]
+        c1, c2 = st.columns([8, 1.4], vertical_alignment="center")
+        c1.markdown(f'<div class="doc"><span class="ext">{_esc(ext)}</span><span class="dname">{_esc(d["name"])}</span>'
+                    f'<span class="dmeta">{meta}</span></div>', unsafe_allow_html=True)
+        f = files.get(d["name"])
+        if f:
+            c2.download_button("Download", data=(lambda p=f: p.read_bytes()), file_name=d["name"], key=f"{k}_dl_{d['name']}",
+                               type="tertiary", on_click="ignore")
+    if CURRENT_USER.get("can_work"):
+        missing = [d for d in docs if d["name"] not in files]
+        failed = [d for d in docs if d["status"] == "failed"]
+        if failed and st.button("Read the failed ones again", key=f"{k}_docs_retry", type="tertiary"):
+            start_reading(opp)
+            _flash("Reading them again", icon="📄")
+            st.rerun()
+        if missing and st.button("Get the files again to download them", key=f"{k}_docs_fetch", type="tertiary"):
+            from oppos.sources.attachments import download_attachments
+            with st.spinner("Getting the files…"):
+                got = download_attachments(opp)
+            _flash(f"Got {len(got)} file{'s' if len(got) != 1 else ''}", icon="📎")
+            st.rerun()
+
+
+# ── Find RFPs: one row per listing ────────────────────────────────────────────
+
+def _row_meta(opp: dict) -> str:
+    state = SOURCE_STATE_MAP.get(opp.get("source", ""), "") or SOURCE_LABELS.get(opp.get("source", ""), "")
+    due = opp.get("response_deadline")
+    phrase = _due_phrase(due)
+    days = None
+    try:
+        from oppos.pursuits import days_until
+        days = days_until(due)
+    except Exception:
+        pass
+    due_html = f'<span class="alert">{_esc(phrase)}</span>' if days is not None and days <= 7 else _esc(phrase)
+    bits = [_esc(b) for b in (state, (opp.get("agency") or "")[:70]) if b] + [due_html]
+    badge = _reg_badge(PORTAL_REGS.get(opp.get("source") or ""))
+    if badge and badge[1] == "reg-bad":
+        bits.append('<span class="faint">no account on this portal</span>')
+    return " · ".join(bits)
+
+
+@st.dialog("Listing", width="large")
+def _listing_dialog(opp: dict) -> None:
+    sid = opp.get("source_id", "")
+    s2 = _parse_json(opp.get("stage2_json"))
+    score = int(_score_of(opp))
+    url = opp.get("url") or ""
+    st.markdown(f'<div class="ws-head"><div><div class="ws-title">{_esc(opp.get("title") or "Untitled")}</div>'
+                f'<div class="ws-sub">{_row_meta(opp)}</div></div>'
+                f'<div class="ws-fit"><b>{score or "–"}</b><span>fit</span></div></div>', unsafe_allow_html=True)
+    if s2.get("summary"):
+        st.markdown(f'<p class="summary">{_esc(s2["summary"])}</p>', unsafe_allow_html=True)
+    with st.container(horizontal=True):
+        if url:
+            st.link_button("Open the listing", url)
+        _pool_actions(opp, f"dlg_{sid}", primary=True, in_dialog=True)
+    reasons = _fit_reasons_html(s2)
+    if reasons:
+        st.markdown(reasons, unsafe_allow_html=True)
+    st.markdown('<div class="rs-head" style="margin-top:14px">Documents</div>', unsafe_allow_html=True)
+    _render_documents(opp, f"dlg_{sid}", auto=False)
+    st.markdown(_listing_facts_html(opp), unsafe_allow_html=True)
+    _full_analysis(opp, s2)
+
+
+def _pool_actions(opp: dict, k: str, primary: bool, in_dialog: bool = False) -> None:
+    """Grab and Skip (or Reopen in the archive). Grabbing starts reading the documents in the background."""
+    from oppos.pursuits import claim_opportunity as _claim
+    sid = opp.get("source_id", "")
+    status = opp.get("pipeline_status") or "new"
+    if not CURRENT_USER.get("can_work"):
+        return
+    if status in ("won", "lost", "skipped", "expired"):
+        if status != "won" and sid not in OPEN_PURSUITS and st.button("Reopen", key=f"{k}_reopen"):
+            set_pipeline_status(sid, "new", notes="Reopened from Archive")
+            _flash(f"Reopened — {opp.get('title', '')[:60]} is open again", icon="↩️")
+            st.rerun()
+        return
+    if st.button("Grab", key=f"{k}_grab", type="primary" if primary else "secondary"):
+        _claim(opp, CURRENT_USER)
+        from oppos.sources.rfp_documents import start_reading
+        start_reading(opp)
+        _flash(f"Grabbed — {opp.get('title', '')[:60]} is on My desk. Its documents are being read.", icon="✋")
+        st.rerun()
+    with st.popover("Skip", type="tertiary"):
+        reason = st.text_input("Why skip it?", key=f"{k}_skip_reason", placeholder="Not a fit — staffing RFP")
+        if st.button("Skip it", key=f"{k}_skip_go"):
+            _change_status(opp, "skipped", reason or "Skipped", status)
+            _flash(f"Skipped — {opp.get('title', '')[:60]}", icon="⏭️")
+            st.rerun()
+    if in_dialog and not _score_of(opp) and st.button("Get a fit score", key=f"{k}_score", type="tertiary"):
+        _score_one(opp, st.container())
+        st.rerun()
+
+
+def _pool_row(opp: dict, k: str, primary: bool) -> None:
+    sid = opp.get("source_id", "")
+    s2 = _parse_json(opp.get("stage2_json"))
+    score = int(_score_of(opp))
+    status = opp.get("pipeline_status") or "new"
+    with st.container(key=f"row_{k}_{sid}"):
+        c0, c1, c2 = st.columns([0.55, 7, 2.1], vertical_alignment="center")
+        c0.markdown(f'<div class="score{"" if score >= 50 else " low"}">{score or "–"}</div>', unsafe_allow_html=True)
+        with c1:
+            if st.button(opp.get("title") or "Untitled", key=f"{k}_open_{sid}", type="tertiary"):
+                _listing_dialog(opp)
+            meta = _row_meta(opp)
+            if status in ("won", "lost", "skipped", "expired"):
+                when = str(opp.get("pipeline_updated_at") or opp.get("updated_at") or "")[:10]
+                meta = f'{_esc(PIPELINE_LABELS.get(status, status))} {when} · ' + meta
+            why = s2.get("summary") or ""
+            st.markdown(f'<div class="rmeta">{meta}</div>' + (f'<div class="rwhy">{_esc(why)}</div>' if why else ""), unsafe_allow_html=True)
+        with c2, st.container(horizontal=True, horizontal_alignment="right"):
+            _pool_actions(opp, f"{k}_{sid}", primary)
+
+
+# ── Pursuit workspace ─────────────────────────────────────────────────────────
+
+_REG_SHORT = {"unknown": "Not checked", "not_registered": "No account", "in_progress": "Requested", "registered": "Registered"}
+_MANUAL_CHECKLIST = ("questions", "salesforce", "security", "pricing", "legal", "final")  # the rest the app knows itself
+
+
+def _render_facts(opp: dict, pursuit: dict, draft: dict | None, can_edit: bool, k: str) -> None:
+    """How to submit — each fact once: due, where, our account on the portal, format, contact, next step."""
+    from oppos.pursuits import days_until, save_pursuit_fields
+    from oppos.storage.db import upsert_portal_registration
+    sid = opp.get("source_id", "")
+    sub = (draft or {}).get("submission") or {}
+    method = (pursuit.get("submission_method") or "unknown").lower()
+    if method == "unknown" and str(sub.get("method") or "").lower() in ("portal", "email", "mail", "in_person"):
+        method = str(sub["method"]).lower()
+    portal_key = str(pursuit.get("portal") or opp.get("source") or "")
+    reg = PORTAL_REGS.get(portal_key) or {}
+    portal_name = reg.get("display_name") or SOURCE_LABELS.get(opp.get("source", ""), "")
+    listing = f' · <a href="{_esc(opp["url"])}" target="_blank">open the listing</a>' if opp.get("url") else ""
+    if (reg.get("status") or "unknown") in ("unknown", "not_registered") and PORTAL_ACCESS_REQUEST_URL and portal_key != "manual":
+        listing += f' · <a href="{_esc(PORTAL_ACCESS_REQUEST_URL)}" target="_blank">request an account</a>'
+
+    due_raw = pursuit.get("submission_deadline") or opp.get("response_deadline")
+    dleft = days_until(due_raw)
+    due = _esc(_due_phrase(due_raw))
+    if dleft is not None and dleft <= 7:
+        due = f'<span class="alert">{due}</span>'
+    qa = pursuit.get("qa_deadline") or sub.get("questions_deadline")
+    if qa:
+        due += f" · questions by {_esc(str(qa)[:40])}"
+
+    if method == "portal":
+        where = f"{_esc(portal_name) or 'The portal'}{listing}"
+    elif method == "email":
+        to = str(sub.get("email_to") or opp.get("contact_email") or "")
+        where = (f'Email to <a href="mailto:{_esc(to)}">{_esc(to)}</a>' if to else '<span class="alert">By email; the address isn\'t known yet</span>')
+        if sub.get("email_subject"):
+            where += f' · subject line <code>{_esc(str(sub["email_subject"]))}</code>'
+    elif method == "mail":
+        where = "By mail or hand delivery" + (f" · {_esc(opp.get('office') or '')}" if opp.get("office") else "")
+    elif method == "in_person":
+        where = "In person" + (f" · {_esc(opp.get('office') or '')}" if opp.get("office") else "")
+    else:
+        where = f'<span class="alert">Not known yet</span>{listing}'
+
+    fmt = [str(x) for x in (sub.get("format_requirements") or []) if not str(x).lower().startswith("required form")][:3]
+    forms = [str(x) for x in ((draft or {}).get("required_forms") or [])][:4]
+    contact = " · ".join(_esc(str(c)) for c in (opp.get("contact_name"), opp.get("contact_email"), opp.get("contact_phone")) if c)
+
+    def rows_html(rows: list[tuple[str, str]]) -> str:
+        return "".join(f'<div class="fact"><span>{l}</span><div>{v}</div></div>' for l, v in rows)
+
+    with st.container(key=f"facts_{k}"):
+        st.markdown(rows_html([("Due", due), ("Submit on" if method in ("portal", "unknown") else "Submit", where)]), unsafe_allow_html=True)
+        if method in ("portal", "unknown") and portal_key and portal_key != "manual":
+            cur = reg.get("status") or pursuit.get("registration_status") or "unknown"
+            choice = cur
+            if cur == "not_required":
+                st.markdown('<div class="fact"><span>Our account</span><div>Not needed on this portal</div></div>', unsafe_allow_html=True)
+            else:
+                with st.container(horizontal=True, vertical_alignment="center", gap="medium", key=f"acct_{k}"):
+                    st.markdown('<div class="fact-label">Our account</div>', unsafe_allow_html=True, width=110)
+                    choice = st.segmented_control("Our account", list(_REG_SHORT), default=cur, format_func=_REG_SHORT.get, width="content",
+                                                  key=f"{k}_reg", label_visibility="collapsed", disabled=not CURRENT_USER.get("can_work"))
+            if choice and choice != cur:
+                upsert_portal_registration(portal_key, status=choice)
+                save_pursuit_fields(sid, CURRENT_USER, registration_status=choice)
+                _flash(f"{portal_name or 'Portal'}: {_REG_SHORT[choice].lower()} — applies to every RFP from it", icon="✅")
+                st.rerun()
+        more = []
+        if fmt or forms:
+            more.append(("Format", _esc("; ".join(fmt + (["Forms: " + ", ".join(forms)] if forms else [])))))
+        more.append(("Contact", contact or '<span class="alert">Not in the listing yet</span>'))
+        if pursuit.get("next_action"):
+            more.append(("Next step", _esc(pursuit["next_action"][:200])))
+        st.markdown(rows_html(more), unsafe_allow_html=True)
+        if can_edit:
+            _edit_details_popover(opp, pursuit, k)
+
+
+def _edit_details_popover(opp: dict, pursuit: dict, k: str) -> None:
+    from oppos.pursuits import SUBMISSION_METHODS, deadline_date, save_pursuit_fields
+    sid = opp.get("source_id", "")
+    labels = {"unknown": "Not known yet", "portal": "On a portal", "email": "By email", "mail": "By mail", "in_person": "In person"}
+    with st.popover("Edit details", type="tertiary"):
+        c1, c2 = st.columns(2)
+        sub_dl = c1.date_input("Due", value=deadline_date(pursuit.get("submission_deadline") or opp.get("response_deadline")), key=f"{k}_sub", format="YYYY-MM-DD")
+        qa_dl = c2.date_input("Questions due", value=deadline_date(pursuit.get("qa_deadline")), key=f"{k}_qa", format="YYYY-MM-DD")
+        _m = pursuit.get("submission_method") or "unknown"
+        method = st.selectbox("How it's submitted", SUBMISSION_METHODS, index=SUBMISSION_METHODS.index(_m) if _m in SUBMISSION_METHODS else 0,
+                              format_func=lambda v: labels.get(v, v), key=f"{k}_method")
+        nxt = st.text_input("Next step", value=pursuit.get("next_action") or "", key=f"{k}_next", placeholder="Send questions by Friday")
+        owner_email = owner_name = None
+        if CURRENT_USER.get("is_admin"):
+            o1, o2 = st.columns(2)
+            owner_email = o1.text_input("Owner email", value=pursuit.get("owner_email") or "", key=f"{k}_owner")
+            owner_name = o2.text_input("Owner name", value=pursuit.get("owner_name") or "", key=f"{k}_owner_name")
+        if st.button("Save", key=f"{k}_save", type="primary"):
+            fields = dict(submission_deadline=sub_dl.isoformat() if sub_dl else None, qa_deadline=qa_dl.isoformat() if qa_dl else None,
+                          submission_method=method, next_action=nxt.strip() or None)
+            if owner_email is not None:
+                fields.update(owner_email=owner_email.strip().lower() or None, owner_name=(owner_name or "").strip() or None)
+            save_pursuit_fields(sid, CURRENT_USER, **fields)
+            _flash("Details saved")
+            st.rerun()
+
+
+def _next_step(opp: dict, pursuit: dict, draft: dict | None, k: str, slot) -> None:
+    """The one yellow button for the stage, then More."""
+    from oppos.outputs.slack_alerts import build_sdr_message
+    from oppos.pursuits import release_claim, transition_pursuit
+    title = opp.get("title") or "Untitled"
+    stage = pursuit.get("status") or "active"
+    npid = pursuit.get("notion_page_id") or opp.get("notion_page_id")
+
+    def submitted_form(key: str) -> None:
+        note = st.text_input("Submission note", key=f"{key}_note", placeholder="Submitted on the portal, confirmation #…")
+        if st.button("Mark submitted", key=f"{key}_go", type="primary"):
+            transition_pursuit(opp, "submitted", CURRENT_USER, note)
+            _flash(f"Submitted — {title[:60]}", icon="📨")
+            st.rerun()
+
+    if stage == "evaluating":
+        if st.button("Start pursuing", key=f"{k}_start", type="primary"):
+            with slot:
+                _pursue_opportunity(opp, reason=pursuit.get("reason") or "")
+            st.rerun()
+    elif stage == "active" and not draft:
+        if st.button("Draft response", key=f"{k}_draft", type="primary"):
+            with slot:
+                _run_draft(opp, pursuit)
+            st.rerun()
+    elif stage == "active":
+        with st.popover("Mark submitted", type="primary"):
+            submitted_form(f"{k}_sub1")
+    else:
+        with st.popover("Record outcome", type="primary"):
+            outcome = st.radio("Outcome", ["won", "lost"], horizontal=True, key=f"{k}_outcome", format_func=str.title)
+            out_note = st.text_input("Notes", key=f"{k}_out_note", placeholder="Award details, competitor, debrief…")
+            if st.button("Save outcome", key=f"{k}_out_go", type="primary"):
+                transition_pursuit(opp, outcome, CURRENT_USER, out_note)
+                _flash(f"{outcome.title()} — {title[:60]}", icon="🏁")
                 st.rerun()
 
-    _s1 = _parse_json(opp.get("stage1_json"))
-    _filtered = bool(_s1 and not _s1.get("relevant") and not s2)
+    with st.popover("More"):
+        if stage == "evaluating":
+            if st.button("Put it back in Find RFPs", key=f"{k}_release"):
+                release_claim(opp, CURRENT_USER)
+                _flash(f"Put back — {title[:60]} is in Find RFPs again", icon="↩️")
+                st.rerun()
+        if stage == "active" and draft:
+            if st.button("Write the draft again", key=f"{k}_redraft"):
+                with slot:
+                    _run_draft(opp, pursuit)
+                st.rerun()
+            if npid:
+                _render_notion_append(opp, pursuit, draft, npid, k, slot)
+        if stage == "active" and not draft:
+            st.markdown('<div class="rs-head">Already submitted?</div>', unsafe_allow_html=True)
+            submitted_form(f"{k}_sub2")
+        if stage != "evaluating":
+            if st.button("Update the Notion page" if npid else "Create the Notion page", key=f"{k}_push"):
+                with slot:
+                    _push_to_notion(opp)
+            st.markdown('<div class="rs-head">Salesforce opportunity request (paste in the SDR channel)</div>', unsafe_allow_html=True)
+            st.code(build_sdr_message(opp), language=None)
+        if stage == "active":
+            ab_reason = st.text_input("Abandon — why?", key=f"{k}_ab_reason", placeholder="Timeline too tight, requirements changed…")
+            if st.button("Abandon this pursuit", key=f"{k}_ab_go"):
+                transition_pursuit(opp, "abandoned", CURRENT_USER, ab_reason)
+                _flash(f"Abandoned — {title[:60]}", icon="🗑️")
+                st.rerun()
 
-    def _details() -> None:
-        if score:
-            st.caption(f"Fit {score}/100 — how well this matches what Nutrient sells, judged from the listing"
-                       + (" and its documents." if opp.get("attachment_text") else ". Scanning its documents (below) makes the score more reliable."))
-        if _filtered:
-            st.markdown(f'<div class="risk-item">Set aside by the first pass as not relevant — {_esc(_s1.get("reason", ""))}. '
-                        f'Use "Get a fit score" if you disagree.</div>', unsafe_allow_html=True)
-        elif not s2:
-            st.caption("Not scored yet — use \"Get a fit score\" to see how well it matches what we sell.")
-        if s2:
-            facts = [(l, v) for l, v in (("Pattern", s2.get("pattern_match")), ("Industry", s2.get("industry")),
-                                          ("Similar win", s2.get("similar_win")), ("Deployment", s2.get("deployment_recommendation")),
-                                          ("Recommendation", s2.get("recommended_action"))) if v and v != "other"]
-            if facts:
-                st.markdown('<div class="detail-grid">' + "".join(
-                    f'<div class="detail-item"><div class="detail-label">{_esc(l)}</div><div class="detail-value">{_esc(str(v))}</div></div>'
-                    for l, v in facts) + "</div>", unsafe_allow_html=True)
-            col_s, col_r = st.columns(2)
-            with col_s:
-                for s in s2.get("strengths") or []:
-                    st.markdown(f'<div class="strength-item">+ {_esc(point_claim(s))}</div>{_evidence_html(s)}', unsafe_allow_html=True)
-            with col_r:
-                for r in s2.get("risks") or []:
-                    st.markdown(f'<div class="risk-item">- {_esc(point_claim(r))}</div>{_evidence_html(r)}', unsafe_allow_html=True)
-            for g in s2.get("knowledge_gaps") or []:
-                st.markdown(f'<div class="gap-item">? {_esc(str(g))}</div>', unsafe_allow_html=True)
-            if s2.get("competitive_notes"):
-                st.caption(f"Competitive: {s2['competitive_notes']}")
 
-        dc1, dc2 = st.columns(2)
-        with dc1:
-            contact = [opp.get("contact_name"), opp.get("contact_email"), opp.get("contact_phone")]
-            lines = [f'<div class="contact-row">{_esc(str(c))}</div>' for c in contact if c] or ['<div class="contact-row" style="color:var(--text-tertiary);">No contact listed</div>']
-            extra = [(l, v) for l, v in (("Location", opp.get("place_of_performance")), ("Office", opp.get("office")),
-                                          ("NAICS", opp.get("naics_code")), ("Set-aside", opp.get("set_aside")),
-                                          ("Notice", opp.get("notice_type"))) if v]
-            st.markdown('<div class="detail-label" style="margin-bottom:6px;">Contact</div>' + "".join(lines)
-                        + "".join(f'<div class="detail-value" style="margin-top:6px;"><span class="detail-label">{_esc(l)}</span> {_esc(str(v))}</div>' for l, v in extra),
-                        unsafe_allow_html=True)
-        with dc2:
-            posted = opp.get("posted_date")
-            st.markdown(f'<div class="detail-label" style="margin-bottom:6px;">Dates</div>'
-                        f'<div class="detail-value">Posted {posted[:10] if posted else "unknown"} · {_esc(dl_txt)}</div>'
-                        f'<div class="detail-value" style="margin-top:6px;"><span class="detail-label">Source</span> {_esc(SOURCE_LABELS.get(opp.get("source", ""), opp.get("source", "")))}</div>'
-                        f'<div class="detail-value" style="margin-top:6px;"><span class="detail-label">Share</span> '
-                        f'<a href="{_esc(_app_link("desk" if mode == "desk" else "", sid))}">link to this {"pursuit" if mode == "desk" else "listing"} in OppOS</a></div>',
-                        unsafe_allow_html=True)
-        desc = opp.get("description") or ""
-        if desc:
-            st.markdown(f'<div class="detail-label" style="margin-top:12px;margin-bottom:6px;">Description</div>'
-                        f'<div class="detail-value" style="line-height:1.6;">{_esc(desc[:2000])}</div>', unsafe_allow_html=True)
+def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
+    """One pursuit: header, journey with the next step, how to submit, then Response / RFP and documents / Notes."""
+    import json as _json
+    from oppos.outputs.slack_pursuits import channel_url
+    from oppos.pursuits import CHECKLIST, checklist_state, save_pursuit_fields
+    from oppos.storage.db import get_documents
 
-        if mode != "archive":
-            st.markdown('<div class="detail-label" style="margin-top:14px;margin-bottom:6px;">Documents</div>', unsafe_allow_html=True)
-            _render_deep_scan(opp, tab_key, slot)
-        att_dir = _att_dir(sid)
-        files = sorted(f for f in att_dir.iterdir() if f.is_file()) if att_dir.is_dir() else []
-        if files:
-            fc = st.columns(min(len(files), 4))
-            for i, f in enumerate(files):
-                with fc[i % len(fc)], open(f, "rb") as fh:
-                    st.download_button(f.name[:28], data=fh.read(), file_name=f.name, key=f"dl_{tab_key}_{sid}_{f.name}", use_container_width=True)
+    sid = opp.get("source_id", "")
+    k = f"pp_{sid}"
+    stage = pursuit.get("status") or "active"
+    can_edit = bool(CURRENT_USER.get("is_admin")) or (pursuit.get("owner_email") or "").lower() == CURRENT_USER["email"]
+    owner = pursuit.get("owner_name") or pursuit.get("owner_email") or "Unassigned"
+    draft = _parse_json(pursuit.get("draft_json")) or None
+    s2 = _parse_json(opp.get("stage2_json"))
+    npid = pursuit.get("notion_page_id") or opp.get("notion_page_id")
+    state = SOURCE_STATE_MAP.get(opp.get("source", ""), "") or SOURCE_LABELS.get(opp.get("source", ""), "")
+    title = _esc(opp.get("title") or "Untitled")
+    title_html = f'<a href="{_esc(opp["url"])}" target="_blank">{title}</a>' if opp.get("url") else title
+    links = [f'<a href="{_esc(_app_link("desk", sid))}">Link to this pursuit</a>']
+    if npid:
+        links.append(f'<a href="https://notion.so/{str(npid).replace("-", "")}" target="_blank">Notion</a>')
+    if pursuit.get("slack_channel_id"):
+        links.append(f'<a href="{channel_url(pursuit["slack_channel_id"])}" target="_blank">#{_esc(pursuit.get("slack_channel_name") or "slack")}</a>')
+    st.markdown(
+        f'<div class="ws-head"><div><div class="ws-title">{title_html}</div>'
+        f'<div class="ws-sub">{_esc(" · ".join(b for b in (state, opp.get("agency") or "", owner) if b))}</div>'
+        f'<div class="ws-links">{"".join(links)}</div></div>'
+        f'<div class="ws-fit"><b>{int(_score_of(opp)) or "–"}</b><span>fit</span></div></div>', unsafe_allow_html=True)
 
-    if details:
-        with st.expander("Details"):
-            _details()
-    return _details
+    steps = [("evaluating", "Grabbed"), ("active", "Pursuing"), ("submitted", "Submitted"), ("decided", "Decided")]
+    cur = next((i for i, (s, _) in enumerate(steps) if s == stage), 3)
+    journey = '<div class="journey">' + '<i></i>'.join(
+        f'<span class="step{" done" if i < cur else " now" if i == cur else ""}">{lbl}</span>' for i, (_, lbl) in enumerate(steps)) + "</div>"
+    j1, j2 = st.columns([3, 2.2], vertical_alignment="center")
+    j1.markdown(journey, unsafe_allow_html=True)
+    slot = st.container()  # long operations report here, full width
+    with j2, st.container(horizontal=True, horizontal_alignment="right"):
+        if can_edit:
+            _next_step(opp, pursuit, draft, k, slot)
+        else:
+            st.caption(f"{owner}'s pursuit")
+
+    _render_facts(opp, pursuit, draft, can_edit, k)
+
+    docs = get_documents(sid)
+    # Fixed labels: a label that changes (a count) makes Streamlit treat it as a new tab and jump back to the first.
+    t_resp, t_rfp, t_notes = st.tabs(["Response", "RFP and documents", "Notes and activity"])
+    with t_resp:
+        _render_response(opp, pursuit, draft, k)
+    with t_rfp:
+        _render_documents(opp, k, auto=True, docs=docs)
+        if s2.get("summary"):
+            st.markdown(f'<p class="summary">{_esc(s2["summary"])}</p>', unsafe_allow_html=True)
+        reasons = _fit_reasons_html(s2)
+        if reasons:
+            st.markdown(reasons, unsafe_allow_html=True)
+        st.markdown(_listing_facts_html(opp), unsafe_allow_html=True)
+        _full_analysis(opp, s2)
+    with t_notes:
+        state_ = checklist_state(pursuit)
+        items = [(key, label) for key, label in CHECKLIST if key in _MANUAL_CHECKLIST]
+        st.markdown('<div class="rs-head">Checklist</div>', unsafe_allow_html=True)
+        cols = st.columns(2)
+        new_state = dict(state_)
+        for i, (key, label) in enumerate(items):
+            with cols[i % 2]:
+                new_state[key] = st.checkbox(label, value=state_[key], key=f"{k}_ck_{key}", disabled=not can_edit)
+        if can_edit and new_state != state_:
+            save_pursuit_fields(sid, CURRENT_USER, checklist_json=_json.dumps(new_state))
+            st.rerun()
+        st.markdown('<div class="rs-head" style="margin-top:16px">Activity</div>', unsafe_allow_html=True)
+        if not events:
+            st.markdown('<p class="muted">Nothing yet.</p>', unsafe_allow_html=True)
+        for ev in events:
+            ts = str(ev.get("ts") or "")[:16].replace("T", " ")
+            who = str(ev.get("actor") or "").split("@")[0]
+            st.markdown(f'<div class="event"><span>{_esc(ts)}</span>{_esc(who)} · {_esc(str(ev.get("kind") or "").replace("_", " "))}'
+                        f'{" — " + _esc(str(ev.get("detail"))[:200]) if ev.get("detail") else ""}</div>', unsafe_allow_html=True)
+
+
+def _render_response(opp: dict, pursuit: dict, draft: dict | None, k: str) -> None:
+    """The draft: what needs a person first, the Word file and the editor, then every answer folded away."""
+    if not draft:
+        stage = pursuit.get("status") or "active"
+        st.markdown('<p class="muted">' + ("No draft yet. Draft response (above) writes a first answer to every requirement, reading the RFP and its documents."
+                                           if stage == "active" else "Start pursuing first; then Draft response writes the first draft.") + "</p>",
+                    unsafe_allow_html=True)
+        return
+    from oppos.dashboard.docauth import response_editor
+    from oppos.drafting.document import file_stem, render_markdown
+    from oppos.drafting.docx_export import markdown_to_docx
+    reqs = draft.get("requirements") or []
+    stats = draft.get("stats") or {}
+    when = str(draft.get("generated_at", ""))[:10]
+    try:
+        when = datetime.fromisoformat(when).strftime("%b %-d")
+    except ValueError:
+        pass
+    needs = [r for r in reqs if "needs_human" in (r.get("basis") or [])]  # the drafter's own count (stats.needs_human)
+    reg = PORTAL_REGS.get(str(pursuit.get("portal") or "")) or {}
+    stem = file_stem(opp)
+    open_key = f"{k}_doc_open"
+    md = render_markdown(draft, opp, author=CURRENT_USER.get("name", ""), pursuit=dict(pursuit, portal_name=reg.get("display_name") or ""))
+    subject = " — ".join(x for x in ((opp.get("agency") or "").strip(), (opp.get("solicitation_number") or "").strip()) if x) or (opp.get("title") or "")[:60]
+
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.markdown(f'<p class="draftline"><b>Draft from {_esc(when)}.</b> {stats.get("requirements", len(reqs))} answers, '
+                    f'{len(needs)} need you.' + (" Appended to Notion." if (draft.get("notion_append") or {}).get("complete") else "") + "</p>",
+                    unsafe_allow_html=True)
+        st.download_button("Download Word", data=lambda: markdown_to_docx(md, subject=subject, author=CURRENT_USER.get("name", "")),
+                           file_name=f"{stem}.docx", key=f"{k}_doc_docx", on_click="ignore",
+                           mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        if st.button("Close the editor" if st.session_state.get(open_key) else "Edit or export PDF", key=f"{k}_doc_toggle", type="tertiary"):
+            st.session_state[open_key] = not st.session_state.get(open_key)
+            st.rerun()
+    if st.session_state.get(open_key):
+        response_editor(md, stem, DOCAUTH_LICENSE_KEY, viewer_license_key=VIEWER_LICENSE_KEY,
+                        docx=markdown_to_docx(md, subject=subject, author=CURRENT_USER.get("name", "")))
+    if needs:
+        st.markdown('<div class="todo">' + "".join(
+            f'<div class="todo-row"><span class="tid">{_esc(r.get("id", ""))}</span><div>{_esc(str(r.get("text", ""))[:160])}'
+            f'<div class="twhy">{_esc(str(r.get("human_todo") or "Low confidence — check this answer")[:220])}</div></div></div>'
+            for r in needs) + "</div>", unsafe_allow_html=True)
+    with st.expander(f"Every answer ({len(reqs)})"):
+        if draft.get("executive_summary"):
+            st.markdown('<div class="rs-head">Executive summary</div>', unsafe_allow_html=True)
+            st.write(draft["executive_summary"])
+        for r in reqs:
+            st.markdown(f'<div class="ans-head">{_esc(r.get("id", ""))}{" · " + _esc(r["section"]) if r.get("section") else ""}'
+                        f'<span>{_esc(str(r.get("confidence", "")))} confidence</span></div>'
+                        f'<div class="ans-req">{_esc(r.get("text", ""))}</div>', unsafe_allow_html=True)
+            st.write(r.get("response", ""))
+        for head, key in (("Questions to ask the agency", "open_questions"), ("Assumptions", "assumptions"), ("Do not claim", "do_not_claim")):
+            if draft.get(key):
+                st.markdown(f'<div class="rs-head">{head}</div><ul class="plain">' + "".join(f"<li>{_esc(x)}</li>" for x in draft[key]) + "</ul>",
+                            unsafe_allow_html=True)
+
 
 
 def render_empty(message: str) -> None:
@@ -1845,38 +1384,18 @@ def _run_draft(opp: dict, pursuit: dict) -> None:
     title = opp.get("title", "Untitled")
     comp = compliance_status()
     with st.status(f"Drafting response: {title[:50]}…", expanded=True) as status:
+        from oppos.sources.rfp_documents import local_files, read_rfp_documents
+        st.write("📄 Reading the RFP's documents…")
+        res = read_rfp_documents(opp, on_progress=lambda name, i, n: st.write(f"   {i + 1}/{n} {name}"))
         att = opp.get("attachment_text") or ""
-        att_dir = _att_dir(sid)
-        if not (att_dir.is_dir() and any(f.is_file() for f in att_dir.iterdir())):
-            # Nobody loaded the documents yet (or Cloud's disk was reset): fetch them now so the draft reads the RFP.
-            from oppos.sources.attachments import download_attachments
-            st.write("📎 Loading the RFP documents…")
-            try:
-                got = download_attachments(opp)
-            except Exception as e:
-                got = []
-                st.write(f"⚠️ Could not load the documents — {type(e).__name__}: {e}")
-            if got:
-                st.write(f"✓ Loaded {len(got)} document(s): " + ", ".join(p.name for p in got[:6]) + (" …" if len(got) > 6 else ""))
-        if not att and att_dir.is_dir():
-            from oppos.sources.extract_text import SCANNABLE_EXTENSIONS, extract_text_from_attachments
-            from oppos.storage.db import _execute
-            files = sorted(f for f in att_dir.iterdir() if f.is_file() and f.suffix.lower() in SCANNABLE_EXTENSIONS)
-            if files:
-                st.write(f"🔍 Reading {len(files)} document(s)…")
-                att = extract_text_from_attachments(files)
-                if att:
-                    opp["attachment_text"] = att
-                    # Keep the text so the next draft or re-score doesn't read the documents (and spend credits) again.
-                    _execute("UPDATE opportunities SET attachment_text=? WHERE source_id=?", (att, sid))
-        st.write(f"📄 Using the RFP description" + (f" and {len(att):,} characters from its documents" if att
-                                                     else " only — this listing has no documents OppOS can fetch"))
+        st.write(f"📄 Using the RFP description" + (f" and {res['read']} document{'s' if res['read'] != 1 else ''}" if res["read"]
+                                                     else " only — no documents came with this listing"))
         st.write("🔒 Security items get the Trust Center standard answer (NDA access on request); explicit asks for a specific statement or artifact are "
                  + ("answered from the approved compliance file" if comp["approved"] else "marked [SECURITY TO CONFIRM]"))
 
         # Dogfood: Nutrient Data Extraction API maps the RFP PDFs to a requirements schema with page citations.
         extracted = None
-        pdfs = sorted(f for f in att_dir.iterdir() if f.is_file() and f.suffix.lower() == ".pdf") if att_dir.is_dir() else []
+        pdfs = [f for f in local_files(sid) if f.suffix.lower() == ".pdf"]
         if pdfs:
             from oppos.drafting.extraction import extract_rfp_requirements, extraction_available
             if extraction_available():
@@ -1917,314 +1436,6 @@ def _run_draft(opp: dict, pursuit: dict) -> None:
            + (" · output was truncated (raise DRAFT_MAX_TOKENS)" if draft.get("truncated") else ""), icon="✍️")
 
 
-def _submission_html(opp: dict, pursuit: dict, draft: dict | None) -> str:
-    """'How to submit' for one pursuit: where (portal + registration, email, or mail), when (due, questions),
-    who (contact), what (format, forms). Pursuit details win; the RFP documents (draft extraction) fill the gaps;
-    whatever is still unknown is named so the person knows what to find out."""
-    from oppos.pursuits import REGISTRATION_LABELS
-    sub = (draft or {}).get("submission") or {}
-    method = (pursuit.get("submission_method") or "unknown").lower()
-    from_docs = False
-    if method == "unknown" and str(sub.get("method") or "").lower() in ("portal", "email", "mail", "in_person"):
-        method, from_docs = str(sub["method"]).lower(), True
-    reg = PORTAL_REGS.get(str(pursuit.get("portal") or opp.get("source") or "")) or {}
-    portal_name = reg.get("display_name") or SOURCE_LABELS.get(opp.get("source", ""), "") or ""
-    portal_url = reg.get("url") or opp.get("url") or ""
-    contact = [opp.get("contact_name"), opp.get("contact_email"), opp.get("contact_phone")]
-    missing = []
-
-    # where
-    if method == "portal":
-        where = f"On the portal{': ' + _esc(portal_name) if portal_name else ''}"
-        if portal_url:
-            where += f' · <a href="{_esc(portal_url)}" target="_blank">open ↗</a>'
-        reg_status = pursuit.get("registration_status") or reg.get("status") or "unknown"
-        _request = (f' · <a href="{_esc(PORTAL_ACCESS_REQUEST_URL)}" target="_blank">request an account ↗</a>'
-                    if PORTAL_ACCESS_REQUEST_URL else "")
-        if reg_status in ("registered", "not_required"):
-            where += f' · <span class="sub-ok">{_esc(REGISTRATION_LABELS.get(reg_status, reg_status))}</span>'
-        elif reg_status == "unknown":
-            where += ' · <span class="sub-warn">registration status unknown</span> — check whether we have an account' + _request
-        elif reg_status == "in_progress":
-            where += ' · <span class="sub-warn">account requested, pending</span>'
-        else:
-            lead = reg.get("lead_time_days")
-            where += (f' · <span class="sub-bad">No account yet{f", allow ~{int(lead)} days" if lead else ""}</span>'
-                      + (_request or " — ask an admin to add the service desk link (PORTAL_ACCESS_REQUEST_URL)"))
-        if reg.get("login_owner"):
-            where += f" · login held by {_esc(str(reg['login_owner']))}"
-    elif method == "email":
-        to = str(sub.get("email_to") or opp.get("contact_email") or "")
-        where = "By email" + (f' to <a href="mailto:{_esc(to)}">{_esc(to)}</a>' if to else "")
-        if sub.get("email_subject"):
-            where += f' · subject line must be <code>{_esc(str(sub["email_subject"]))}</code>'
-        if sub.get("delivery"):
-            where += f" · {_esc(str(sub['delivery'])[:160])}"
-        if not to:
-            missing.append("the address to send it to")
-    elif method == "mail":
-        where = "By mail / hand delivery" + (f" · {_esc(opp.get('office') or opp.get('place_of_performance') or '')}" if (opp.get("office") or opp.get("place_of_performance")) else "")
-    elif method == "in_person":
-        where = "In person" + (f" · {_esc(opp.get('office') or '')}" if opp.get("office") else "")
-    else:
-        where = '<span class="sub-warn">Submission method not known yet</span>'
-        if opp.get("url"):
-            where += f' · listing: <a href="{_esc(opp["url"])}" target="_blank">open ↗</a>'
-        missing.append("how it is submitted")
-    if from_docs:
-        where += ' <span class="sub-src">(from the RFP documents)</span>'
-
-    # when
-    due = pursuit.get("submission_deadline") or (opp.get("response_deadline") or "")[:10]
-    when_bits = []
-    if due:
-        when_bits.append(f"Due {_esc(str(due)[:10])}" + (f" (the RFP says {_esc(str(sub['deadline']))})" if sub.get("deadline") and sub["deadline"] != "unknown" and str(sub["deadline"])[:10] != str(due)[:10] else ""))
-    else:
-        missing.append("the due date")
-    qa = pursuit.get("qa_deadline") or sub.get("questions_deadline") or ""
-    if qa:
-        when_bits.append(f"questions by {_esc(str(qa)[:40])}")
-
-    # who
-    who = " · ".join(_esc(str(c)) for c in contact if c)
-    if not who:
-        missing.append("a contact")
-
-    # what
-    forms = [str(x) for x in ((draft or {}).get("required_forms") or [])][:5]
-    fmt = [str(x) for x in (sub.get("format_requirements") or []) if not str(x).lower().startswith("required form")][:4]  # forms have their own line
-
-    rows = [f'<div><span class="sub-k">Where</span>{where}</div>']
-    if when_bits:
-        rows.append(f'<div><span class="sub-k">When</span>{" · ".join(when_bits)}</div>')
-    if who:
-        rows.append(f'<div><span class="sub-k">Who</span>{who}</div>')
-    if fmt:
-        rows.append(f'<div><span class="sub-k">Format</span>{_esc("; ".join(fmt))}</div>')
-    if forms:
-        rows.append(f'<div><span class="sub-k">Forms</span>{_esc("; ".join(forms))}</div>')
-    if missing:
-        rows.append(f'<div class="sub-missing">Still to find out: {_esc(", ".join(missing))} — fill it in under Pursuit details'
-                    + ("" if draft else ", or draft the response and the RFP documents are read for it") + ".</div>")
-    return '<div class="sub-box"><div class="sub-title">How to submit</div>' + "".join(rows) + "</div>"
-
-
-def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
-    """Workspace for one pursuit: status strip, one action row for its stage, then the checklist, details,
-    response and activity folded away. `events` is this pursuit's slice of the desk's single events query."""
-    import json as _json
-    from oppos.outputs.slack_alerts import build_sdr_message
-    from oppos.outputs.slack_pursuits import channel_url
-    from oppos.pursuits import (
-        CHECKLIST, REGISTRATION_LABELS, REGISTRATION_STATUSES, SUBMISSION_METHODS,
-        checklist_progress, checklist_state, days_until, deadline_date, release_claim as _release_claim,
-        save_pursuit_fields, stage_label as _stage_lbl, transition_pursuit,
-    )
-
-    sid = opp.get("source_id", "")
-    k = f"pp_{sid}"
-    title = opp.get("title") or "Untitled"
-    _stage = pursuit.get("status") or "active"
-    can_edit = bool(CURRENT_USER.get("is_admin")) or (pursuit.get("owner_email") or "").lower() == CURRENT_USER["email"]
-    owner = pursuit.get("owner_name") or pursuit.get("owner_email") or "Unassigned"
-    npid = pursuit.get("notion_page_id") or opp.get("notion_page_id")
-    _draft = _parse_json(pursuit.get("draft_json")) or None
-
-    # ── Where it stands (rendered inside the card) ───────────────
-    due_raw = pursuit.get("submission_deadline") or opp.get("response_deadline")
-    dleft = days_until(due_raw)
-    done, total = checklist_progress(pursuit)
-    if dleft is None:
-        due_txt, due_cls = "No deadline set", "pp-warn"
-    elif dleft < 0:
-        due_txt, due_cls = f"Overdue by {-dleft}d", "pp-bad"
-    else:
-        due_txt, due_cls = ("Due today" if dleft == 0 else f"Due in {dleft}d · {str(due_raw)[:10]}"), ("pp-bad" if dleft <= 3 else "pp-warn" if dleft <= 7 else "pp-ok")
-    reg_status = pursuit.get("registration_status") or "unknown"
-    reg_cls = {"registered": "pp-ok", "not_required": "pp-ok", "in_progress": "pp-warn", "not_registered": "pp-bad"}.get(reg_status, "")
-    links = [f'<a href="{_esc(_app_link("desk", sid))}" title="Link to this pursuit — copy from the address bar or right-click to copy">Link to this</a>']
-    if npid:
-        links.append(f'<a href="https://notion.so/{str(npid).replace("-", "")}" target="_blank">Notion ↗</a>')
-    if pursuit.get("slack_channel_id"):
-        links.append(f'<a href="{channel_url(pursuit["slack_channel_id"])}" target="_blank">#{_esc(pursuit.get("slack_channel_name") or "slack")} ↗</a>')
-    _steps = ["evaluating", "active", "submitted", "decided"]
-    _labels = {"evaluating": "Grabbed", "active": "Pursuing", "submitted": "Submitted", "decided": "Decided"}
-    _cur = _steps.index(_stage) if _stage in _steps else 0
-    journey = '<div class="journey">' + "".join(
-        f'<span class="step {"done" if i < _cur else "current" if i == _cur else ""}">{_labels[st_]}</span>'
-        for i, st_ in enumerate(_steps)) + "</div>"
-    facts = [_esc(owner), f'<span class="{due_cls}">{_esc(_due_phrase(due_raw))}</span>', f"{done}/{total} on the checklist"]
-    if reg_status not in ("unknown", "registered", "not_required"):
-        facts.append(f'<span class="{reg_cls}">{_esc(REGISTRATION_LABELS.get(reg_status, reg_status)).lower()}</span>')
-    strip = (
-        journey
-        + f'<div class="pp-facts">{" · ".join(facts)}<span class="pp-links">{"".join(links)}</span></div>'
-        + (f'<div class="pp-next">Next: {_esc(pursuit["next_action"][:120])}</div>' if pursuit.get("next_action") else "")
-        + _submission_html(opp, pursuit, _draft)
-    )
-
-    def _actions(slot) -> None:
-        # One row, the stage's main action first. Progress of long actions reports into `slot`, full width.
-        if not can_edit:
-            st.caption(f"Owned by {owner}. Actions are available to the owner and admins.")
-            return
-        if _stage == "evaluating":
-            a1, a2, a3 = st.columns([1, 1, 4])
-            with a1:
-                if st.button("Start pursuing", key=f"{k}_start", use_container_width=True, type="primary"):
-                    with slot:
-                        _pursue_opportunity(opp, reason=pursuit.get("reason") or "")
-                    st.rerun()
-            with a2:
-                if st.button("Put it back", key=f"{k}_release", use_container_width=True):
-                    _release_claim(opp, CURRENT_USER)
-                    _flash(f"Put back — {title[:60]} is in Find RFPs again", icon="↩️")
-                    st.rerun()
-            a3.caption("Opens a Notion page and a Slack channel and starts reminders.")
-            return
-        a1, a2, a3, a4 = st.columns([1, 1, 1, 3])
-        if _stage == "active":
-            with a1:
-                if st.button("Regenerate draft" if _draft else "Draft response", key=f"{k}_draft", use_container_width=True, type="secondary" if _draft else "primary"):
-                    with slot:
-                        _run_draft(opp, pursuit)
-                    st.rerun()
-            with a2:
-                with st.popover("Mark submitted", use_container_width=True):
-                    sub_note = st.text_input("Submission note", key=f"{k}_sub_note", placeholder="Submitted via portal, confirmation #…")
-                    if st.button("Confirm submitted", key=f"{k}_sub_go", use_container_width=True, type="primary"):
-                        transition_pursuit(opp, "submitted", CURRENT_USER, sub_note)
-                        _flash(f"Submitted — {title[:60]}", icon="📨")
-                        st.rerun()
-        else:  # submitted — awaiting the agency
-            with a1:
-                with st.popover("Record outcome", use_container_width=True):
-                    outcome = st.radio("Outcome", ["won", "lost"], horizontal=True, key=f"{k}_outcome", format_func=str.title)
-                    out_note = st.text_input("Notes", key=f"{k}_out_note", placeholder="Award details, competitor, debrief…")
-                    if st.button("Save outcome", key=f"{k}_out_go", use_container_width=True, type="primary"):
-                        transition_pursuit(opp, outcome, CURRENT_USER, out_note)
-                        _flash(f"{outcome.title()} — {title[:60]}", icon="🏁")
-                        st.rerun()
-        with a3:
-            with st.popover("More", use_container_width=True):
-                if _draft and npid and _stage == "active":
-                    _render_notion_append(opp, pursuit, _draft, npid, k, slot)
-                if st.button("Re-push to Notion" if npid else "Push to Notion", key=f"{k}_push", use_container_width=True):
-                    with slot:
-                        _push_to_notion(opp)
-                st.markdown('<div class="detail-label" style="margin-top:10px;">Salesforce opportunity — paste to the SDR channel</div>', unsafe_allow_html=True)
-                st.code(build_sdr_message(opp), language=None)
-                if _stage == "active":
-                    st.markdown('<div class="detail-label" style="margin-top:10px;">Abandon</div>', unsafe_allow_html=True)
-                    ab_reason = st.text_input("Why?", key=f"{k}_ab_reason", placeholder="Timeline too tight, requirements changed…")
-                    if st.button("Abandon this pursuit", key=f"{k}_ab_go", use_container_width=True):
-                        transition_pursuit(opp, "abandoned", CURRENT_USER, ab_reason)
-                        _flash(f"Abandoned — {title[:60]}", icon="🗑️")
-                        st.rerun()
-        with a4:
-            if _draft:
-                _st = _draft.get("stats") or {}
-                _when = str(_draft.get("generated_at", ""))[:10]
-                try:
-                    _when = datetime.fromisoformat(_when).strftime("%b %-d")
-                except ValueError:
-                    pass
-                st.caption(f"Draft from {_when} · {_st.get('requirements', 0)} requirements · {_st.get('needs_human', 0)} need your input"
-                           + (" · appended to Notion" if (_draft.get("notion_append") or {}).get("complete") else "") + ". Open it under Response below.")
-            elif _stage == "active":
-                st.caption("Writes a first answer to every requirement, reading the RFP and its documents.")
-
-    _details = render_card(opp, "desk", "desk", extra_meta_html=strip, before_details=_actions, details=False)
-
-    # Portal registration status is team knowledge: let whoever knows it set it from here (see Admin for the full table).
-    _portal_key = str(pursuit.get("portal") or opp.get("source") or "")
-    _preg = PORTAL_REGS.get(_portal_key) or {}
-    if _portal_key and _portal_key != "manual" and (_preg.get("status") or "unknown") in ("unknown", "not_registered", "in_progress") \
-            and CURRENT_USER.get("can_work"):
-        from oppos.storage.db import upsert_portal_registration
-        g1, g2, g3 = st.columns([1.3, 1.3, 3.4], vertical_alignment="center")
-        _pname = _preg.get("display_name") or SOURCE_LABELS.get(_portal_key, _portal_key)
-        with g1:
-            if st.button("We're registered here", key=f"{k}_reg_yes", use_container_width=True):
-                upsert_portal_registration(_portal_key, status="registered")
-                save_pursuit_fields(sid, CURRENT_USER, registration_status="registered")
-                _flash(f"Recorded: Nutrient is registered on {_pname}", icon="✅")
-                st.rerun()
-        with g2:
-            if (_preg.get("status") or "unknown") != "in_progress" and st.button("Account requested", key=f"{k}_reg_req", use_container_width=True):
-                upsert_portal_registration(_portal_key, status="in_progress")
-                save_pursuit_fields(sid, CURRENT_USER, registration_status="in_progress")
-                _flash(f"Recorded: account requested on {_pname}", icon="⏳")
-                st.rerun()
-        g3.caption(f"Portal: {_pname}. Either answer applies to every RFP from it. Vendor ID, who holds the login and lead time: Admin → Portal registrations.")
-
-    # ── Everything else, one tab strip ──────────────────────────
-    t_check, t_resp, t_det, t_pd, t_act = st.tabs([f"Checklist · {done}/{total}", "Response" + (" ✓" if _draft else ""),
-                                                   "About this RFP", "Pursuit details", f"Activity · {len(events)}"])
-    with t_check:
-        state = checklist_state(pursuit)
-        cols = st.columns(3)
-        new_state = {}
-        for i, (key, label) in enumerate(CHECKLIST):
-            with cols[i % 3]:
-                new_state[key] = st.checkbox(label, value=state[key], key=f"{k}_ck_{key}", disabled=not can_edit)
-        if can_edit and new_state != state:
-            save_pursuit_fields(sid, CURRENT_USER, checklist_json=_json.dumps(new_state))
-            st.rerun()
-
-    with t_det:
-        _details()
-
-    with t_pd:
-        if can_edit:
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                owner_email = st.text_input("Owner email", value=pursuit.get("owner_email") or "", key=f"{k}_owner")
-                owner_name = st.text_input("Owner name", value=pursuit.get("owner_name") or "", key=f"{k}_owner_name")
-            with c2:
-                sub_dl = st.date_input("Submission deadline", value=deadline_date(due_raw), key=f"{k}_sub", format="YYYY-MM-DD")
-                qa_dl = st.date_input("Questions deadline", value=deadline_date(pursuit.get("qa_deadline")), key=f"{k}_qa", format="YYYY-MM-DD")
-            with c3:
-                _m = pursuit.get("submission_method") or "unknown"
-                method = st.selectbox("Submission method", SUBMISSION_METHODS,
-                                      index=SUBMISSION_METHODS.index(_m) if _m in SUBMISSION_METHODS else 0, key=f"{k}_method")
-                reg = st.selectbox("Vendor registration", REGISTRATION_STATUSES,
-                                   index=REGISTRATION_STATUSES.index(reg_status) if reg_status in REGISTRATION_STATUSES else 0,
-                                   format_func=lambda v: REGISTRATION_LABELS.get(v, v), key=f"{k}_reg")
-            next_action = st.text_input("Next action", value=pursuit.get("next_action") or "", key=f"{k}_next",
-                                        placeholder="e.g. Submit questions by Friday; confirm vendor registration with ops")
-            if st.button("Save details", key=f"{k}_save"):
-                save_pursuit_fields(
-                    sid, CURRENT_USER,
-                    owner_email=owner_email.strip().lower() or None, owner_name=owner_name.strip() or None,
-                    submission_deadline=sub_dl.isoformat() if sub_dl else None,
-                    qa_deadline=qa_dl.isoformat() if qa_dl else None,
-                    submission_method=method, registration_status=reg, next_action=next_action.strip() or None,
-                )
-                _flash("Pursuit details saved")
-                st.rerun()
-        else:
-            d1, d2, d3 = st.columns(3)
-            d1.markdown(f"**Owner**  \n{_esc(owner)}")
-            d2.markdown(f"**Submission deadline**  \n{_esc(str(due_raw or '—'))[:10]}  \n**Questions deadline**  \n{_esc(str(pursuit.get('qa_deadline') or '—'))}")
-            d3.markdown(f"**Method**  \n{_esc(pursuit.get('submission_method') or 'unknown')}  \n**Registration**  \n{_esc(REGISTRATION_LABELS.get(reg_status, reg_status))}")
-            if pursuit.get("next_action"):
-                st.markdown(f"**Next action**  \n{_esc(pursuit['next_action'])}")
-
-    with t_resp:
-        if _draft:
-            _render_response(opp, pursuit, _draft, k)
-        else:
-            st.caption("No response yet. Draft response (above) writes a first answer to every requirement; the document and the "
-                       "Word / PDF downloads appear here.")
-
-    with t_act:
-        if not events:
-            st.caption("No activity yet.")
-        for ev in events:
-            ts = str(ev.get("ts") or "")[:16].replace("T", " ")
-            st.markdown(f'<div class="pp-event">{_esc(ts)} · <b>{_esc(str(ev.get("kind") or ""))}</b> · '
-                        f'{_esc(str(ev.get("actor") or ""))} — {_esc(str(ev.get("detail") or ""))}</div>', unsafe_allow_html=True)
 
 
 def _render_notion_append(opp: dict, pursuit: dict, _draft: dict, npid: str, k: str, slot) -> None:
@@ -2274,81 +1485,6 @@ def _render_notion_append(opp: dict, pursuit: dict, _draft: dict, npid: str, k: 
                          "earlier batches will not be duplicated.")
 
 
-def _render_response(opp: dict, pursuit: dict, _draft: dict, k: str) -> None:
-    """The drafted answers and the exportable document, in one fold."""
-    _reqs = _draft.get("requirements") or []
-    if True:  # (was a fold; the Response tab is the container now)
-        # The document is the deliverable: open it, edit in place, download as Word or PDF. (It is built from the
-        # draft by the Nutrient Document Authoring SDK in the browser; nothing is uploaded anywhere.)
-        from oppos.dashboard.docauth import response_editor
-        from oppos.drafting.document import file_stem, render_markdown
-        from oppos.drafting.docx_export import markdown_to_docx
-        _reg = PORTAL_REGS.get(str(pursuit.get("portal") or "")) or {}
-        _stem = file_stem(opp)
-        _open_key = f"{k}_doc_open"
-        _md = render_markdown(_draft, opp, author=CURRENT_USER.get("name", ""),
-                              pursuit=dict(pursuit, portal_name=_reg.get("display_name") or ""))
-        _subject = " — ".join(x for x in ((opp.get("agency") or "").strip(), (opp.get("solicitation_number") or "").strip()) if x) or (opp.get("title") or "")[:60]
-        _docx = markdown_to_docx(_md, subject=_subject, author=CURRENT_USER.get("name", ""))  # house layout: logo, footer, margins
-        rc1, rc2, rc3 = st.columns([1, 1, 3])
-        with rc1:
-            st.download_button("Download as Word", data=_docx, file_name=f"{_stem}.docx", key=f"{k}_doc_docx", use_container_width=True, type="primary",
-                               mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        with rc2:
-            if not st.session_state.get(_open_key):
-                if st.button("Open to edit / PDF", key=f"{k}_doc_open_btn", use_container_width=True):
-                    st.session_state[_open_key] = True
-                    st.rerun()
-            elif st.button("Close document", key=f"{k}_doc_close_btn", use_container_width=True):
-                st.session_state[_open_key] = False
-                st.rerun()
-        rc3.caption("Nutrient's response layout: logo, footer with page numbers, our margins and fonts. The Word file is ready to send; "
-                    "open it here to edit in place, preview, or export PDF."
-                    + (" PDF exports carry an evaluation watermark until the licence key is set." if not DOCAUTH_LICENSE_KEY else ""))
-        if st.session_state.get(_open_key):
-            response_editor(_md, _stem, DOCAUTH_LICENSE_KEY, viewer_license_key=VIEWER_LICENSE_KEY, docx=_docx)
-
-        if _draft.get("executive_summary"):
-            st.markdown('<div class="detail-label" style="margin-top:14px;">Executive summary</div>', unsafe_allow_html=True)
-            st.write(_draft["executive_summary"])
-        if _draft.get("win_themes"):
-            st.caption("Win themes: " + " · ".join(_draft["win_themes"]))
-        _sub = _draft.get("submission") or {}
-        st.caption(f"{_draft.get('rfp_type', '')} · submission {_sub.get('method', 'unknown')} · deadline {_sub.get('deadline', 'unknown')}"
-                   + (f" · questions due {_sub['questions_deadline']}" if _sub.get("questions_deadline") else "")
-                   + (" · " + "; ".join(_sub.get("format_requirements", [])[:3]) if _sub.get("format_requirements") else ""))
-        if _draft.get("evaluation_criteria"):
-            st.caption("Evaluation criteria: " + " · ".join(f"{c['criterion']}" + (f" ({c['weight']})" if c.get("weight") else "") for c in _draft["evaluation_criteria"]))
-        if _draft.get("required_forms"):
-            st.caption("Required forms: " + " · ".join(_draft["required_forms"]))
-        _ex = _draft.get("extraction")
-        if _ex and _ex.get("stats"):
-            st.caption(f"Requirements extracted with Nutrient Data Extraction ({_ex.get('mode')}): {_ex['stats']['requirements']} items, "
-                       f"{_ex['stats']['mandatory']} mandatory, from {_ex.get('pages')} pages · {_ex.get('credits_cost')} credits"
-                       + (f" · {_draft['stats']['missing_from_model']} not answered by the model (marked [NOT DRAFTED])" if (_draft.get("stats") or {}).get("missing_from_model") else ""))
-        for r in _reqs:
-            _conf_cls = {"high": "pp-ok", "medium": "pp-warn", "low": "pp-bad"}.get(r.get("confidence"), "")
-            st.markdown(
-                f'<div class="pp-strip" style="margin-top:14px;"><span class="pp-owner">{_esc(r["id"])}'
-                + (f' · {_esc(r["section"])}' if r.get("section") else "")
-                + (f' · {_esc(r["file"])} p.{r["page"]}' if r.get("page") and r.get("file") else f' · p.{r["page"]}' if r.get("page") else "") + "</span>"
-                f'<span class="pp-pill">{_esc(str(r.get("category", "")).replace("_", " "))}</span>'
-                f'<span class="pp-pill {_conf_cls}">{_esc(str(r.get("confidence", "")))} confidence</span></div>'
-                f'<div class="evidence-quote" style="margin-left:0;">{_esc(r.get("text", ""))}</div>',
-                unsafe_allow_html=True,
-            )
-            st.write(r.get("response", ""))
-            if r.get("human_todo"):
-                st.markdown(f'<div class="gap-item">? {_esc(r["human_todo"])}</div>', unsafe_allow_html=True)
-            if r.get("sources"):
-                st.caption("Sources: " + "; ".join(r["sources"][:4]))
-        for _title, _key in (("Open questions for Q&A", "open_questions"), ("Assumptions", "assumptions"), ("Do not claim", "do_not_claim")):
-            _items = _draft.get(_key) or []
-            if _items:
-                st.markdown(f'<div class="detail-label" style="margin-top:14px;">{_title}</div>', unsafe_allow_html=True)
-                for x in _items:
-                    st.markdown(f'<div class="gap-item">• {_esc(x)}</div>', unsafe_allow_html=True)
-
 
 def _unclaimed(rows: list[dict]) -> tuple[list[dict], int]:
     """Split Find-RFPs rows into (shown, number hidden because they belong to a desk).
@@ -2361,9 +1497,6 @@ def _unclaimed(rows: list[dict]) -> tuple[list[dict], int]:
     kept = [r for r in pool if r.get("source_id") not in PURSUED_IDS]
     return kept, len(pool) - len(kept)
 
-
-def _claimed_note(n: int) -> str:
-    return f' &middot; <span style="color: var(--text-tertiary);">{n} on desks — see My desk → Team</span>' if n else ""
 
 
 def _ago(iso: str | None) -> str:
@@ -2392,29 +1525,12 @@ def _show_more(rows: list[dict], key: str, render, page: int = 25) -> None:
             st.rerun()
 
 
-def page_pool() -> None:
-    """Find RFPs — the shared pool of unclaimed listings. Open ones to grab, or the archive."""
-    _welcome()
-    h1, h2, h3 = st.columns([1, 1, 3])
-    with h1:
-        scan_clicked = st.button("Scan for new RFPs", use_container_width=True, type="primary")
-    with h2:
-        if st.button("Add an RFP", use_container_width=True, disabled=not CURRENT_USER.get("can_work")):
-            _manual_rfp_dialog()
-    h3.caption(("Found at public portals and scored for fit. Grab what is worth a look." if CURRENT_USER.get("can_work") else NO_ACCESS_NOTE)
-               + f"  \nLast scan {_ago(_cached_meta('last_scan'))}.")
 
-    if scan_clicked:
-        stats = _run_scan()
-        _flash(f"Scan done — {stats['new']} new, {stats['scored']} scored, {stats['fetched']} listings checked"
-               + (f" · {len(stats['errors'])} source error(s)" if stats["errors"] else ""), icon="🔎")
-        st.session_state["last_scan_errors"] = stats["errors"]
-        st.rerun()
-    _errs = st.session_state.pop("last_scan_errors", None)
-    if _errs:
-        with st.expander(f"{len(_errs)} source(s) had errors on the last scan"):
-            for err in _errs:
-                st.text(err)
+
+
+def page_pool() -> None:
+    """Find RFPs — one row per open listing; Good fit / All open / Archive."""
+    _welcome()
 
     def _set_aside(r: dict) -> bool:
         """Rejected by the first pass and never looked at by a person: stored (so it is not re-scanned) but not a
@@ -2424,335 +1540,391 @@ def page_pool() -> None:
             return False
         s1 = _parse_json(r.get("stage1_json"))
         return bool(s1) and not s1.get("relevant")
-    open_rows, _claimed_n = _unclaimed([r for r in get_all_scored(0)
-                                        if (r.get("pipeline_status") or "new") in ("new", "qualified", "expiring_soon") and not _set_aside(r)])
-    archive_rows, _ = _unclaimed([r for r in get_all_scored(0) if (r.get("pipeline_status") or "new") in ("won", "lost", "skipped", "expired")])
+    all_rows = get_all_scored(0)
+    open_rows, claimed_n = _unclaimed([r for r in all_rows if (r.get("pipeline_status") or "new") in ("new", "qualified", "expiring_soon") and not _set_aside(r)])
+    good = [r for r in open_rows if _score_of(r) >= GOOD_FIT]
 
-    tab_open, tab_archive = st.tabs([f"Open ({len(open_rows)})", f"Archive ({len(archive_rows)})"])
+    _open_q = st.query_params.get("open")
+    v1, v2 = st.columns([4, 1.2], vertical_alignment="center")
+    with v1:
+        view = st.segmented_control("Show", ["Good fit", "All open", "Archive"], default="Good fit", key="pool_view",
+                                    label_visibility="collapsed", required=True)
+    with v2, st.container(horizontal=True, horizontal_alignment="right"):
+        if st.button("Add an RFP", disabled=not CURRENT_USER.get("can_work")):
+            _manual_rfp_dialog()
 
-    with tab_open:
-        f1, f2, f3, f4 = st.columns([2, 1, 2, 1])
-        with f1:
-            min_score = st.slider("Minimum fit", 0, 100, 40, step=5, key="pool_score")
-        with f2:
-            sort_by = st.selectbox("Sort", ["Fit", "Deadline", "Newest"], key="pool_sort")
-        with f3:
-            source_filter = st.multiselect("Source", sorted(SOURCE_LABELS, key=SOURCE_LABELS.get),
-                                           format_func=lambda s: SOURCE_LABELS.get(s, s), key="pool_source", placeholder="All sources")
-        unscored = [r for r in open_rows if not _score_of(r)]
-        with f4:
-            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-            if unscored and st.button(f"Score all {len(unscored)} unscored", key="pool_score_all", use_container_width=True):
-                _score_batch(unscored)
-                st.rerun()
-
-        rows = [r for r in open_rows if _score_of(r) >= min_score or not _score_of(r)]
-        _open_q = st.query_params.get("open")
-        if _open_q:  # shared link to one listing: show it first regardless of the filters
-            _hit = next((r for r in open_rows if r.get("source_id") == _open_q), None)
-            if _hit:
-                rows = [_hit] + [r for r in rows if r.get("source_id") != _open_q]
-            else:
-                _flash("That listing is not open any more — it may be on someone's desk or archived.", icon="ℹ️")
-        if source_filter:
-            rows = [r for r in rows if r.get("source") in source_filter]
-        if sort_by == "Deadline":
-            rows.sort(key=lambda r: r.get("response_deadline") or "9999")
-        elif sort_by == "Newest":
-            rows.sort(key=lambda r: r.get("created_at") or r.get("posted_date") or "", reverse=True)
-        else:
-            rows.sort(key=lambda r: (-_score_of(r), r.get("response_deadline") or "9999"))
-
-        st.caption(f"{len(rows)} open listing{'s' if len(rows) != 1 else ''}"
-                   + (f" · {len(unscored)} not scored yet (shown regardless of the minimum)" if unscored else "")
-                   + (f" · {_claimed_n} on desks" if _claimed_n else ""))
-        if not rows:
-            render_empty("Nothing open matches. Lower the minimum fit or scan for new RFPs.")
-        _show_more(rows, "pool_show", lambda o: render_card(o, "pool", "pool"))
-
-    with tab_archive:
-        archive_rows.sort(key=lambda r: r.get("pipeline_updated_at") or r.get("updated_at") or "", reverse=True)
-        by = {s: sum(1 for r in archive_rows if r.get("pipeline_status") == s) for s in ("won", "lost", "skipped", "expired")}
-        st.caption(" · ".join(f"{n} {s}" for s, n in by.items() if n) or "Nothing archived yet.")
-        _show_more(archive_rows, "arch_show", lambda o: render_card(o, "arch", "archive"))
+    if view == "Archive":
+        rows, _ = _unclaimed([r for r in all_rows if (r.get("pipeline_status") or "new") in ("won", "lost", "skipped", "expired")])
+        rows.sort(key=lambda r: r.get("pipeline_updated_at") or r.get("updated_at") or "", reverse=True)
+        st.markdown(f'<p class="muted">{len(rows):,} archived: skipped, expired, won or lost.</p>', unsafe_allow_html=True)
+    else:
+        rows = good if view == "Good fit" else open_rows
+        rows = sorted(rows, key=lambda r: (-_score_of(r), r.get("response_deadline") or "9999"))
+        line = (f"{len(good)} of {len(open_rows)} open listings fit well (fit {GOOD_FIT}+)" if view == "Good fit"
+                else f"{len(open_rows)} open listings, best fit first")
+        if claimed_n:
+            line += f" · {claimed_n} on desks"
+        line += f" · checked daily, last scan {_ago(_cached_meta('last_scan'))}"
+        st.markdown(f'<p class="muted">{line}</p>', unsafe_allow_html=True)
+        if not CURRENT_USER.get("can_work"):
+            st.caption(NO_ACCESS_NOTE)
+    if _open_q:  # shared link to one listing: open it
+        hit = next((r for r in all_rows if r.get("source_id") == _open_q), None)
+        if hit and st.session_state.get("pool_deeplink") != _open_q:
+            st.session_state["pool_deeplink"] = _open_q
+            _listing_dialog(hit)
+    if not rows:
+        render_empty("Nothing here. Try All open." if view == "Good fit" else "Nothing here yet.")
+        return
+    first = next((r["source_id"] for r in rows if CURRENT_USER.get("can_work")), None)
+    _show_more(rows, f"pool_show_{view}", lambda o: _pool_row(o, "pool", primary=o["source_id"] == first and view != "Archive"))
 
 
 def page_desk() -> None:
-    """My desk — what the signed-in user has claimed or is working, by stage; Team shows everyone's."""
+    """My desk — the person's pursuits in a rail on the left, the selected one on the right. Team shows everyone's."""
     _welcome(only_if_asked=True)
-    import html as _html
-    from oppos.pursuits import OPEN_STAGES, days_until as _du, stage_label
-    from oppos.storage.db import add_pursuit_event, create_pursuit, get_opps_by_ids, get_pursuit_events_for
+    from oppos.pursuits import days_until as _du, reopen_pursuit, stage_label
+    from oppos.storage.db import get_opps_by_ids, get_pursuit_events_for
 
     me = CURRENT_USER["email"]
     all_p = _cached_pursuits()
-    # Deep link (Slack buttons): /desk?open=<source_id> selects that pursuit, switching to Team if it is not mine.
     _open_q = st.query_params.get("open")
-    if _open_q and st.session_state.get("desk_deeplink") != _open_q:
+    if _open_q and st.session_state.get("desk_deeplink") != _open_q:  # deep link from Slack or a shared address
         st.session_state["desk_deeplink"] = _open_q
-        _target = next((p for p in all_p if p["source_id"] == _open_q), None)
-        if _target:
-            _mine = (_target.get("owner_email") or "").lower() == me
-            st.session_state["pursuit_view"] = "Mine" if _mine else "Team"
-            st.session_state[f"desk_selected_{'Mine' if _mine else 'Team'}"] = _open_q
+        target = next((p for p in all_p if p["source_id"] == _open_q), None)
+        if target:
+            mine = (target.get("owner_email") or "").lower() == me
+            st.session_state["pursuit_view"] = "Mine" if mine else "Team"
+            st.session_state[f"desk_sel_{'Mine' if mine else 'Team'}"] = _open_q
         else:
             _flash("That RFP is no longer on anyone's desk.", icon="ℹ️")
-    v1, v2 = st.columns([1, 4])
-    with v1:
-        _view = st.radio("View", ["Mine", "Team"], horizontal=True, label_visibility="collapsed", key="pursuit_view")
-    rows_p = all_p if _view == "Team" else [p for p in all_p if (p.get("owner_email") or "").lower() == me]
-    open_p = [p for p in rows_p if p.get("status") in OPEN_STAGES]
-    by_stage = {
-        "evaluating": [p for p in rows_p if p.get("status") == "evaluating"],
-        "active": [p for p in rows_p if p.get("status") == "active"],
-        "submitted": [p for p in rows_p if p.get("status") == "submitted"],
-        "closed": [p for p in rows_p if p.get("status") in ("won", "lost", "abandoned", "released")],
-    }
-    live_ids = [p["source_id"] for p in rows_p if p.get("status") in ("evaluating", "active", "submitted")]
-    # Two queries for the whole desk, however many pursuits: the rows and their activity.
-    opps = get_opps_by_ids(live_ids + [p["source_id"] for p in by_stage["closed"][:50]])
-    events = get_pursuit_events_for(live_ids, limit_per=40)
 
-    _next = sorted((d for d in (_du(p.get("submission_deadline")) for p in open_p) if d is not None))
-    _cnt = lambda *sts: sum(1 for p in rows_p if p.get("status") in sts)
-    with v2:
-        st.caption(f"{_cnt('evaluating')} grabbed · {_cnt('active')} pursuing · {_cnt('submitted')} submitted"
-                   + (f" · next due in {_next[0]} days" if _next and _next[0] > 1 else " · one is due now" if _next and _next[0] in (0, 1) else " · one is overdue" if _next else ""))
+    rail, work = st.columns([1.15, 3], gap="large")
+    with rail:
+        view = st.segmented_control("View", ["Mine", "Team"], default="Mine", key="pursuit_view", label_visibility="collapsed", required=True)
+        rows_p = all_p if view == "Team" else [p for p in all_p if (p.get("owner_email") or "").lower() == me]
+        order = {"evaluating": 1, "active": 0, "submitted": 2}
+        live = sorted([p for p in rows_p if p.get("status") in order],
+                      key=lambda p: (order[p["status"]], p.get("submission_deadline") or "9999"))
+        closed = sorted([p for p in rows_p if p.get("status") in ("won", "lost", "abandoned")],
+                        key=lambda x: x.get("closed_at") or x.get("updated_at") or "", reverse=True)
+        opps = get_opps_by_ids([p["source_id"] for p in live] + [p["source_id"] for p in closed[:50]])
+        if not live:
+            st.markdown('<p class="muted">Nothing on ' + ("anyone's desk." if view == "Team" else "your desk yet. Grab an RFP in Find RFPs and it lands here.") + "</p>",
+                        unsafe_allow_html=True)
+        else:
+            ids = [p["source_id"] for p in live]
+            key = f"desk_sel_{view}"
+            if st.session_state.get(key) not in ids:
+                st.session_state[key] = ids[0]
 
-    # Legacy in-progress / submitted RFPs with no pursuit record — Team view can adopt them.
-    _have = {p["source_id"] for p in all_p}
-    _orphans = {"active": [o for o in _rows_by_status("in_progress") if o["source_id"] not in _have],
-                "submitted": [o for o in _rows_by_status("submitted") if o["source_id"] not in _have]}
-    _n_orphans = sum(len(v) for v in _orphans.values())
-    if _n_orphans and _view == "Team":
-        o1, o2 = st.columns([3, 1])
-        o1.caption(f"{_n_orphans} RFP(s) were marked in progress or submitted before pursuit tracking existed and have no owner.")
-        if o2.button("Adopt them as mine", key="adopt_orphans", use_container_width=True):
-            for stage, items in _orphans.items():
-                for o in items:
-                    create_pursuit(o["source_id"], owner_email=me, owner_name=CURRENT_USER["name"], lob=o.get("lob"),
-                                   reason=o.get("pipeline_notes") or f"Adopted from legacy {stage}", status=stage,
-                                   submission_deadline=(o.get("response_deadline") or "")[:10] or None,
-                                   portal=o.get("source"), notion_page_id=o.get("notion_page_id"), created_by=me)
-                    add_pursuit_event(o["source_id"], me, "adopted", f"Adopted from legacy {o.get('pipeline_status')}")
-            _flash(f"Adopted {_n_orphans} item(s)")
-            st.rerun()
-
-    if not any(by_stage.values()):
-        render_empty("Nothing on your desk yet.")
-        st.caption(NO_ACCESS_NOTE if not CURRENT_USER.get("can_work") else
-                   "How it works: Find RFPs lists what the scanner found. Grab one and it lands here. Start pursuing, draft the response, "
-                   "download it as a Word document, submit it, then record the outcome.")
-        return
-
-    # One line per pursuit, grouped by stage; the selected one opens as the workspace below.
-    sections = (("evaluating", "Grabbed", "Go after it, or put it back."),
-                ("active", "Pursuing", "Draft, download, submit."),
-                ("submitted", "Submitted", "Record the outcome when you hear back."))
-    ordered = [(stage, p_) for stage, _, _ in sections for p_ in by_stage[stage]]
-    ids = [p_["source_id"] for _, p_ in ordered]
-    sel_key = f"desk_selected_{_view}"
-    selected = st.session_state.get(sel_key)
-    if selected not in ids:
-        selected = ids[0] if ids else None
-    for stage, title, hint in sections:
-        items = by_stage[stage]
-        if not items:
-            continue
-        st.markdown(f'<div class="desk-section">{title} · {len(items)} <span>{hint}</span></div>', unsafe_allow_html=True)
-        for p_ in items:
-            o = opps.get(p_["source_id"]) or {}
-            sid = p_["source_id"]
-            due = p_.get("submission_deadline") or (o.get("response_deadline") or "")[:10]
-            dl = _du(due)
-            due_txt = ("" if dl is None else f"overdue by {-dl}d" if dl < 0 else "due today" if dl == 0 else f"due in {dl}d")
-            due_cls = "" if dl is None else ("desk-bad" if dl <= 3 else "desk-warn" if dl <= 7 else "")
-            bits = [b for b in (SOURCE_STATE_MAP.get(o.get("source", ""), ""), (o.get("agency") or "")[:60]) if b]
-            next_txt = p_.get("next_action") or ""
-            c1, c2, c3 = st.columns([6, 1.8, 0.9], vertical_alignment="center")
-            c1.markdown(
-                f'<div class="desk-row{" sel" if sid == selected else ""}"><div class="desk-title">{_esc(o.get("title") or sid)}</div>'
-                f'<div class="desk-sub">{_esc(" · ".join(bits))}'
-                + (f' · <span class="{due_cls}">{due_txt}</span>' if due_txt else "")
-                + (f' · next: {_esc(next_txt[:70])}' if next_txt else "") + "</div></div>", unsafe_allow_html=True)
-            try:
-                fit = int(float(o.get("fit_score") or 0))
-            except (TypeError, ValueError):
-                fit = 0
-            c2.markdown(f'<div class="desk-meta">{_esc(p_.get("owner_name") or p_.get("owner_email") or "") if _view == "Team" else ""}'
-                        f'<span class="opp-tag">fit {fit}</span></div>', unsafe_allow_html=True)
-            with c3:
-                if st.button("Open" if sid != selected else "Opened", key=f"open_{_view}_{sid}", use_container_width=True,
-                             type="primary" if sid == selected else "secondary", disabled=sid == selected):
-                    st.session_state[sel_key] = sid
-                    st.rerun()
-
-    if selected:
-        if st.query_params.get("open") != selected:
-            st.query_params["open"] = selected  # the address bar is the share link for this pursuit
-            st.session_state["desk_deeplink"] = selected  # our own update, not an incoming link: do not re-route the view
-        p_ = next(p for _, p in ordered if p["source_id"] == selected)
-        o = opps.get(selected)
-        if o:
-            st.markdown('<div class="desk-workspace"></div>', unsafe_allow_html=True)
-            _render_pursuit_panel(o, p_, events.get(selected, []))
-
-    closed = sorted(by_stage["closed"], key=lambda x: x.get("closed_at") or x.get("updated_at") or "", reverse=True)
-    if closed:
-        with st.expander(f"Closed · {len(closed)}"):
-            from oppos.pursuits import reopen_pursuit
-            st.caption("Won, lost, abandoned or put back. Reopen brings one back to Pursuing on your desk.")
-            for p_ in closed[:50]:
-                o = opps.get(p_["source_id"]) or {}
-                when = str(p_.get("closed_at") or p_.get("updated_at") or "")[:10]
-                r1, r2 = st.columns([6, 1], vertical_alignment="center")
-                r1.markdown(f'<div class="pp-event">{_esc(when)} · <b>{_esc(stage_label(p_.get("status")))}</b> · '
-                            f'{_esc(p_.get("owner_name") or p_.get("owner_email") or "")} — {_esc(o.get("title") or p_["source_id"])}</div>',
-                            unsafe_allow_html=True)
-                with r2:
-                    if o and CURRENT_USER.get("can_work") and st.button("Reopen", key=f"reopen_closed_{p_['source_id']}", use_container_width=True):
+            def caption(p: dict) -> str:
+                o = opps.get(p["source_id"]) or {}
+                dl = _du(p.get("submission_deadline") or o.get("response_deadline"))
+                due = "" if dl is None else ("overdue" if dl < 0 else "due today" if dl == 0 else f"{dl} days left")
+                bits = [stage_label(p["status"]), SOURCE_STATE_MAP.get(o.get("source", ""), ""), due]
+                if view == "Team":
+                    bits.append((p.get("owner_name") or p.get("owner_email") or "").split(" ")[0])
+                return " · ".join(b for b in bits if b)
+            with st.container(key="desk_rail"):
+                st.radio("Pursuits", ids, key=key, label_visibility="collapsed",
+                         format_func=lambda s: ((opps.get(s) or {}).get("title") or s)[:90],
+                         captions=[caption(p) for p in live])
+        if closed:
+            with st.expander(f"Closed ({len(closed)})"):
+                for p_ in closed[:50]:
+                    o = opps.get(p_["source_id"]) or {}
+                    st.markdown(f'<div class="closed-row">{_esc((o.get("title") or p_["source_id"])[:80])}'
+                                f'<span>{_esc(stage_label(p_.get("status")))} · {_esc(str(p_.get("closed_at") or p_.get("updated_at") or "")[:10])}</span></div>',
+                                unsafe_allow_html=True)
+                    if o and CURRENT_USER.get("can_work") and st.button("Reopen", key=f"reopen_closed_{p_['source_id']}", type="tertiary"):
                         reopen_pursuit(o, CURRENT_USER)
-                        st.session_state["desk_selected_Mine"] = p_["source_id"]
+                        st.session_state["desk_sel_Mine"] = p_["source_id"]
                         st.session_state["pursuit_view"] = "Mine"
                         _flash(f"Reopened — {o.get('title', '')[:60]} is back in Pursuing", icon="↩️")
                         st.rerun()
-            if len(closed) > 50:
-                st.caption(f"{len(closed) - 50} older closed items not shown.")
+
+    with work:
+        if not live:
+            return
+        selected = st.session_state.get(f"desk_sel_{view}")
+        if st.query_params.get("open") != selected:
+            st.query_params["open"] = selected  # the address bar is the share link for this pursuit
+            st.session_state["desk_deeplink"] = selected
+        p_ = next(p for p in live if p["source_id"] == selected)
+        o = opps.get(selected)
+        if o:
+            _render_pursuit_panel(o, p_, get_pursuit_events_for([selected], limit_per=40).get(selected, []))
 
 
 def page_admin() -> None:
-    """Admin — source health, portal registrations, settings."""
+    """Admin — people, pursuits, sources, listings, portals, system."""
     _welcome(only_if_asked=True)
     from oppos.storage.db import get_source_health as _get_source_health
-    _health_rows = [r for r in _get_source_health() if r.get("source") not in EXCLUDED_SOURCES]
-    if _health_rows:
-        _n_fail = sum(1 for r in _health_rows if r.get("last_error"))
-        _health_label = "Source health" + (f"  ·  {_n_fail} failing" if _n_fail else "  ·  all OK")
-        with st.expander(_health_label):
-            st.markdown(_render_source_health(_health_rows), unsafe_allow_html=True)
-
-    if CURRENT_USER.get("is_admin"):
-        with st.expander(f"Settings  ·  {len(EXCLUDED_SOURCES)} source{'s' if len(EXCLUDED_SOURCES) != 1 else ''} excluded"):
-            from oppos.storage.db import archive_sources, count_active_by_sources, list_sources_in_db, set_excluded_sources
-            _db_sources = dict(list_sources_in_db())
-            _all_keys = sorted(set(SOURCE_LABELS) | set(_db_sources) | EXCLUDED_SOURCES)
-            def _src_label(k: str) -> str:
-                base = SOURCE_LABELS.get(k, k)
-                n = _db_sources.get(k)
-                tag = "" if k in SOURCE_LABELS else " · retired"
-                return f"{base}{tag}" + (f"  ({n} rows)" if n else "")
-            st.markdown('<div class="detail-label" style="margin-bottom:6px;">Who can grab and work RFPs</div>', unsafe_allow_html=True)
-            _stored = _cached_meta("members")
-            _env_members = member_emails(None)
-            try:
-                _stored_list = [str(e) for e in json.loads(_stored)] if _stored else []
-            except (TypeError, ValueError):
-                _stored_list = []
-            _members_txt = st.text_area("Member emails, one per line", value="\n".join(_stored_list), key="members_txt", height=120,
-                                        placeholder="name@nutrient.io", label_visibility="collapsed")
-            _all_members = member_emails(_stored)
-            if not _all_members:
-                st.warning("Access is open: anyone who signs in can grab and work RFPs. Add emails here to restrict it. Admins are always members.")
-            else:
-                st.caption(f"{len(_all_members)} member{'s' if len(_all_members) != 1 else ''} can grab and work RFPs"
-                           + (f" ({len(_env_members)} from OPPOS_MEMBERS)" if _env_members else "") + "; everyone else can browse. Admins are always members.")
-            if st.button("Save members", key="members_save"):
-                _new = sorted({e.strip().lower() for e in _members_txt.splitlines() if e.strip()})
-                set_meta("members", json.dumps(_new))
-                _flash(f"Members saved — {len(_new)} listed")
-                st.rerun()
-            st.markdown('<div class="detail-label" style="margin:14px 0 6px;">Sources</div>', unsafe_allow_html=True)
-            st.caption("Excluded sources are hidden from every list, skipped by scans, and never alerted. "
-                       "Items you already claimed stay in your pursuits.")
-            _sel = st.multiselect("Excluded sources", _all_keys, default=sorted(EXCLUDED_SOURCES),
-                                  format_func=_src_label, key="excluded_sources_select")
-            _sc1, _sc2 = st.columns([1, 2])
-            with _sc1:
-                if st.button("Save exclusions", key="excluded_save", use_container_width=True):
-                    set_excluded_sources(_sel)
-                    st.rerun()
-            with _sc2:
-                _n_active = count_active_by_sources(sorted(EXCLUDED_SOURCES)) if EXCLUDED_SOURCES else 0
-                if _n_active:
-                    with st.popover(f"Archive {_n_active} active item{'s' if _n_active != 1 else ''} from excluded sources",
-                                    use_container_width=True):
-                        st.write(f"Moves {_n_active} new / qualified / expiring items from "
-                                 f"{', '.join(SOURCE_LABELS.get(k, k) for k in sorted(EXCLUDED_SOURCES))} to Archive (skipped) "
-                                 "with the note \"Source excluded\". Pursuits are not touched. This cannot be undone in bulk.")
-                        if st.button("Archive them", key="excluded_archive", type="primary", use_container_width=True):
-                            _done = archive_sources(sorted(EXCLUDED_SOURCES))
-                            st.success(f"Archived {_done} items")
-                            st.rerun()
-                elif EXCLUDED_SOURCES:
-                    st.caption("No active items remain from excluded sources.")
-
-        _reg_known = sum(1 for r in PORTAL_REGS.values() if (r.get("status") or "unknown") != "unknown")
-        with st.expander(f"Portal registrations  ·  {_reg_known}/{len(PORTAL_REGS)} known"):
-            import pandas as pd
-            from oppos.pursuits import REGISTRATION_LABELS, REGISTRATION_STATUSES
-            from oppos.storage.db import upsert_portal_registration
-
-            _reg_cols = ["portal", "display_name", "status", "vendor_id", "login_owner", "lead_time_days", "url", "notes"]
-            _reg_rows = [{c: r.get(c) for c in _reg_cols} for r in PORTAL_REGS.values()]
-            _reg_df = pd.DataFrame(_reg_rows, columns=_reg_cols).sort_values("display_name", na_position="last").reset_index(drop=True)
-            _reg_df["lead_time_days"] = pd.to_numeric(_reg_df["lead_time_days"], errors="coerce")
-            _reg_df["status"] = _reg_df["status"].fillna("unknown")
-            st.caption("Which procurement portals Nutrient is registered on, who holds the login, and how long registration takes. "
-                       "Shown as a badge on every card and used in the pursuit checklist. Never store passwords here.")
-            _edited = st.data_editor(
-                _reg_df, hide_index=True, use_container_width=True, disabled=["portal", "display_name"], key="reg_editor",
-                column_config={
-                    "portal": st.column_config.TextColumn("Key"),
-                    "display_name": st.column_config.TextColumn("Portal"),
-                    "status": st.column_config.SelectboxColumn("Status", options=REGISTRATION_STATUSES, required=True),
-                    "vendor_id": st.column_config.TextColumn("Vendor / supplier ID"),
-                    "login_owner": st.column_config.TextColumn("Login held by"),
-                    "lead_time_days": st.column_config.NumberColumn("Lead time (days)", min_value=0, step=1),
-                    "url": st.column_config.LinkColumn("Registration URL"),
-                    "notes": st.column_config.TextColumn("Notes"),
-                },
-            )
-            if st.button("Save registrations", key="reg_save"):
-                _changed = 0
-                for _new, _old in zip(_edited.to_dict("records"), _reg_df.to_dict("records")):
-                    def _clean(v):
-                        return None if v is None or (isinstance(v, float) and pd.isna(v)) else v
-                    _new_c = {k: _clean(v) for k, v in _new.items()}
-                    _old_c = {k: _clean(v) for k, v in _old.items()}
-                    if _new_c != _old_c:
-                        _lead = _new_c.get("lead_time_days")
-                        upsert_portal_registration(
-                            _new_c["portal"], status=_new_c.get("status") or "unknown", vendor_id=_new_c.get("vendor_id"),
-                            login_owner=_new_c.get("login_owner"), lead_time_days=int(_lead) if _lead is not None else None,
-                            url=_new_c.get("url"), notes=_new_c.get("notes"),
-                        )
-                        _changed += 1
-                st.success(f"Saved {_changed} change(s)")
-                st.rerun()
-
-    from oppos.drafting import compliance_status as _compliance_status
-    _comp = _compliance_status()
-    st.caption("Licences (set in the app's secrets / environment, never shown here): "
-               f"Document Authoring {'set' if DOCAUTH_LICENSE_KEY else 'NOT set — response documents carry the evaluation watermark'} · "
-               f"Web SDK viewer {'set' if VIEWER_LICENSE_KEY else 'not set — PDF preview carries the trial watermark'}")
-    if CURRENT_USER.get("is_admin") and not (DOCAUTH_LICENSE_KEY and VIEWER_LICENSE_KEY):
-        # Names only (never values): enough to spot a misspelt or nested secret from here.
-        try:
-            _names = []
-            for _k in sorted(st.secrets.keys()):
-                _v = st.secrets[_k]
-                _names.append(f"{_k} (section: {', '.join(sorted(_v.keys()))})" if hasattr(_v, "keys") else _k)
-            _seen = ", ".join(_names) or "none"
-        except Exception as _e:
-            _seen = f"no secrets file ({type(_e).__name__})"
-        _env = ", ".join(sorted(k for k in os.environ if "LICENSE" in k.upper() or "LICENCE" in k.upper())) or "none"
-        st.caption(f"Secrets visible to the app (names only): {_seen}. Environment variables with LICENSE in the name: {_env}. "
-                   "The editor reads DOCAUTH_LICENSE_KEY and VIEWER_LICENSE_KEY at the top level, outside any [section].")
-    st.caption("Compliance answers source (oppos/drafting/compliance.md): "
-               + (f"approved v{_comp['version']} by {_comp['approved_by']} on {_comp['approved_at']}" if _comp["approved"]
-                  else "NOT approved — response drafts mark every security/certification item [SECURITY TO CONFIRM] until the security team fills it in and sets approved: true."))
+    health = [r for r in _get_source_health() if r.get("source") not in EXCLUDED_SOURCES]
     if not CURRENT_USER.get("is_admin"):
-        st.caption("Members, sources and portal registrations are managed by admins (OPPOS_ADMINS).")
+        st.markdown('<p class="muted">Admin tools are for admins (set in OPPOS_ADMINS). Below: how each source did on its last scan.</p>',
+                    unsafe_allow_html=True)
+        st.markdown(_render_source_health(health), unsafe_allow_html=True)
+        return
+
+    t_people, t_pursuits, t_sources, t_listings, t_portals, t_system = st.tabs(
+        ["People", "Pursuits", "Sources", "Listings", "Portals", "System"])
+
+    with t_people:
+        _admin_people()
+    with t_pursuits:
+        _admin_pursuits()
+    with t_sources:
+        _admin_sources(health)
+    with t_listings:
+        _admin_listings()
+    with t_portals:
+        _admin_portals()
+    with t_system:
+        _admin_system()
+
+
+def _admin_people() -> None:
+    from oppos.pursuits import OPEN_STAGES
+    stored = _cached_meta("members")
+    env_members = member_emails(None)
+    try:
+        stored_list = [str(e) for e in json.loads(stored)] if stored else []
+    except (TypeError, ValueError):
+        stored_list = []
+    everyone = sorted(set(member_emails(stored)) | {(p.get("owner_email") or "").lower() for p in _ALL_PURSUITS if p.get("owner_email")})
+    rows = []
+    for email in everyone:
+        mine = [p for p in _ALL_PURSUITS if (p.get("owner_email") or "").lower() == email]
+        last = max((str(p.get("updated_at") or "") for p in mine), default="")
+        rows.append({"Person": email, "Grabbed": sum(p.get("status") == "evaluating" for p in mine),
+                     "Pursuing": sum(p.get("status") == "active" for p in mine), "Submitted": sum(p.get("status") == "submitted" for p in mine),
+                     "Won": sum(p.get("status") == "won" for p in mine), "Lost / abandoned": sum(p.get("status") in ("lost", "abandoned") for p in mine),
+                     "Last activity": last[:10]})
+    st.markdown('<div class="rs-head">Who is working what</div>', unsafe_allow_html=True)
+    if rows:
+        st.dataframe(rows, hide_index=True, use_container_width=True)
+    st.markdown('<div class="rs-head" style="margin-top:16px">Who can grab and work RFPs</div>', unsafe_allow_html=True)
+    txt = st.text_area("Member emails, one per line", value="\n".join(stored_list), key="members_txt", height=140,
+                       placeholder="name@nutrient.io", label_visibility="collapsed")
+    all_members = member_emails(stored)
+    st.caption(("Access is open: anyone who signs in can grab and work RFPs. Add emails to restrict it." if not all_members else
+                f"{len(all_members)} can grab and work RFPs" + (f" ({len(env_members)} from OPPOS_MEMBERS)" if env_members else "")
+                + "; everyone else can browse.") + " Admins (OPPOS_ADMINS) always can.")
+    if st.button("Save members", key="members_save", type="primary"):
+        new = sorted({e.strip().lower() for e in txt.splitlines() if e.strip()})
+        set_meta("members", json.dumps(new))
+        _flash(f"Members saved — {len(new)} listed")
+        st.rerun()
+
+
+def _admin_pursuits() -> None:
+    from oppos.pursuits import OPEN_STAGES, release_claim, stage_label, transition_pursuit
+    from oppos.storage.db import add_pursuit_event, get_opps_by_ids, update_pursuit
+    open_p = [p for p in _ALL_PURSUITS if p.get("status") in OPEN_STAGES]
+    if not open_p:
+        st.markdown('<p class="muted">No open pursuits.</p>', unsafe_allow_html=True)
+        return
+    opps = get_opps_by_ids([p["source_id"] for p in open_p])
+    label = lambda p: f'{(opps.get(p["source_id"]) or {}).get("title", p["source_id"])[:70]} — {p.get("owner_name") or p.get("owner_email") or "unassigned"}'
+    st.dataframe([{"RFP": (opps.get(p["source_id"]) or {}).get("title", p["source_id"]), "Owner": p.get("owner_name") or p.get("owner_email"),
+                   "Stage": stage_label(p.get("status")), "Due": str(p.get("submission_deadline") or "")[:10],
+                   "Updated": str(p.get("updated_at") or "")[:10]} for p in open_p], hide_index=True, use_container_width=True)
+    st.markdown('<div class="rs-head" style="margin-top:16px">Change one</div>', unsafe_allow_html=True)
+    pick = st.selectbox("Pursuit", open_p, format_func=label, key="adm_pursuit", label_visibility="collapsed")
+    opp = opps.get(pick["source_id"]) or {"source_id": pick["source_id"]}
+    c1, c2 = st.columns([2, 1], vertical_alignment="bottom")
+    people = sorted(set(member_emails(_cached_meta("members"))) | {(p.get("owner_email") or "").lower() for p in _ALL_PURSUITS if p.get("owner_email")})
+    new_owner = c1.selectbox("Give it to", people, index=people.index((pick.get("owner_email") or "").lower()) if (pick.get("owner_email") or "").lower() in people else 0,
+                             key="adm_owner") if people else c1.text_input("Give it to (email)", key="adm_owner_txt")
+    if c2.button("Reassign", key="adm_reassign", use_container_width=True):
+        update_pursuit(pick["source_id"], owner_email=new_owner.lower(), owner_name=new_owner.split("@")[0].replace(".", " ").title())
+        add_pursuit_event(pick["source_id"], CURRENT_USER["email"], "reassigned", f"to {new_owner} by an admin")
+        _flash(f"Reassigned to {new_owner}")
+        st.rerun()
+    a1, a2 = st.columns(2)
+    if a1.button("Put it back in Find RFPs", key="adm_release", use_container_width=True):
+        release_claim(opp, CURRENT_USER, reason="Put back by an admin")
+        _flash("Put back in Find RFPs", icon="↩️")
+        st.rerun()
+    if pick.get("status") != "evaluating" and a2.button("Close it as abandoned", key="adm_abandon", use_container_width=True):
+        transition_pursuit(opp, "abandoned", CURRENT_USER, "Closed by an admin")
+        _flash("Closed as abandoned", icon="🗑️")
+        st.rerun()
+
+
+def _admin_sources(health: list[dict]) -> None:
+    from oppos.storage.db import archive_sources, count_active_by_sources, list_sources_in_db, set_excluded_sources
+    from oppos.sources.registry import _load_registry
+    st.markdown(f'<p class="muted">The scan runs daily on GitHub; last scan {_ago(_cached_meta("last_scan"))}. '
+                'Running one here takes 10–20 minutes and alerts Slack like the daily one.</p>', unsafe_allow_html=True)
+    registry = _load_registry()
+    c1, c2, c3 = st.columns([2.2, 1, 1], vertical_alignment="bottom")
+    one = c1.selectbox("Source", [""] + sorted(registry, key=lambda k: registry[k][0]), key="adm_src",
+                       format_func=lambda k: "Every source" if not k else registry[k][0])
+    if c2.button("Scan now", key="adm_scan", type="primary", use_container_width=True):
+        from oppos.pipeline import run_scan
+        prog = st.progress(0, text="Starting…")
+        stats = run_scan(sources=[(one, registry[one][0], registry[one][1])] if one else None,
+                         on_progress=lambda i, n, name: prog.progress(i / max(n, 1), text=f"Scanning {name} ({i + 1}/{n})"))
+        set_meta("last_scan", datetime.utcnow().isoformat())
+        _flash(f"Scan done — {stats['fetched']} listings checked, {stats['new']} new" + (f", {len(stats['errors'])} source errors" if stats["errors"] else ""), icon="🔎")
+        st.rerun()
+    c3.link_button("Daily scan runs", "https://github.com/brperdomo/OppOS/actions/workflows/scan.yml", use_container_width=True)
+    st.markdown('<div class="rs-head" style="margin-top:16px">How each source did</div>', unsafe_allow_html=True)
+    st.markdown(_render_source_health(health), unsafe_allow_html=True)
+
+    st.markdown('<div class="rs-head" style="margin-top:16px">Excluded sources</div>', unsafe_allow_html=True)
+    st.caption("Hidden from every list, skipped by scans, never alerted. Pursuits already on a desk stay.")
+    db_sources = dict(list_sources_in_db())
+    keys = sorted(set(SOURCE_LABELS) | set(db_sources) | EXCLUDED_SOURCES)
+    sel = st.multiselect("Excluded sources", keys, default=sorted(EXCLUDED_SOURCES), key="excluded_sources_select", label_visibility="collapsed",
+                         format_func=lambda k: SOURCE_LABELS.get(k, k) + ("" if k in SOURCE_LABELS else " (retired)") + (f" · {db_sources[k]} rows" if db_sources.get(k) else ""))
+    e1, e2 = st.columns([1, 2])
+    if e1.button("Save exclusions", key="excluded_save", use_container_width=True):
+        set_excluded_sources(sel)
+        _flash("Exclusions saved")
+        st.rerun()
+    n_active = count_active_by_sources(sorted(EXCLUDED_SOURCES)) if EXCLUDED_SOURCES else 0
+    if n_active and e2.button(f"Archive their {n_active} open listings", key="excluded_archive", use_container_width=True):
+        _flash(f"Archived {archive_sources(sorted(EXCLUDED_SOURCES))} listings")
+        st.rerun()
+
+
+def _admin_listings() -> None:
+    from oppos.sources.rfp_documents import start_reading
+    rows = get_all_scored(0)
+    unscored = [r for r in rows if (r.get("pipeline_status") or "new") in ("new", "qualified", "expiring_soon") and not _score_of(r)
+                and r.get("source_id") not in PURSUED_IDS and not (_parse_json(r.get("stage1_json")) and not _parse_json(r.get("stage1_json")).get("relevant"))]
+    if unscored and st.button(f"Score the {len(unscored)} open listings that have no fit score", key="adm_score_all"):
+        _score_batch(unscored)
+        st.rerun()
+    q = st.text_input("Find a listing", key="adm_find", placeholder="Title, solicitation number or OppOS ID — any status")
+    if not q.strip():
+        st.caption(f"{len(rows):,} listings stored. Search to reopen, archive, re-read documents or re-score one.")
+        return
+    ql = q.strip().lower()
+    hits = [r for r in rows if ql in (r.get("title") or "").lower() or ql in (r.get("solicitation_number") or "").lower()
+            or ql == (r.get("source_id") or "").lower()][:30]
+    if not hits:
+        st.caption("No listing matches.")
+        return
+    pick = st.selectbox("Listing", hits, key="adm_listing", label_visibility="collapsed",
+                        format_func=lambda r: f'{(r.get("title") or "")[:80]} · {PIPELINE_LABELS.get(r.get("pipeline_status") or "new", r.get("pipeline_status"))} · fit {int(_score_of(r))}')
+    st.markdown(f'<div class="rmeta">{_row_meta(pick)} · ID {_esc(pick["source_id"])}</div>', unsafe_allow_html=True)
+    with st.container(horizontal=True):
+        status = pick.get("pipeline_status") or "new"
+        if status in ("skipped", "expired", "lost") and pick["source_id"] not in OPEN_PURSUITS and st.button("Reopen", key="adm_l_reopen"):
+            set_pipeline_status(pick["source_id"], "new", notes="Reopened by an admin")
+            _flash("Reopened")
+            st.rerun()
+        if status in ("new", "qualified", "expiring_soon") and st.button("Archive", key="adm_l_archive"):
+            set_pipeline_status(pick["source_id"], "skipped", notes="Archived by an admin")
+            _flash("Archived")
+            st.rerun()
+        if st.button("Read its documents again", key="adm_l_read"):
+            start_reading(pick)
+            _flash("Reading its documents in the background", icon="📄")
+            st.rerun()
+        if st.button("Score it again", key="adm_l_score"):
+            _score_one(pick, st.container())
+            st.rerun()
+        st.link_button("Open in OppOS", _app_link("desk" if pick["source_id"] in PURSUED_IDS else "", pick["source_id"]))
+
+
+def _admin_portals() -> None:
+    import pandas as pd
+    from oppos.pursuits import REGISTRATION_STATUSES
+    from oppos.storage.db import upsert_portal_registration
+    cols = ["portal", "display_name", "status", "vendor_id", "login_owner", "lead_time_days", "url", "notes"]
+    df = pd.DataFrame([{c: r.get(c) for c in cols} for r in PORTAL_REGS.values()], columns=cols).sort_values("display_name", na_position="last").reset_index(drop=True)
+    df["lead_time_days"] = pd.to_numeric(df["lead_time_days"], errors="coerce")
+    df["status"] = df["status"].fillna("unknown")
+    known = sum(1 for s in df["status"] if s != "unknown")
+    st.caption(f"Nutrient's accounts on procurement portals: {known} of {len(df)} known. Shown on every pursuit; never store passwords here.")
+    edited = st.data_editor(df, hide_index=True, use_container_width=True, disabled=["portal", "display_name"], key="reg_editor",
+                            column_config={
+                                "portal": None,
+                                "display_name": st.column_config.TextColumn("Portal"),
+                                "status": st.column_config.SelectboxColumn("Our account", options=REGISTRATION_STATUSES, required=True),
+                                "vendor_id": st.column_config.TextColumn("Vendor ID"),
+                                "login_owner": st.column_config.TextColumn("Login held by"),
+                                "lead_time_days": st.column_config.NumberColumn("Lead time (days)", min_value=0, step=1),
+                                "url": st.column_config.LinkColumn("Registration page"),
+                                "notes": st.column_config.TextColumn("Notes"),
+                            })
+    if st.button("Save portals", key="reg_save", type="primary"):
+        clean = lambda v: None if v is None or (isinstance(v, float) and pd.isna(v)) else v
+        changed = 0
+        for new, old in zip(edited.to_dict("records"), df.to_dict("records")):
+            n, o = {k: clean(v) for k, v in new.items()}, {k: clean(v) for k, v in old.items()}
+            if n != o:
+                lead = n.get("lead_time_days")
+                upsert_portal_registration(n["portal"], status=n.get("status") or "unknown", vendor_id=n.get("vendor_id"),
+                                           login_owner=n.get("login_owner"), lead_time_days=int(lead) if lead is not None else None,
+                                           url=n.get("url"), notes=n.get("notes"))
+                changed += 1
+        _flash(f"Saved {changed} change{'s' if changed != 1 else ''}")
+        st.rerun()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _nutrient_credits() -> dict | None:
+    import httpx
+    key = os.environ.get("NUTRIENT_API_KEY", "")
+    if not key:
+        return None
+    try:
+        r = httpx.get("https://api.nutrient.io/account/info", headers={"Authorization": f"Bearer {key}"}, timeout=10)
+        return (r.json() or {}).get("usage") if r.status_code == 200 else None
+    except Exception:
+        return None
+
+
+def _admin_system() -> None:
+    from oppos.drafting import compliance_status as _compliance_status
+    comp = _compliance_status()
+    credits = _nutrient_credits()
+    rows = []
+    if credits:
+        total, used = float(credits.get("totalCredits") or 0), float(credits.get("usedCredits") or 0)
+        rows.append(("Nutrient API credits", f"{total - used:,.0f} left of {total:,.0f}"))
+    else:
+        rows.append(("Nutrient API credits", '<span class="alert">Unknown — NUTRIENT_API_KEY missing or rejected</span>'))
+    rows += [
+        ("Daily scan", f'Last scan {_ago(_cached_meta("last_scan"))} · <a href="https://github.com/brperdomo/OppOS/actions/workflows/scan.yml" target="_blank">runs on GitHub</a>'),
+        ("Document editor licence", "set" if DOCAUTH_LICENSE_KEY else '<span class="alert">not set — Word/PDF exports carry an evaluation watermark</span>'),
+        ("PDF viewer licence", "set" if VIEWER_LICENSE_KEY else '<span class="alert">not set — PDF preview carries a trial watermark</span>'),
+        ("Security answers", f"approved v{_esc(str(comp['version']))} by {_esc(str(comp['approved_by']))} on {_esc(str(comp['approved_at']))}" if comp["approved"]
+         else '<span class="alert">not approved — drafts mark security items [SECURITY TO CONFIRM] until oppos/drafting/compliance.md is approved</span>'),
+        ("Slack", "connected" if os.environ.get("SLACK_WEBHOOK_URL") or os.environ.get("SLACK_BOT_TOKEN") else '<span class="alert">not configured</span>'),
+        ("Notion", "connected" if os.environ.get("NOTION_TOKEN") else '<span class="alert">not configured</span>'),
+    ]
+    st.markdown('<div class="kvs">' + "".join(f'<div class="kv"><span>{l}</span><div>{v}</div></div>' for l, v in rows) + "</div>", unsafe_allow_html=True)
+    with st.container(horizontal=True):
+        if st.button("Send a test message to Slack", key="adm_slack"):
+            from oppos.outputs import slack_pursuits as sp
+            ok = sp._webhook({"text": f"OppOS test message from {CURRENT_USER['email']}"}) if os.environ.get("SLACK_WEBHOOK_URL") else \
+                bool(sp.post(sp.SLACK_DIGEST_CHANNEL, f"OppOS test message from {CURRENT_USER['email']}")) if sp.bot_enabled() and sp.SLACK_DIGEST_CHANNEL else False
+            _flash("Slack test sent" if ok else "Slack test failed — check the webhook or bot token", icon="✅" if ok else "⚠️")
+            st.rerun()
+        if st.button("Check the Notion connection", key="adm_notion"):
+            try:
+                from notion_client import Client
+                Client(auth=os.environ.get("NOTION_TOKEN", "")).databases.retrieve(os.environ.get("NOTION_DATABASE_ID", ""))
+                _flash("Notion connection works")
+            except Exception as e:
+                _flash(f"Notion check failed — {type(e).__name__}: {str(e)[:120]}", icon="⚠️")
+            st.rerun()
+    with st.expander("Secret names the app can see (for fixing a misplaced secret)"):
+        try:
+            names = [f"{k} (section: {', '.join(sorted(v.keys()))})" if hasattr(v, "keys") else k for k, v in ((k, st.secrets[k]) for k in sorted(st.secrets.keys()))]
+            seen = ", ".join(names) or "none"
+        except Exception as e:
+            seen = f"no secrets file ({type(e).__name__})"
+        st.caption(f"{seen}. The editor reads DOCAUTH_LICENSE_KEY and VIEWER_LICENSE_KEY at the top level, outside any [section]. Values are never shown.")
+
 
 
 _PAGE_POOL = st.Page(page_pool, title="Find RFPs", icon=":material/search:", default=True)  # served at /
@@ -2763,10 +1935,3 @@ _nav = st.navigation(
     position="top",
 )
 _nav.run()
-
-st.markdown(f"""
-<div class="oppos-footer">
-    <span style="color: var(--text-secondary);">{NUTRIENT_DOTS_SVG}</span>
-    <span>OppOS &middot; Automated RFP Intelligence</span>
-</div>
-""", unsafe_allow_html=True)

@@ -515,7 +515,7 @@ class _LinkExtractor(HTMLParser):
             self._current_text = []
 
 
-_SCANNABLE_EXTENSIONS = {".pdf", ".docx", ".doc"}
+from oppos.sources.extract_text import READABLE_EXTENSIONS as _SCANNABLE_EXTENSIONS  # attachment links worth fetching
 _DOWNLOAD_PATTERNS = re.compile(r"/download|/attachment|/file|/document|/getfile", re.IGNORECASE)
 
 
@@ -687,13 +687,25 @@ def _make_source_id(content: str | bytes) -> str:
 # Orchestrators
 # ---------------------------------------------------------------------------
 
+def _read_folder(source_id: str, _progress) -> tuple[str, str]:
+    """Read every file in the submission's folder with the shared reader (stored per document, so the desk lists
+    them and nothing is read twice). Returns (text for drafting, text for scoring)."""
+    from oppos.sources.rfp_documents import DRAFT_BUDGET, SCORING_BUDGET, digest_for, read_rfp_documents
+    res = read_rfp_documents({"source_id": source_id, "source": "manual"},
+                             on_progress=lambda name, i, n: _progress("extract_text", f"Reading {name} ({i + 1}/{n})"))
+    if res["read"]:
+        _progress("extract_text", f"  ✅ {res['read']} of {res['files']} document(s) read")
+    for name, note in res["failed"]:
+        _progress("extract_text", f"  ❌ {name} — {note}")
+    return digest_for(source_id, DRAFT_BUDGET), digest_for(source_id, SCORING_BUDGET)
+
+
 def submit_url(url: str, on_progress=None) -> dict[str, Any]:
     """Submit a URL for analysis. Returns the scored opportunity dict.
 
     on_progress(step: str, detail: str) is called at each stage.
     """
     from oppos.scoring.qualifier import qualify
-    from oppos.sources.extract_text import extract_file, SCANNABLE_EXTENSIONS, MAX_TOTAL_TEXT
     from oppos.storage.db import is_seen, set_pipeline_status, upsert_opportunity
 
     def _progress(step, detail=""):
@@ -731,19 +743,17 @@ def submit_url(url: str, on_progress=None) -> dict[str, Any]:
             except Exception as e:
                 return {"error": f"Failed to download file: {e}"}
 
-        _progress("extract_text", f"Extracting text from {fname}")
-        result = extract_file(filepath)
-        doc_text = result.get("text", "")
+        doc_text, score_text = _read_folder(source_id, _progress)
 
         _progress("metadata", "Extracting metadata with AI...")
-        meta = extract_metadata(doc_text, url)
+        meta = extract_metadata(score_text, url)
 
         opp = _build_opportunity(source_id, url, meta)
         opp["attachment_text"] = doc_text
 
         _progress("scoring", "Scoring with Claude...")
-        scored = qualify(opp, attachment_text=doc_text)
-        scored["attachment_text"] = doc_text
+        scored = qualify(opp, attachment_text=score_text)
+        scored["attachment_text"] = doc_text or None
         upsert_opportunity(scored)
         set_pipeline_status(source_id, "qualified", notes="Manual submission — file analyzed")
         return scored
@@ -783,29 +793,17 @@ def submit_url(url: str, on_progress=None) -> dict[str, Any]:
             else:
                 att_files = download_manual_attachments(source_id, links)
 
-    # Extract text from downloaded files
+    # Read the downloaded files
+    score_text = ""
     if att_files:
-        scannable = [f for f in att_files if f.suffix.lower() in SCANNABLE_EXTENSIONS]
-        if scannable:
-            _progress("extract_text", f"Extracting text from {len(scannable)} file(s)...")
-            text_parts = []
-            total_chars = 0
-            for fpath in scannable:
-                if total_chars >= MAX_TOTAL_TEXT:
-                    break
-                result = extract_file(fpath)
-                if result.get("text"):
-                    text_parts.append(f"--- {fpath.name} ---\n{result['text']}")
-                    total_chars += result.get("chars", 0)
-                    _progress("extract_text", f"  ✅ {fpath.name} — {result.get('chars', 0):,} chars")
-            att_text = "\n\n".join(text_parts)[:MAX_TOTAL_TEXT]
+        att_text, score_text = _read_folder(source_id, _progress)
 
     opp = _build_opportunity(source_id, url, meta)
     if att_text:
         opp["attachment_text"] = att_text
 
     _progress("scoring", "Scoring with Claude...")
-    scored = qualify(opp, attachment_text=att_text)
+    scored = qualify(opp, attachment_text=score_text)
     scored["attachment_text"] = att_text or None
     upsert_opportunity(scored)
     # If we extracted document text, go straight to Qualified; otherwise New
@@ -818,7 +816,6 @@ def submit_url(url: str, on_progress=None) -> dict[str, Any]:
 def submit_file(file_bytes: bytes, filename: str, on_progress=None) -> dict[str, Any]:
     """Submit an uploaded file for analysis. Returns the scored opportunity dict."""
     from oppos.scoring.qualifier import qualify
-    from oppos.sources.extract_text import extract_file
     from oppos.storage.db import set_pipeline_status, upsert_opportunity
 
     def _progress(step, detail=""):
@@ -834,25 +831,22 @@ def submit_file(file_bytes: bytes, filename: str, on_progress=None) -> dict[str,
     filepath.write_bytes(file_bytes)
 
     # Extract text
-    _progress("extract_text", f"Extracting text from {filename}...")
-    result = extract_file(filepath)
-    doc_text = result.get("text", "")
-
+    doc_text, score_text = _read_folder(source_id, _progress)
     if not doc_text:
-        return {"error": f"Could not extract text from {filename}: {result.get('error', 'unknown')}"}
-
-    _progress("extract_text", f"  ✅ {filename} — {result.get('chars', 0):,} chars, {result.get('pages', 0)} pages")
+        from oppos.storage.db import get_documents
+        note = next((d.get("note") for d in get_documents(source_id) if d["name"] == filepath.name), "") or "unknown"
+        return {"error": f"Could not read {filename}: {note}"}
 
     # Extract metadata
     _progress("metadata", "Extracting metadata with AI...")
-    meta = extract_metadata(doc_text)
+    meta = extract_metadata(score_text)
 
     opp = _build_opportunity(source_id, "", meta)
     opp["url"] = ""
     opp["attachment_text"] = doc_text
 
     _progress("scoring", "Scoring with Claude...")
-    scored = qualify(opp, attachment_text=doc_text)
+    scored = qualify(opp, attachment_text=score_text)
     scored["attachment_text"] = doc_text
     upsert_opportunity(scored)
     set_pipeline_status(source_id, "qualified", notes="Manual submission — file analyzed")

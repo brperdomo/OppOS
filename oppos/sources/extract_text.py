@@ -1,10 +1,20 @@
-"""Extract text from RFP attachments (PDF via Nutrient DWS, DOCX locally)."""
+"""Read RFP documents with Nutrient's Processor API (DWS `/build`, Markdown output).
+
+One call per document returns Markdown — headings, lists and tables kept — for PDFs and for Office files the
+API converts server-side (Word, Excel, PowerPoint, RTF, ODT, HTML, email, images). Scanned PDFs (no text layer)
+are read again with the API's OCR action; a long PDF that times out is read in page ranges. Plain text files are
+read locally.
+
+Nothing here caps a document's text: the full text is stored per document (`rfp_documents`), and `build_digest`
+makes the size-limited version scoring and drafting send to the model, main solicitation first.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 import httpx
@@ -12,172 +22,151 @@ import httpx
 logger = logging.getLogger(__name__)
 
 NUTRIENT_API_URL = "https://api.nutrient.io/build"
-MAX_TEXT_PER_FILE = 15_000
-MAX_TOTAL_TEXT = 30_000
-SCANNABLE_EXTENSIONS = {".pdf", ".docx"}
+READABLE_EXTENSIONS = {
+    ".pdf", ".doc", ".docx", ".docm", ".dotx", ".rtf", ".odt", ".xls", ".xlsx", ".xlsm", ".xlsb", ".ppt", ".pptx",
+    ".pps", ".ppsx", ".html", ".htm", ".eml", ".msg", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".txt", ".md", ".csv",
+}
+_LOCAL_TEXT = {".txt", ".md", ".csv"}
+SCANNED_CHARS_PER_PAGE = 200   # below this a PDF has no real text layer: read it again with OCR
+PAGE_CHUNK = 25                # page range per call when a long PDF times out
+REQUEST_TIMEOUT = 330.0        # the API's own sync limit is 5 minutes (408 after that)
 
 
 def _get_api_key() -> str:
     return os.environ.get("NUTRIENT_API_KEY", "")
 
 
-def extract_text_from_docx(file_path: Path) -> dict:
-    """Extract text from a DOCX file locally (no API credits used)."""
+def _result(text: str = "", pages: int | None = None, status: str = "read", note: str = "") -> dict:
+    return {"text": text, "pages": pages, "chars": len(text), "status": status, "note": note}
+
+
+def _pdf_pages(path: Path) -> int | None:
     try:
-        from docx import Document
-        doc = Document(str(file_path))
-        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-
-        for table in doc.tables:
-            for row in table.rows:
-                cells = [c.text.strip() for c in row.cells if c.text.strip()]
-                if cells:
-                    paragraphs.append(" | ".join(cells))
-
-        full_text = "\n".join(paragraphs)
-        logger.info("Extracted %d chars from %s (local DOCX parse)", len(full_text), file_path.name)
-        return {
-            "text": full_text[:MAX_TEXT_PER_FILE],
-            "pages": 0,
-            "chars": min(len(full_text), MAX_TEXT_PER_FILE),
-            "credits_remaining": "n/a (local)",
-            "error": None,
-        }
-    except Exception as e:
-        logger.warning("DOCX extraction failed for %s: %s", file_path.name, e)
-        return {"text": "", "pages": 0, "chars": 0, "credits_remaining": "n/a", "error": str(e)}
+        from pypdf import PdfReader
+        return len(PdfReader(str(path)).pages)
+    except Exception:
+        return None
 
 
-def _call_nutrient_api(file_path: Path, api_key: str, use_ocr: bool = True) -> httpx.Response:
-    """Send a PDF to Nutrient DWS API for text extraction."""
-    output_config = {
-        "type": "json-content",
-        "plainText": True,
-    }
-    if use_ocr:
-        output_config["language"] = "english"
-
-    instructions = json.dumps({
-        "parts": [{"file": "file"}],
-        "output": output_config,
-    })
-
-    with open(file_path, "rb") as f:
-        return httpx.post(
-            NUTRIENT_API_URL,
-            headers={"Authorization": f"Bearer {api_key}"},
-            data={"instructions": instructions},
-            files={"file": (file_path.name, f, "application/pdf")},
-            timeout=300.0,
-        )
+def _build(path: Path, key: str, ocr: bool = False, pages: tuple[int, int] | None = None) -> str:
+    part: dict = {"file": "file"}
+    if pages:
+        part["pages"] = {"start": pages[0], "end": pages[1]}
+    instructions: dict = {"parts": [part], "output": {"type": "markdown"}}
+    if ocr:
+        instructions["actions"] = [{"type": "ocr", "language": "english"}]
+    resp = httpx.post(NUTRIENT_API_URL, headers={"Authorization": f"Bearer {key}"},
+                      data={"instructions": json.dumps(instructions)},
+                      files={"file": (path.name, path.read_bytes())}, timeout=REQUEST_TIMEOUT)
+    resp.raise_for_status()
+    return resp.text
 
 
-def _parse_nutrient_response(resp: httpx.Response, file_path: Path) -> dict:
-    """Parse a successful Nutrient API response into our result dict."""
-    data = resp.json()
-    pages = data.get("pages", [])
-    text_parts = [p.get("plainText", "") for p in pages if p.get("plainText")]
-    full_text = "\n\n".join(text_parts)
-    remaining = resp.headers.get("x-pspdfkit-remaining-credits", "?")
-
-    logger.info(
-        "Extracted %d chars from %s (%d pages) — %s credits remaining",
-        len(full_text), file_path.name, len(pages), remaining,
-    )
-    return {
-        "text": full_text[:MAX_TEXT_PER_FILE],
-        "pages": len(pages),
-        "chars": min(len(full_text), MAX_TEXT_PER_FILE),
-        "credits_remaining": remaining,
-        "error": None,
-    }
+def _build_in_ranges(path: Path, key: str, total: int, ocr: bool) -> str:
+    chunks = []
+    for start in range(0, total, PAGE_CHUNK):
+        chunks.append(_build(path, key, ocr=ocr, pages=(start, min(start + PAGE_CHUNK, total) - 1)))
+    return "\n\n".join(chunks)
 
 
-def extract_text_from_pdf(file_path: Path) -> dict:
-    """Upload a PDF to Nutrient DWS and return extraction result.
+def read_file(path: Path) -> dict:
+    """Read one document. Returns {text, pages, chars, status (read / unreadable / failed), note}."""
+    ext = path.suffix.lower()
+    if ext not in READABLE_EXTENSIONS:
+        return _result(status="unreadable", note=f"{ext.lstrip('.').upper() or 'this'} files can't be read")
+    if ext in _LOCAL_TEXT:
+        return _result(path.read_text(errors="replace"))
+    key = _get_api_key()
+    if not key:
+        return _result(status="failed", note="NUTRIENT_API_KEY is not set")
 
-    Tries with OCR first. On timeout (408), retries without OCR (plain text
-    extraction only — faster, works for born-digital PDFs like bid solicitations).
-
-    Returns dict with keys: text, pages, chars, credits_remaining, error.
-    """
-    api_key = _get_api_key()
-    if not api_key:
-        logger.warning("NUTRIENT_API_KEY not set — skipping text extraction")
-        return {"text": "", "pages": 0, "chars": 0, "credits_remaining": "?", "error": "No API key"}
-
+    pages = _pdf_pages(path) if ext == ".pdf" else None
+    note = ""
     try:
-        resp = _call_nutrient_api(file_path, api_key, use_ocr=True)
-        resp.raise_for_status()
-        return _parse_nutrient_response(resp, file_path)
-
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code in (408, 504):
-            logger.info("OCR timed out for %s — retrying without OCR...", file_path.name)
+        try:
+            text = _build(path, key)
+        except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
+            timed_out = isinstance(e, httpx.TimeoutException) or e.response.status_code in (408, 504)
+            if not (timed_out and pages and pages > PAGE_CHUNK):
+                raise
+            text = _build_in_ranges(path, key, pages, ocr=False)
+            note = f"read in {PAGE_CHUNK}-page parts"
+        if ext == ".pdf" and pages and len(text.strip()) < SCANNED_CHARS_PER_PAGE * pages:
+            # A scan: no text layer, so the plain read came back (nearly) empty. Read it again with OCR.
             try:
-                resp = _call_nutrient_api(file_path, api_key, use_ocr=False)
-                resp.raise_for_status()
-                result = _parse_nutrient_response(resp, file_path)
-                result["error"] = None
-                return result
-            except httpx.HTTPStatusError as e2:
-                msg = f"HTTP {e2.response.status_code} (retry without OCR)"
-                logger.warning("Nutrient API retry failed for %s: %s", file_path.name, msg)
-                return {"text": "", "pages": 0, "chars": 0, "credits_remaining": "?", "error": msg}
-            except Exception as e2:
-                logger.warning("Retry failed for %s: %s", file_path.name, e2)
-                return {"text": "", "pages": 0, "chars": 0, "credits_remaining": "?", "error": str(e2)}
-
-        msg = f"HTTP {e.response.status_code}"
-        logger.warning("Nutrient API error for %s: %s %s", file_path.name, e.response.status_code, e.response.text[:200])
-        return {"text": "", "pages": 0, "chars": 0, "credits_remaining": "?", "error": msg}
-
+                ocr_text = _build(path, key, ocr=True) if pages <= PAGE_CHUNK else _build_in_ranges(path, key, pages, ocr=True)
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
+                logger.warning("OCR failed for %s: %s", path.name, e)
+                ocr_text = ""
+            if len(ocr_text.strip()) > len(text.strip()):
+                text, note = ocr_text, "scanned: read with OCR"
+        return _result(text, pages, note=note)
+    except httpx.HTTPStatusError as e:
+        detail = ""
+        try:
+            detail = (e.response.json().get("details") or "")[:160]
+        except Exception:
+            pass
+        logger.warning("Nutrient API %s for %s: %s", e.response.status_code, path.name, detail)
+        return _result(pages=pages, status="failed", note=f"Nutrient API error {e.response.status_code}" + (f": {detail}" if detail else ""))
+    except httpx.TimeoutException:
+        return _result(pages=pages, status="failed", note="Nutrient API timed out")
     except Exception as e:
-        logger.warning("Text extraction failed for %s: %s", file_path.name, e)
-        return {"text": "", "pages": 0, "chars": 0, "credits_remaining": "?", "error": str(e)}
+        logger.warning("Reading %s failed: %s", path.name, e)
+        return _result(pages=pages, status="failed", note=f"{type(e).__name__}: {e}"[:200])
 
 
-def extract_file(file_path: Path) -> dict:
-    """Route to the right extractor based on file extension."""
-    ext = file_path.suffix.lower()
-    if ext == ".pdf":
-        return extract_text_from_pdf(file_path)
-    if ext == ".docx":
-        return extract_text_from_docx(file_path)
-    return {"text": "", "pages": 0, "chars": 0, "credits_remaining": "n/a", "error": f"Unsupported: {ext}"}
+# ---------------------------------------------------------------------------
+# Digest: what scoring and drafting send to the model
+# ---------------------------------------------------------------------------
+
+_MAIN = re.compile(r"solicitation|\brf[piqs]\b|\bitb\b|\bifb\b|scope|statement of work|\bsow\b|requirement|specification|"
+                   r"technical|main document|questions", re.I)
+_BOILERPLATE = re.compile(r"form|packet|w-?9|insurance|affidavit|certif|terms|conditions|sstc|price|pricing|cost|bond|"
+                          r"registration|disclosure|reference check|signature page", re.I)
 
 
-def extract_text_from_attachments(file_paths: list[Path], on_progress=None) -> str:
-    """Extract and concatenate text from multiple attachment files.
+def compact(markdown: str) -> str:
+    """Markdown from the API carries HTML tables; flatten them to pipe rows and drop blank runs (about a third smaller)."""
+    t = re.sub(r"<br\s*/?>", "; ", markdown)
+    t = re.sub(r"</t[dh]>\s*<t[dh][^>]*>", " | ", t)
+    t = re.sub(r"</?(table|tr|td|th|thead|tbody)[^>]*>", "\n", t)
+    t = re.sub(r"<[^>]+>", "", t)
+    t = re.sub(r"[ \t]+\n", "\n", t)
+    return re.sub(r"\n{3,}", "\n\n", t).strip()
 
-    Supports PDF (via Nutrient API) and DOCX (local parse, no credits).
-    on_progress(filename, index, total, result_dict) is called after each file.
-    """
-    if not file_paths:
+
+def _weight(name: str) -> int:
+    if _MAIN.search(name):
+        return 3
+    if _BOILERPLATE.search(name):
+        return 1
+    return 2
+
+
+def build_digest(docs: list[tuple[str, str]], budget: int) -> str:
+    """One text from many documents within `budget` characters. Each document gets a share weighted by what it
+    is (the solicitation and requirements most, forms and terms least); a short document's unused share goes to
+    the long ones. Documents are written main-first, each under a '--- name ---' header."""
+    items = [(name, compact(text)) for name, text in docs if text and text.strip()]
+    if not items:
         return ""
-
-    all_text = []
-    total_len = 0
-
-    scannable = [p for p in file_paths if p.suffix.lower() in SCANNABLE_EXTENSIONS]
-    if not scannable:
-        logger.info("No scannable attachments (PDF/DOCX) to extract text from")
-        return ""
-
-    for i, path in enumerate(scannable):
-        if total_len >= MAX_TOTAL_TEXT:
-            logger.info("Reached text limit (%d chars) — skipping remaining files", MAX_TOTAL_TEXT)
-            if on_progress:
-                on_progress(path.name, i, len(scannable), {"skipped": True})
-            break
-
-        result = extract_file(path)
-        if on_progress:
-            on_progress(path.name, i, len(scannable), result)
-
-        if result["text"]:
-            header = f"--- {path.name} ---"
-            all_text.append(f"{header}\n{result['text']}")
-            total_len += result["chars"]
-
-    return "\n\n".join(all_text)[:MAX_TOTAL_TEXT]
+    overhead = sum(len(n) + 10 for n, _ in items)
+    remaining = max(budget - overhead, 0)
+    order = sorted(range(len(items)), key=lambda i: len(items[i][1]) / _weight(items[i][0]))
+    weights_left = sum(_weight(n) for n, _ in items)
+    take: dict[int, int] = {}
+    for i in order:
+        name, text = items[i]
+        share = remaining * _weight(name) // max(weights_left, 1)
+        take[i] = min(len(text), share)
+        remaining -= take[i]
+        weights_left -= _weight(name)
+    out = []
+    for i in sorted(range(len(items)), key=lambda i: (-_weight(items[i][0]), items[i][0])):
+        name, text = items[i]
+        body = text[:take[i]]
+        if take[i] < len(text):
+            body += f"\n[... {len(text) - take[i]:,} more characters of this document not included ...]"
+        out.append(f"--- {name} ---\n{body}")
+    return "\n\n".join(out)
