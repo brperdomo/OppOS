@@ -191,6 +191,29 @@ def reopen_pursuit(opp: dict[str, Any], user: dict[str, Any], reason: str = "") 
     notify_status("pursuing", opp, user, reason or "Reopened from Closed")
 
 
+def request_collaboration(opp: dict[str, Any], pursuit: dict[str, Any], user: dict[str, Any], note: str = "") -> None:
+    """Ask the owner to let this person work on the pursuit with them."""
+    from oppos.outputs.slack_status import notify_collaboration
+    from oppos.storage.db import request_collaborator
+    sid = opp["source_id"]
+    email, name = (user.get("email") or "").lower(), user.get("name") or user.get("email") or ""
+    request_collaborator(sid, email, name, note)
+    add_pursuit_event(sid, email, "collab_requested", note or "Asked to collaborate")
+    notify_collaboration("requested", opp, pursuit, name, note=note)
+
+
+def decide_collaboration(opp: dict[str, Any], pursuit: dict[str, Any], email: str, name: str, approve: bool,
+                         user: dict[str, Any]) -> None:
+    """The owner (or an admin) approves or declines a request."""
+    from oppos.outputs.slack_status import notify_collaboration
+    from oppos.storage.db import decide_collaborator
+    sid = opp["source_id"]
+    status = "approved" if approve else "declined"
+    decide_collaborator(sid, email, status, user.get("email") or "")
+    add_pursuit_event(sid, user.get("email", ""), f"collab_{status}", name or email)
+    notify_collaboration(status, opp, pursuit, name or email, decider=user.get("name") or user.get("email") or "")
+
+
 def release_claim(opp: dict[str, Any], user: dict[str, Any], reason: str = "") -> None:
     """Un-claim an evaluating RFP so someone else can pick it up."""
     sid = opp["source_id"]

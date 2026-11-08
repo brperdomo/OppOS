@@ -116,6 +116,36 @@ def build_status_message(stage: str, opp: dict[str, Any], who: str, reason: str 
     return {"text": text, "blocks": blocks}
 
 
+def notify_collaboration(kind: str, opp: dict[str, Any], pursuit: dict[str, Any], person: str, decider: str = "", note: str = "") -> bool:
+    """kind: requested | approved | declined. Posted where the pursuit's stage notices go; never raises."""
+    title = (opp.get("title") or "Untitled")[:140]
+    url = opp.get("url") or ""
+    owner = pursuit.get("owner_name") or pursuit.get("owner_email") or "the owner"
+    line = {"requested": f"🤝 *{person}* asked to work on this with {owner}",
+            "approved": f"🤝 *{person}* is now working on this with {owner}" + (f" (approved by {decider})" if decider and decider != owner else ""),
+            "declined": f"🤝 {decider or owner} declined {person}'s request to collaborate"}[kind]
+    head = line + " · " + (f"<{url}|{title}>" if url else f"*{title}*")
+    blocks: list[dict[str, Any]] = [{"type": "section", "text": {"type": "mrkdwn", "text": head}}]
+    if note:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"_{note[:600]}_"}})
+    if APP_URL:
+        blocks.append({"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": "Open on my desk"},
+                                                         "url": f"{APP_URL}/desk?open={opp.get('source_id') or ''}"}]})
+    payload = {"text": line.replace("*", "") + f": {title}", "blocks": blocks}
+    try:
+        if sp.bot_enabled():
+            sent = False
+            if pursuit.get("slack_channel_id"):
+                sent = sp.post(pursuit["slack_channel_id"], payload["text"], blocks) is not None
+            if sp.SLACK_DIGEST_CHANNEL:
+                sent = sp.post(sp.SLACK_DIGEST_CHANNEL, payload["text"], blocks) is not None or sent
+            return sent
+        return sp._webhook(payload)
+    except Exception as e:
+        logger.warning("Slack collaboration notice failed for %s: %s", opp.get("source_id"), e)
+        return False
+
+
 def notify_status(stage: str, opp: dict[str, Any], user: dict[str, Any] | None, reason: str = "",
                   pursuit: dict[str, Any] | None = None, notion_url: str = "", extra: str = "") -> bool:
     """Post the stage message everywhere it belongs. Never raises — Slack must not block the workflow."""

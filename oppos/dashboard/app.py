@@ -80,7 +80,7 @@ NUTRIENT_CSS = """
 :root {
     --bg: #171413; --surface: #201c1a; --raised: #2a2522; --line: #3a3330;
     --text: #efe9e3; --muted: #a39a92; --faint: #6f6761;
-    --accent: #f0c966; --alert: #e8836b;
+    --accent: #f0c966; --alert: #e2a65a;
     /* older names still used by inline styles */
     --text-primary: var(--text); --text-secondary: var(--muted); --text-tertiary: var(--faint);
     --accent-gold: var(--accent); --border-subtle: var(--line); --border-medium: var(--line);
@@ -96,7 +96,7 @@ NUTRIENT_CSS = """
 [data-testid="stStatusWidget"] { visibility: hidden !important; }
 .stDeployButton, [data-testid="stAppDeployButton"], [data-testid="stToolbarActions"] { display: none; }
 header[data-testid="stHeader"] { background: var(--bg); }
-.block-container { padding-top: 2rem !important; max-width: 1240px !important; }
+.block-container { padding-top: 4.25rem !important; max-width: 1240px !important; }
 
 /* Header */
 .oppos-header { display: flex; align-items: center; }
@@ -176,8 +176,16 @@ ul.plain li { margin-bottom: 4px; }
 [class*="st-key-facts_"] { background: var(--surface); border-radius: 8px; padding: 14px 18px; margin: 10px 0 4px; gap: 6px !important; }
 .fact { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 14px; font-size: 14.5px; padding: 3px 0; }
 .fact > span, .fact-label { color: var(--muted); font-size: 14.5px; }
+.fact .help, .help { color: var(--faint); font-size: 13px; margin-top: 2px; line-height: 1.45; }
+.fact .unknown { color: var(--muted); }
+.next-help { color: var(--faint); font-size: 13px; text-align: right; margin: -6px 0 6px; }
+.collab { background: var(--surface); border-radius: 8px; padding: 12px 16px; margin: 8px 0; font-size: 14.5px; }
+.collab .help { margin-top: 4px; }
 [class*="st-key-facts_"] [data-testid="stElementContainer"] { margin: 0; }
-[class*="st-key-acct_"] { margin: 6px 0 4px; }
+[class*="st-key-acct_"] { margin: 2px 0; }
+[class*="st-key-acct_"] [data-testid="stVerticalBlock"] { gap: 0 !important; }
+[class*="st-key-acct_"] [data-testid="stPopover"] { margin-left: 12px; }
+[class*="st-key-acct_"] .fact-label { padding-top: 6px; width: 110px; }
 .doc-reading { color: var(--muted); font-size: 14px; padding: 4px 0 8px; }
 .doc { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; font-size: 14.5px; }
 .doc .ext { font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; text-align: center; padding: 1px 0; }
@@ -329,6 +337,12 @@ def _cached_pursuits() -> list[dict]:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def _cached_collaborators() -> list[dict]:
+    from oppos.storage.db import list_collaborators
+    return list_collaborators()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def _cached_excluded() -> list[str]:
     from oppos.storage.db import get_excluded_sources
     return list(get_excluded_sources())
@@ -368,6 +382,18 @@ from oppos.pursuits import OPEN_STAGES as _OPEN_STAGES
 _ALL_PURSUITS = _cached_pursuits()
 OPEN_PURSUITS = {p["source_id"]: p for p in _ALL_PURSUITS if p.get("status") in _OPEN_STAGES}
 EXCLUDED_SOURCES = set(_cached_excluded())
+COLLABS: dict[str, list[dict]] = {}
+for _c in _cached_collaborators():
+    COLLABS.setdefault(_c["source_id"], []).append(_c)
+
+
+def _collaborators(sid: str, status: str = "approved") -> list[dict]:
+    return [c for c in COLLABS.get(sid, []) if c.get("status") == status]
+
+
+def _works_on(p: dict, email: str) -> bool:
+    """Owner or approved collaborator."""
+    return (p.get("owner_email") or "").lower() == email or any((c.get("email") or "") == email for c in _collaborators(p["source_id"]))
 # Anything with a pursuit record (open or closed) lives on a desk, never in the shared pool.
 # "Released" means back to the pool, so it is not counted here.
 PURSUED_IDS = {p["source_id"] for p in _ALL_PURSUITS if p.get("status") != "released"}
@@ -1165,7 +1191,6 @@ def _pool_row(opp: dict, k: str, primary: bool) -> None:
 
 # ── Pursuit workspace ─────────────────────────────────────────────────────────
 
-_REG_SHORT = {"unknown": "Not checked", "not_registered": "No account", "in_progress": "Requested", "registered": "Registered"}
 _MANUAL_CHECKLIST = ("questions", "salesforce", "security", "pricing", "legal", "final")  # the rest the app knows itself
 
 
@@ -1195,26 +1220,32 @@ def _render_facts(opp: dict, pursuit: dict, draft: dict | None, can_edit: bool, 
     portal_key = str(pursuit.get("portal") or opp.get("source") or "")
     reg = PORTAL_REGS.get(portal_key) or {}
     portal_name = reg.get("display_name") or SOURCE_LABELS.get(opp.get("source", ""), "")
-    listing = f' · <a href="{_esc(opp["url"])}" target="_blank">open the listing</a>' if opp.get("url") else ""
-    if (reg.get("status") or "unknown") in ("unknown", "not_registered") and PORTAL_ACCESS_REQUEST_URL and portal_key != "manual":
-        listing += f' · <a href="{_esc(PORTAL_ACCESS_REQUEST_URL)}" target="_blank">request an account</a>'
+    listing = (f'<div class="help"><a href="{_esc(opp["url"])}" target="_blank">Open the RFP listing</a> — the agency\'s page for this RFP, '
+               'where amendments and Q&A answers are posted.</div>') if opp.get("url") else ""
 
     due_raw = pursuit.get("submission_deadline") or opp.get("response_deadline")
     dleft = days_until(due_raw)
-    due = _esc(_due_phrase(due_raw)) if due_raw or not esol.get("submission_deadline") else _esc(str(esol["submission_deadline"])[:80])
+    if due_raw:
+        phrase = _due_phrase(due_raw)
+        due = _esc(phrase[4:] if phrase.startswith("Due ") else phrase)
+    elif esol.get("submission_deadline"):
+        due = _esc(str(esol["submission_deadline"])[:80])
+    else:
+        due = '<span class="unknown">Not known yet</span>'
     if dleft is not None and dleft <= 7:
         due = f'<span class="alert">{due}</span>'
     qa = pursuit.get("qa_deadline") or sub.get("questions_deadline")
     if qa:
-        due += f" · questions by {_esc(str(qa)[:40])}"
+        due += f'<div class="help">Questions to the agency are due {_esc(str(qa)[:60])}.</div>'
 
     if method == "portal":
-        where = f"{_esc(portal_name) or 'The portal'}{listing}"
+        where = _esc(portal_name) or "The agency's portal"
         if how and (pursuit.get("submission_method") or "unknown") == "unknown":  # not confirmed by a person yet
-            where += f'<div class="faint">The RFP says: {_esc(how[:200])}</div>'
+            where += f'<div class="help">The RFP says: {_esc(how[:200])}</div>'
+        where += listing
     elif method == "email":
         to = str(sub.get("email_to") or opp.get("contact_email") or "")
-        where = (f'Email to <a href="mailto:{_esc(to)}">{_esc(to)}</a>' if to else '<span class="alert">By email; the address isn\'t known yet</span>')
+        where = (f'Email to <a href="mailto:{_esc(to)}">{_esc(to)}</a>' if to else '<span class="unknown">By email; the address isn\'t known yet</span>')
         if sub.get("email_subject"):
             where += f' · subject line <code>{_esc(str(sub["email_subject"]))}</code>'
     elif method == "mail":
@@ -1222,7 +1253,8 @@ def _render_facts(opp: dict, pursuit: dict, draft: dict | None, can_edit: bool, 
     elif method == "in_person":
         where = "In person" + (f" · {_esc(opp.get('office') or '')}" if opp.get("office") else "")
     else:
-        where = f'<span class="alert">Not known yet</span>{listing}'
+        where = ('<span class="unknown">Not known yet</span><div class="help">OppOS fills this in from the RFP\'s documents; '
+                 'or set it with Edit details.</div>' + listing)
 
     fmt = [str(x) for x in (sub.get("format_requirements") or []) if not str(x).lower().startswith("required form")][:3]
     forms = [str(x) for x in ((draft or {}).get("required_forms") or [])]
@@ -1235,30 +1267,64 @@ def _render_facts(opp: dict, pursuit: dict, draft: dict | None, can_edit: bool, 
     with st.container(key=f"facts_{k}"):
         st.markdown(rows_html([("Due", due), ("Submit on" if method in ("portal", "unknown") else "Submit", where)]), unsafe_allow_html=True)
         if method in ("portal", "unknown") and portal_key and portal_key != "manual":
-            cur = reg.get("status") or pursuit.get("registration_status") or "unknown"
-            choice = cur
-            if cur == "not_required":
-                st.markdown('<div class="fact"><span>Our account</span><div>Not needed on this portal</div></div>', unsafe_allow_html=True)
-            else:
-                with st.container(horizontal=True, vertical_alignment="center", gap="medium", key=f"acct_{k}"):
-                    st.markdown('<div class="fact-label">Our account</div>', unsafe_allow_html=True, width=110)
-                    choice = st.segmented_control("Our account", list(_REG_SHORT), default=cur, format_func=_REG_SHORT.get, width="content",
-                                                  key=f"{k}_reg", label_visibility="collapsed", disabled=not CURRENT_USER.get("can_work"))
-            if choice and choice != cur:
-                upsert_portal_registration(portal_key, status=choice)
-                save_pursuit_fields(sid, CURRENT_USER, registration_status=choice)
-                _flash(f"{portal_name or 'Portal'}: {_REG_SHORT[choice].lower()} — applies to every RFP from it", icon="✅")
-                st.rerun()
+            _account_row(portal_key, portal_name or "this portal", reg, pursuit, sid, k)
         more = []
         if fmt or forms:
             more.append(("Format", _esc("; ".join(f[:300] for f in fmt)) + (("<br>" if fmt else "") + f"{len(forms)} required form{'s' if len(forms) != 1 else ''}"
-                                                                             " (listed under RFP and documents)" if forms else "")))
-        more.append(("Contact", contact or '<span class="alert">Not in the listing yet</span>'))
+                                                                             " — listed under RFP and documents" if forms else "")))
+        more.append(("Contact", contact or ('<span class="unknown">Not in the RFP yet</span>'
+                                            + ('<div class="help">Add one with Edit details if you find it.</div>' if can_edit else ""))))
         if pursuit.get("next_action"):
             more.append(("Next step", _esc(pursuit["next_action"][:200])))
         st.markdown(rows_html(more), unsafe_allow_html=True)
         if can_edit:
             _edit_details_popover(opp, pursuit, k)
+
+
+_REG_HELP = {"unknown": "Nobody has confirmed whether Nutrient can log in here.",
+             "not_registered": "We can't submit here until someone requests an account.",
+             "in_progress": "An account has been requested; waiting for access.",
+             "registered": "We can log in and submit here."}
+
+
+def _account_row(portal_key: str, portal_name: str, reg: dict, pursuit: dict, sid: str, k: str) -> None:
+    """Our account on the portal: one status line and an Update menu that explains each choice."""
+    from oppos.pursuits import save_pursuit_fields
+    from oppos.storage.db import upsert_portal_registration
+    cur = reg.get("status") or pursuit.get("registration_status") or "unknown"
+    if cur == "not_required":
+        st.markdown('<div class="fact"><span>Our account</span><div>Not needed on this portal</div></div>', unsafe_allow_html=True)
+        return
+    label = {"unknown": "Not checked yet", "not_registered": "We don't have one", "in_progress": "Requested", "registered": "Registered"}.get(cur, cur)
+    with st.container(key=f"acct_{k}"):
+        _account_controls(portal_key, portal_name, cur, label, pursuit, sid, k)
+
+
+def _account_controls(portal_key: str, portal_name: str, cur: str, label: str, pursuit: dict, sid: str, k: str) -> None:
+    from oppos.pursuits import save_pursuit_fields
+    from oppos.storage.db import upsert_portal_registration
+    a, b = st.columns([1, 5.6], vertical_alignment="top")
+    a.markdown('<div class="fact-label">Our account</div>', unsafe_allow_html=True)
+    with b:
+        with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+            st.markdown(f'<span class="{"unknown" if cur in ("unknown", "not_registered") else ""}">{_esc(label)}</span>', unsafe_allow_html=True, width="content")
+            if CURRENT_USER.get("can_work"):
+                with st.popover("Update", type="tertiary"):
+                    st.markdown(f"**Does Nutrient have a login on {_esc(portal_name)}?** Your answer applies to every RFP from this portal.")
+                    opts = ["unknown", "not_registered", "in_progress", "registered"]
+                    names = {"unknown": "Not checked yet", "not_registered": "We don't have an account", "in_progress": "Account requested",
+                             "registered": "We're registered"}
+                    choice = st.radio("Our account", opts, index=opts.index(cur) if cur in opts else 0, key=f"{k}_reg",
+                                      format_func=names.get, captions=[_REG_HELP[o] for o in opts], label_visibility="collapsed")
+                    if PORTAL_ACCESS_REQUEST_URL:
+                        st.link_button("Request an account from IT", PORTAL_ACCESS_REQUEST_URL)
+                        st.caption("Opens the IT service desk form for procurement-portal access. Then choose Account requested above.")
+                    if choice != cur:
+                        upsert_portal_registration(portal_key, status=choice)
+                        save_pursuit_fields(sid, CURRENT_USER, registration_status=choice)
+                        _flash(f"{portal_name}: {names[choice].lower()} — saved for every RFP from it", icon="✅")
+                        st.rerun()
+        st.markdown(f'<div class="help">{_esc(_REG_HELP.get(cur, ""))}</div>', unsafe_allow_html=True)
 
 
 def _edit_details_popover(opp: dict, pursuit: dict, k: str) -> None:
@@ -1297,6 +1363,7 @@ def _next_step(opp: dict, pursuit: dict, draft: dict | None, k: str, slot) -> No
     npid = pursuit.get("notion_page_id") or opp.get("notion_page_id")
 
     def submitted_form(key: str) -> None:
+        st.caption("Once the response is in. You'll record the outcome when the agency decides.")
         note = st.text_input("Submission note", key=f"{key}_note", placeholder="Submitted on the portal, confirmation #…")
         if st.button("Mark submitted", key=f"{key}_go", type="primary"):
             transition_pursuit(opp, "submitted", CURRENT_USER, note)
@@ -1327,11 +1394,13 @@ def _next_step(opp: dict, pursuit: dict, draft: dict | None, k: str, slot) -> No
 
     with st.popover("More"):
         if stage == "evaluating":
+            st.caption("Not worth pursuing? Puts it back in Find RFPs for someone else.")
             if st.button("Put it back in Find RFPs", key=f"{k}_release"):
                 release_claim(opp, CURRENT_USER)
                 _flash(f"Put back — {title[:60]} is in Find RFPs again", icon="↩️")
                 st.rerun()
         if stage == "active" and draft:
+            st.caption("Replaces the current draft with a new one (about 15 minutes).")
             if st.button("Write the draft again", key=f"{k}_redraft"):
                 with slot:
                     _run_draft(opp, pursuit)
@@ -1342,17 +1411,75 @@ def _next_step(opp: dict, pursuit: dict, draft: dict | None, k: str, slot) -> No
             st.markdown('<div class="rs-head">Already submitted?</div>', unsafe_allow_html=True)
             submitted_form(f"{k}_sub2")
         if stage != "evaluating":
+            st.caption("Copies this pursuit's status and details to its page in the team's Notion database.")
             if st.button("Update the Notion page" if npid else "Create the Notion page", key=f"{k}_push"):
                 with slot:
                     _push_to_notion(opp)
-            st.markdown('<div class="rs-head">Salesforce opportunity request (paste in the SDR channel)</div>', unsafe_allow_html=True)
+            st.markdown('<div class="rs-head">Salesforce opportunity request</div>', unsafe_allow_html=True)
+            st.caption("Copy this into the SDR Slack channel to get a Salesforce opportunity created.")
             st.code(build_sdr_message(opp), language=None)
         if stage == "active":
-            ab_reason = st.text_input("Abandon — why?", key=f"{k}_ab_reason", placeholder="Timeline too tight, requirements changed…")
+            st.markdown('<div class="rs-head">Abandon</div>', unsafe_allow_html=True)
+            st.caption("Stops the pursuit and closes it as lost. You can reopen it later from Closed.")
+            ab_reason = st.text_input("Why?", key=f"{k}_ab_reason", placeholder="Timeline too tight, requirements changed…")
             if st.button("Abandon this pursuit", key=f"{k}_ab_go"):
                 transition_pursuit(opp, "abandoned", CURRENT_USER, ab_reason)
                 _flash(f"Abandoned — {title[:60]}", icon="🗑️")
                 st.rerun()
+
+
+def _next_help(stage: str, draft: dict | None) -> str:
+    """One sentence under the yellow button: what it does."""
+    if stage == "evaluating":
+        return "Start pursuing creates a Notion page and a Slack channel for this RFP and starts deadline reminders. Not a fit? More → Put it back."
+    if stage == "active" and not draft:
+        return "Draft response writes a first answer to every requirement, from the RFP and its documents (about 15 minutes)."
+    if stage == "active":
+        return "Review the answers under Response, send the Word file, then Mark submitted."
+    return "Record outcome once the agency announces the award."
+
+
+def _ask_to_collaborate(opp: dict, pursuit: dict, k: str) -> None:
+    """Someone else's pursuit: ask to work on it with them, or see where the request stands."""
+    from oppos.pursuits import request_collaboration
+    owner = pursuit.get("owner_name") or pursuit.get("owner_email") or "the owner"
+    mine = next((c for c in COLLABS.get(opp["source_id"], []) if (c.get("email") or "") == CURRENT_USER["email"]), None)
+    if mine and mine.get("status") == "requested":
+        st.markdown(f'<span class="help">Request sent — waiting for {_esc(owner)}</span>', unsafe_allow_html=True)
+        return
+    if not CURRENT_USER.get("can_work"):
+        st.markdown(f'<span class="help">{_esc(owner)}\'s pursuit</span>', unsafe_allow_html=True)
+        return
+    if mine and mine.get("status") == "declined":
+        st.markdown(f'<span class="help">{_esc(owner)} declined your last request</span>', unsafe_allow_html=True)
+    with st.popover("Ask to collaborate", type="primary"):
+        st.markdown(f"**Work on this with {_esc(owner)}.** They get your request on their desk and in Slack; once they approve, "
+                    "it shows on your desk and you can edit it too.")
+        note = st.text_area("What would you help with?", key=f"{k}_collab_note", placeholder="I know this agency; happy to take the security section.")
+        if st.button("Send request", key=f"{k}_collab_go", type="primary"):
+            request_collaboration(opp, pursuit, CURRENT_USER, note.strip())
+            _flash(f"Request sent to {owner}", icon="🤝")
+            st.rerun()
+
+
+def _collab_requests(opp: dict, pursuit: dict, k: str) -> None:
+    """Owner (or an admin): requests to collaborate, each with Approve / Decline."""
+    from oppos.pursuits import decide_collaboration
+    for c in _collaborators(opp["source_id"], "requested"):
+        who = c.get("name") or c["email"]
+        with st.container(key=f"{k}_collab_{c['email']}"):
+            st.markdown(f'<div class="collab"><b>{_esc(who)}</b> asked to work on this with you.'
+                        + (f'<div class="help">“{_esc(c["note"][:300])}”</div>' if c.get("note") else "")
+                        + '<div class="help">Approving lets them edit this pursuit and puts it on their desk.</div></div>', unsafe_allow_html=True)
+            with st.container(horizontal=True):
+                if st.button("Approve", key=f"{k}_collab_yes_{c['email']}", type="primary"):
+                    decide_collaboration(opp, pursuit, c["email"], who, True, CURRENT_USER)
+                    _flash(f"{who} is now working on this with you", icon="🤝")
+                    st.rerun()
+                if st.button("Decline", key=f"{k}_collab_no_{c['email']}"):
+                    decide_collaboration(opp, pursuit, c["email"], who, False, CURRENT_USER)
+                    _flash(f"Declined {who}'s request", icon="✋")
+                    st.rerun()
 
 
 def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
@@ -1365,8 +1492,13 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
     sid = opp.get("source_id", "")
     k = f"pp_{sid}"
     stage = pursuit.get("status") or "active"
-    can_edit = bool(CURRENT_USER.get("is_admin")) or (pursuit.get("owner_email") or "").lower() == CURRENT_USER["email"]
+    me = CURRENT_USER["email"]
+    is_owner = (pursuit.get("owner_email") or "").lower() == me
+    can_edit = bool(CURRENT_USER.get("is_admin")) or _works_on(pursuit, me)
     owner = pursuit.get("owner_name") or pursuit.get("owner_email") or "Unassigned"
+    team = [c.get("name") or c["email"] for c in _collaborators(sid)]
+    if team:
+        owner += " with " + ", ".join(team)
     draft = _parse_json(pursuit.get("draft_json")) or None
     s2 = _parse_json(opp.get("stage2_json"))
     npid = pursuit.get("notion_page_id") or opp.get("notion_page_id")
@@ -1395,7 +1527,11 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
         if can_edit:
             _next_step(opp, pursuit, draft, k, slot)
         else:
-            st.caption(f"{owner}'s pursuit")
+            _ask_to_collaborate(opp, pursuit, k)
+    if can_edit:
+        st.markdown(f'<div class="next-help">{_esc(_next_help(stage, draft))}</div>', unsafe_allow_html=True)
+    if is_owner or CURRENT_USER.get("is_admin"):
+        _collab_requests(opp, pursuit, k)
 
     from oppos.sources.rfp_documents import stored_extraction
     docs = get_documents(sid)
@@ -1725,7 +1861,7 @@ def page_desk() -> None:
         st.session_state["desk_deeplink"] = _open_q
         target = next((p for p in all_p if p["source_id"] == _open_q), None)
         if target:
-            mine = (target.get("owner_email") or "").lower() == me
+            mine = _works_on(target, me)
             st.session_state["pursuit_view"] = "Mine" if mine else "Team"
             st.session_state[f"desk_sel_{'Mine' if mine else 'Team'}"] = _open_q
         else:
@@ -1734,7 +1870,8 @@ def page_desk() -> None:
     rail, work = st.columns([1.15, 3], gap="large")
     with rail:
         view = st.segmented_control("View", ["Mine", "Team"], default="Mine", key="pursuit_view", label_visibility="collapsed", required=True)
-        rows_p = all_p if view == "Team" else [p for p in all_p if (p.get("owner_email") or "").lower() == me]
+        # Mine: what I own or was approved to work on. Team: everyone else's — ask to collaborate from there.
+        rows_p = [p for p in all_p if _works_on(p, me) != (view == "Team")]
         order = {"evaluating": 1, "active": 0, "submitted": 2}
         live = sorted([p for p in rows_p if p.get("status") in order],
                       key=lambda p: (order[p["status"]], p.get("submission_deadline") or "9999"))
@@ -1742,7 +1879,7 @@ def page_desk() -> None:
                         key=lambda x: x.get("closed_at") or x.get("updated_at") or "", reverse=True)
         opps = get_opps_by_ids([p["source_id"] for p in live] + [p["source_id"] for p in closed[:50]])
         if not live:
-            st.markdown('<p class="muted">Nothing on ' + ("anyone's desk." if view == "Team" else "your desk yet. Grab an RFP in Find RFPs and it lands here.") + "</p>",
+            st.markdown('<p class="muted">' + ("Nobody else has an RFP on their desk." if view == "Team" else "Nothing on your desk yet. Grab an RFP in Find RFPs and it lands here.") + "</p>",
                         unsafe_allow_html=True)
         else:
             ids = [p["source_id"] for p in live]
@@ -1755,8 +1892,11 @@ def page_desk() -> None:
                 dl = _du(p.get("submission_deadline") or o.get("response_deadline"))
                 due = "" if dl is None else ("overdue" if dl < 0 else "due today" if dl == 0 else f"{dl} days left")
                 bits = [stage_label(p["status"]), SOURCE_STATE_MAP.get(o.get("source", ""), ""), due]
-                if view == "Team":
-                    bits.append((p.get("owner_name") or p.get("owner_email") or "").split(" ")[0])
+                if view == "Team" or (p.get("owner_email") or "").lower() != me:
+                    bits.append((p.get("owner_name") or p.get("owner_email") or "").split(" ")[0] + "'s")
+                n_req = len(_collaborators(p["source_id"], "requested"))
+                if n_req and (p.get("owner_email") or "").lower() == me:
+                    bits.append(f"{n_req} asking to collaborate")
                 return " · ".join(b for b in bits if b)
             with st.container(key="desk_rail"):
                 st.radio("Pursuits", ids, key=key, label_visibility="collapsed",
