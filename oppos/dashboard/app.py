@@ -17,7 +17,33 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+
 import os
+
+
+def _drop_stale_oppos_modules() -> None:
+    """After a deploy, Streamlit Cloud re-runs this script but can keep the previous versions of the oppos modules in
+    memory (new page, old database code: new columns never created). When any oppos module's file is newer than the
+    last (re)load, the whole package is dropped so the imports below load the current code."""
+    import time as _time
+    try:
+        baseline = getattr(sys, "_oppos_loaded_at", None) or os.stat(f"/proc/{os.getpid()}").st_ctime  # process start (Linux)
+    except OSError:
+        return  # not Linux: local runs reload changed modules through Streamlit's own file watcher
+    names = [n for n in sys.modules if (n == "oppos" or n.startswith("oppos.")) and n != "oppos.dashboard.app"]
+    for n in names:
+        path = getattr(sys.modules.get(n), "__file__", None)
+        try:
+            if path and os.path.getmtime(path) > baseline:
+                for m in names:
+                    sys.modules.pop(m, None)
+                sys._oppos_loaded_at = _time.time()  # everything imported from here on is current
+                return
+        except OSError:
+            continue
+
+
+_drop_stale_oppos_modules()
 
 _secrets_loaded = []
 _secrets_errors = []
