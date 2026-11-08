@@ -296,7 +296,9 @@ _MIGRATIONS = [
     "ALTER TABLE opportunities ADD COLUMN notion_dirty INTEGER DEFAULT 0",  # metadata changed after the Notion page was written
     "ALTER TABLE pursuits ADD COLUMN draft_json TEXT",
     "ALTER TABLE pursuits ADD COLUMN drafted_at TEXT",
-    "ALTER TABLE pursuits ADD COLUMN details_saved_at TEXT",  # set once the SDR has saved Pursuit details; then those values are authoritative
+    "ALTER TABLE pursuits ADD COLUMN details_saved_at TEXT",
+    "ALTER TABLE rfp_documents ADD COLUMN summary TEXT",   # one sentence: what the document is and asks for
+    "ALTER TABLE rfp_documents ADD COLUMN doc_type TEXT",  # from Data Extraction: solicitation, form, terms_and_conditions…  # set once the SDR has saved Pursuit details; then those values are authoritative
 ]
 
 
@@ -394,8 +396,18 @@ def list_collaborators() -> list[dict[str, Any]]:
     return _query("SELECT * FROM pursuit_collaborators WHERE status IN ('requested', 'approved', 'declined') ORDER BY requested_at")
 
 
+def set_document_info(source_id: str, name: str, summary: str | None = None, doc_type: str | None = None) -> None:
+    sets, vals = [], []
+    if summary is not None:
+        sets.append("summary = ?"); vals.append(summary)
+    if doc_type is not None:
+        sets.append("doc_type = ?"); vals.append(doc_type)
+    if sets:
+        _execute(f"UPDATE rfp_documents SET {', '.join(sets)} WHERE source_id = ? AND name = ?", (*vals, source_id, name))
+
+
 def get_documents(source_id: str, with_text: bool = False) -> list[dict[str, Any]]:
-    cols = "*" if with_text else "source_id, name, size, pages, chars, status, note, read_at"
+    cols = "*" if with_text else "source_id, name, size, pages, chars, status, note, read_at, summary, doc_type"
     return _query(f"SELECT {cols} FROM rfp_documents WHERE source_id = ? ORDER BY name", (source_id,))
 
 

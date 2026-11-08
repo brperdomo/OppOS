@@ -478,6 +478,85 @@ def extract_rfp_requirements(
     return result
 
 
+_REQ_HEADER = re.compile(r"(requirements?|requirement description|specification|question)", re.I)
+_ID_HEADER = re.compile(r"(req(uirement)?\.?\s*(#|no\.?|id|number)|^id$|^#$|^item( #| no\.?)?$|^ref(erence)?\b)", re.I)
+
+
+def _cells(row: str) -> list[str]:
+    import html as _html
+    return [_html.unescape(re.sub(r"<[^>]+>", "", re.sub(r"<br\s*/?>", " ", c))).strip()
+            for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.S)]
+
+
+def _matrix_category(cat: str, text: str) -> str:
+    t = f"{cat} {text}".lower()
+    if re.search(r"secur|privacy|complian|audit|access control|encrypt|hipaa|cjis|fedramp|soc ?2", t):
+        return "security_compliance"
+    if re.search(r"interface|integrat|api|data (migration|conversion)|technical|infrastructure|hosting|performance", t):
+        return "technical"
+    if re.search(r"train|support|maint|implement|transition|project", t):
+        return "implementation"
+    return "functional"
+
+
+def matrix_requirements(file_name: str, markdown: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """Requirements matrices (a table with a Requirement column, usually a spreadsheet the agency scores): one
+    requirement per row, with its ID and category; plus the columns the vendor fills in. Read straight from the
+    document's Markdown — exact and free, and Data Extraction often returns nothing for these."""
+    out: list[dict[str, Any]] = []
+    answer_cols: list[str] = []
+    for tbl in re.findall(r"<table>(.*?)</table>", markdown, re.S):
+        rows = [_cells(r) for r in re.findall(r"<tr>(.*?)</tr>", tbl, re.S)]
+        hi = next((i for i, r in enumerate(rows) if any(_REQ_HEADER.fullmatch(c) for c in r)), None)
+        if hi is None:
+            continue
+        head = rows[hi]
+        ri = next(i for i, c in enumerate(head) if _REQ_HEADER.fullmatch(c))
+        ii = next((i for i, c in enumerate(head) if i != ri and _ID_HEADER.search(c)), 0 if ri else None)
+        ci = next((i for i, c in enumerate(head) if re.fullmatch(r"(category|section|area|module|function)", c, re.I)), None)
+        for c in head[ri + 1:]:
+            if c and c not in answer_cols:
+                answer_cols.append(c)
+        for r in rows[hi + 1:]:
+            if len(r) <= ri or len(r[ri]) < 8:
+                continue
+            rid = r[ii] if ii is not None and ii < len(r) else ""
+            if ii is not None and not rid:
+                continue  # a heading row inside the table
+            cat = r[ci] if ci is not None and ci < len(r) else ""
+            out.append({"file": file_name, "document_type": "requirements_matrix", "section": " ".join(x for x in (rid, cat) if x)[:80],
+                        "text": r[ri][:1500], "category": _matrix_category(cat, r[ri]), "mandatory": False,
+                        "page": None, "grounding": None, "confidence": None, "cited": False})
+    return out, answer_cols
+
+
+def add_matrices(extracted: dict[str, Any], documents: list[tuple[str, str]]) -> int:
+    """Add requirements-matrix rows from the documents' Markdown to an extraction (skipping ones it already has).
+    Returns how many were added; records each matrix's answer columns for the drafter."""
+    have = {re.sub(r"\W+", " ", str(r.get("text", "")).lower()).strip() for r in extracted.get("requirements") or []}
+    seq = max([int(str(r.get("id", "E0"))[1:] or 0) for r in extracted.get("requirements") or []] + [0])
+    added = 0
+    for name, text in documents:
+        rows, cols = matrix_requirements(name, text or "")
+        if not rows:
+            continue
+        extracted.setdefault("answer_columns", {})[name] = cols
+        for r in rows:
+            key = re.sub(r"\W+", " ", r["text"].lower()).strip()
+            if key in have:
+                continue
+            have.add(key)
+            seq += 1
+            extracted.setdefault("requirements", []).append({"id": f"E{seq}", **r})
+            added += 1
+    if added:
+        st_ = extracted.setdefault("stats", {})
+        st_["requirements"] = len(extracted["requirements"])
+        st_["from_matrices"] = st_.get("from_matrices", 0) + added
+    extracted["matrices_checked"] = True
+    return added
+
+
 OBLIGATION_TYPES = ("terms_and_conditions", "form")  # contractual / paperwork: acknowledged, not answered one by one
 DRAFT_MAX_REQUIREMENTS = int((os.environ.get("DRAFT_MAX_REQUIREMENTS") or "150").strip() or 150)
 
@@ -487,7 +566,7 @@ def drafting_subset(extracted: dict[str, Any], limit: int = DRAFT_MAX_REQUIREMEN
     own items first, mandatory before optional, at most `limit`, kept in document order. Returns (extraction with that subset, how many were left out)."""
     pool = [r for r in extracted.get("requirements") or []
             if not r.get("superseded_by") and r.get("document_type") not in OBLIGATION_TYPES]
-    rank = {"solicitation": 0, "amendment": 0, "submission_instructions": 1}
+    rank = {"solicitation": 0, "amendment": 0, "requirements_matrix": 0, "submission_instructions": 1}
     keep = sorted(pool, key=lambda r: (rank.get(r.get("document_type"), 2), not r.get("mandatory"),
                                        int(str(r.get("id", "E0"))[1:] or 0)))[:limit]
     ids = {r["id"] for r in keep}
@@ -527,4 +606,8 @@ def format_for_prompt(extracted: dict[str, Any]) -> str:
                                                         for c in extracted["evaluation_criteria"]))
     if extracted.get("required_forms"):
         lines.append("Required forms/attachments: " + "; ".join(extracted["required_forms"]))
+    for name, cols in (extracted.get("answer_columns") or {}).items():
+        if cols:
+            lines.append(f"Requirements matrix {name}: the agency expects each row answered in these columns: {', '.join(cols)}. "
+                         "For each matrix item, say which applies to Nutrient and add a short vendor comment.")
     return "\n".join(lines)

@@ -191,6 +191,10 @@ ul.plain li { margin-bottom: 4px; }
 .doc { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; font-size: 14.5px; }
 .doc .ext { font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; text-align: center; padding: 1px 0; }
 .doc .dmeta { color: var(--faint); font-size: 13px; white-space: nowrap; }
+.doc2 { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 12px; padding: 4px 0 8px; font-size: 14.5px; }
+.doc2 .ext { font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; text-align: center; padding: 1px 0; height: fit-content; margin-top: 2px; }
+.doc2 .dmeta { color: var(--faint); font-size: 13px; margin-top: 1px; }
+.doc2 .dsum { color: var(--muted); font-size: 13.5px; margin-top: 3px; line-height: 1.45; max-width: 80ch; }
 .reasons { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin: 12px 0 4px; font-size: 14px; }
 .reasons ul { margin: 0; padding-left: 18px; color: var(--muted); }
 .reasons li { margin-bottom: 5px; }
@@ -878,22 +882,42 @@ def _fit_reasons_html(s2: dict) -> str:
     return f'<div class="reasons">{col("Why it fits", fits)}{col("What to check", checks)}</div>'
 
 
+def _local_time(iso, fmt: str = "%b %-d, %-I:%M %p") -> str:
+    """A stored UTC timestamp in the viewer's own time zone (from their browser), e.g. 'Nov 8, 2:05 PM'."""
+    try:
+        dt = datetime.fromisoformat(str(iso)).replace(tzinfo=timezone.utc)
+        tz = getattr(st.context, "timezone", None)
+        if tz:
+            from zoneinfo import ZoneInfo
+            dt = dt.astimezone(ZoneInfo(tz))
+        return dt.strftime(fmt)
+    except Exception:
+        return str(iso or "")[:16]
+
+
+def _score_is_stale(s2: dict, docs: list[dict]) -> bool:
+    """True when documents were read after the score was made (or the score doesn't say what it saw)."""
+    b = s2.get("basis") or {}
+    reads = [str(d.get("read_at") or "") for d in docs if d["status"] == "read"]
+    if not b or not reads:
+        return bool(reads)
+    return max(reads)[:19] > str(b.get("scored_at") or "")[:19] or not b.get("documents")
+
+
 def _score_basis(opp: dict, s2: dict) -> str:
     """What the fit score and its analysis were based on, in one plain sentence."""
     b = s2.get("basis") or {}
     when = ""
-    try:
-        when = " · scored " + datetime.fromisoformat(str(b.get("scored_at"))).strftime("%b %-d")
-    except (TypeError, ValueError):
-        pass
+    if b.get("scored_at"):
+        when = " · scored " + _local_time(b["scored_at"])
     if b.get("documents"):
         n = b["documents"]
         return (f"Based on the listing and {n} document{'s' if n != 1 else ''} (up to 60,000 characters, solicitation first){when}. "
                 "What the RFP asks, below, covers every page.")
     if b:
         return f"Based on the listing only{when} — preliminary until the RFP's documents are read."
-    return ("Based on the listing and documents read earlier." if opp.get("attachment_text")
-            else "Based on the listing only — preliminary until the RFP's documents are read.")
+    return ("Scored before OppOS recorded what each score was based on — it may not include the documents."
+            if opp.get("attachment_text") else "Based on the listing only — preliminary until the RFP's documents are read.")
 
 
 def _full_analysis(opp: dict, s2: dict) -> None:
@@ -938,6 +962,21 @@ def _listing_facts_html(opp: dict) -> str:
 
 
 # ── RFP documents ─────────────────────────────────────────────────────────────
+
+_EVENT_LABELS = {
+    "claimed": "Grabbed it", "released": "Put it back", "started": "Started pursuing", "reopened": "Reopened it",
+    "updated": "Changed the details", "drafted": "Drafted the response", "draft_notion": "Added the draft to Notion",
+    "submitted": "Marked it submitted", "won": "Recorded a win", "lost": "Recorded a loss", "abandoned": "Abandoned it",
+    "docs_fetched": "Got the RFP's files", "docs_fetch_failed": "Couldn't get the RFP's files", "docs_read": "Read the documents",
+    "docs_added": "Added documents", "requirements_extracted": "Pulled out the requirements", "requirements_failed": "Couldn't pull out the requirements",
+    "rescored": "Re-scored the fit", "matrix_read": "Read the requirements matrix", "collab_requested": "Asked to collaborate", "collab_approved": "Approved a collaborator",
+    "collab_declined": "Declined a collaborator", "reassigned": "Reassigned it", "slack_channel": "Opened a Slack channel",
+    "status_sync": "Synced with Notion", "adopted": "Adopted it",
+}
+_DOC_TYPES = {"solicitation": "The solicitation", "submission_instructions": "How to submit", "terms_and_conditions": "Terms",
+              "form": "Form to fill in", "amendment": "Amendment", "other": "Supporting document",
+              "requirements_matrix": "Requirements matrix — answer every row"}
+
 
 def _size_txt(n) -> str:
     n = int(n or 0)
@@ -1021,6 +1060,10 @@ def _render_brief(ext: dict) -> None:
         for r in sorted(reqs, key=lambda r: (rank.get(r.get("document_type"), 2), not r.get("mandatory"), int(str(r.get("id", "E0"))[1:] or 0))):
             by.setdefault(r.get("category") or "other", []).append(r)
         st.markdown(f'<div class="rs-head" style="margin-top:8px">{len(reqs)} requirements to answer, {mand} mandatory</div>', unsafe_allow_html=True)
+        for name, cols in (ext.get("answer_columns") or {}).items():
+            n = sum(1 for r in reqs if r.get("file") == name)
+            st.markdown(f'<div class="help">{_esc(name)} is a requirements matrix: {n} rows, each answered with '
+                        f'{_esc(", ".join(cols[:8]))}.</div>', unsafe_allow_html=True)
         for cat in sorted(by, key=lambda c: list(labels).index(c) if c in labels else 99):
             items = by[cat]
             with st.expander(f"{labels.get(cat, cat.title())} · {len(items)}"):
@@ -1081,6 +1124,8 @@ def _add_documents(opp: dict, k: str, job: dict) -> None:
                 if path.suffix.lower() == ".zip":
                     from oppos.sources.attachments import _unzip
                     _unzip(path)
+            from oppos.storage.db import add_pursuit_event
+            add_pursuit_event(opp.get("source_id", ""), CURRENT_USER["email"], "docs_added", ", ".join(f.name for f in files)[:500])
             start_reading(opp)
             _flash(f"Added {len(files)} file{'s' if len(files) != 1 else ''} — OppOS is reading them now", icon="📄")
             st.rerun()
@@ -1099,7 +1144,10 @@ def _render_documents(opp: dict, k: str, auto: bool, docs: list[dict] | None = N
         from oppos.drafting.extraction import extraction_available
         from oppos.sources.rfp_documents import stored_extraction
         never_extracted = bool(docs) and (job or {}).get("extracted") is None and extraction_available() and not stored_extraction(sid)
-        if (not docs and not job) or never_extracted:
+        no_summaries = any(d["status"] == "read" and not d.get("summary") for d in docs) and not (job or {}).get("summarized")
+        _stored = stored_extraction(sid) if docs else None
+        no_matrices = bool(_stored) and not _stored.get("matrices_checked") and not (job or {}).get("matrices")
+        if (not docs and not job) or never_extracted or no_summaries or no_matrices:
             start_reading(opp)
             job = job_status(sid)
     if job and job.get("state") == "reading":
@@ -1134,17 +1182,33 @@ def _render_documents(opp: dict, k: str, auto: bool, docs: list[dict] | None = N
             stem = re.sub(r"[^A-Za-z0-9]+", "-", (opp.get("solicitation_number") or opp.get("title") or sid))[:60].strip("-") or "rfp"
             st.download_button(f"Download all {len(files)} (zip)", data=_zip_all, file_name=f"{stem}-documents.zip", mime="application/zip",
                                key=f"{k}_dl_all", on_click="ignore")
+    from oppos.sources.rfp_documents import stored_extraction
+    extraction = stored_extraction(sid) or {}
+    per_file: dict[str, int] = {}
+    for r in extraction.get("requirements") or []:
+        per_file[r.get("file", "")] = per_file.get(r.get("file", ""), 0) + 1
     for d in docs:
+        bits = []
+        if d.get("doc_type"):
+            bits.append(_DOC_TYPES.get(d["doc_type"], d["doc_type"].replace("_", " ").capitalize()))
         if d["status"] == "read":
-            meta = (f'{d["pages"]} page' + ("s" if d["pages"] != 1 else "")) if d.get("pages") else _size_txt(d.get("size"))
+            bits.append((f'{d["pages"]} page' + ("s" if d["pages"] != 1 else "")) if d.get("pages") else _size_txt(d.get("size")))
+            if d.get("read_at"):
+                bits.append("read " + _local_time(d["read_at"]))
+            if extraction:
+                n = per_file.get(d["name"], 0)
+                bits.append(f"{n} requirement{'s' if n != 1 else ''} pulled out" if n else "no requirements in it")
         elif d["status"] == "unreadable":
-            meta = '<span class="faint">not read</span>'
+            bits.append('<span class="faint">not read — this file type can\'t be read</span>')
         else:
-            meta = f'<span class="alert">couldn\'t read</span>'
+            bits.append(f'<span class="alert">couldn\'t read: {_esc((d.get("note") or "")[:120])}</span>')
         ext = (Path(d["name"]).suffix.lstrip(".") or "file").upper()[:4]
-        c1, c2 = st.columns([8, 1.4], vertical_alignment="center")
-        c1.markdown(f'<div class="doc"><span class="ext">{_esc(ext)}</span><span class="dname">{_esc(d["name"])}</span>'
-                    f'<span class="dmeta">{meta}</span></div>', unsafe_allow_html=True)
+        summary = d.get("summary") or ("<span class='faint'>Summary coming…</span>" if d["status"] == "read" else "")
+        c1, c2 = st.columns([8, 1.4], vertical_alignment="top")
+        c1.markdown(f'<div class="doc2"><span class="ext">{_esc(ext)}</span><div><div class="dname">{_esc(d["name"])}</div>'
+                    f'<div class="dmeta">{" · ".join(b if b.startswith("<span") else _esc(b) for b in bits)}</div>'
+                    + (f'<div class="dsum">{summary if summary.startswith("<span") else _esc(summary)}</div>' if summary else "")
+                    + '</div></div>', unsafe_allow_html=True)
         f = files.get(d["name"])
         if f:
             c2.download_button("Download", data=(lambda p=f: p.read_bytes()), file_name=d["name"], key=f"{k}_dl_{d['name']}",
@@ -1636,8 +1700,17 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
         _docs_status(docs, ext, job)
         if s2.get("summary"):
             st.markdown(f'<div class="rs-head">Is it worth pursuing? Fit {int(_score_of(opp)) or "–"}</div>'
-                        f'<div class="help">{_esc(_score_basis(opp, s2))}</div>'
-                        f'<p class="summary">{_esc(s2["summary"])}</p>', unsafe_allow_html=True)
+                        f'<div class="help">{_esc(_score_basis(opp, s2))}</div>', unsafe_allow_html=True)
+            if can_edit and n_read and _score_is_stale(s2, docs) and job.get("state") != "reading":
+                st.markdown('<div class="help"><span class="alert">This score was made before OppOS read all of the documents.</span></div>',
+                            unsafe_allow_html=True)
+                if st.button("Score it again on the documents", key=f"{k}_rescore", type="tertiary"):
+                    from oppos.sources.rfp_documents import rescore
+                    with st.spinner("Scoring the fit on the listing and the documents…"):
+                        rescore(opp)
+                    _flash("Fit re-scored on the documents", icon="📊")
+                    st.rerun()
+            st.markdown(f'<p class="summary">{_esc(s2["summary"])}</p>', unsafe_allow_html=True)
         reasons = _fit_reasons_html(s2)
         if reasons:
             st.markdown(reasons, unsafe_allow_html=True)
@@ -1666,10 +1739,13 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
         if not events:
             st.markdown('<p class="muted">Nothing yet.</p>', unsafe_allow_html=True)
         for ev in events:
-            ts = str(ev.get("ts") or "")[:16].replace("T", " ")
-            who = str(ev.get("actor") or "").split("@")[0]
-            st.markdown(f'<div class="event"><span>{_esc(ts)}</span>{_esc(who)} · {_esc(str(ev.get("kind") or "").replace("_", " "))}'
-                        f'{" — " + _esc(str(ev.get("detail"))[:200]) if ev.get("detail") else ""}</div>', unsafe_allow_html=True)
+            ts = _local_time(ev.get("ts"))
+            actor = str(ev.get("actor") or "")
+            who = "OppOS" if actor in ("OppOS", "system", "") else actor.split("@")[0].replace(".", " ").title()
+            what = _EVENT_LABELS.get(str(ev.get("kind") or ""), str(ev.get("kind") or "").replace("_", " ").capitalize())
+            detail = str(ev.get("detail") or "")
+            st.markdown(f'<div class="event"><span>{_esc(ts)}</span><b>{_esc(who)}</b> · {_esc(what)}'
+                        f'{"<div class=help>" + _esc(detail[:400]) + "</div>" if detail else ""}</div>', unsafe_allow_html=True)
 
 
 def _render_response(opp: dict, pursuit: dict, draft: dict | None, k: str) -> None:
