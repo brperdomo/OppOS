@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -159,9 +160,31 @@ def download_named(opp: dict[str, Any], files: list[tuple[str, str]]) -> list[Pa
                 fname += ".docx" if ("word" in ct or "docx" in ct) else ".xlsx" if ("excel" in ct or "xlsx" in ct) else ".pdf"
             path = opp_dir / fname
             path.write_bytes(resp.content)
-            downloaded.append(path)
+            if path.suffix.lower() == ".zip":
+                downloaded.extend(_unzip(path))  # a bid package: its documents are what the drafter and scorer read
+            else:
+                downloaded.append(path)
             logger.info("Downloaded: %s (%d bytes)", path.name, len(resp.content))
     return downloaded
+
+
+def _unzip(path: Path) -> list[Path]:
+    """Unpack a bid package next to it (flattened, names sanitised) and remove the zip."""
+    out: list[Path] = []
+    try:
+        with zipfile.ZipFile(path) as zf:
+            for info in zf.infolist():
+                name = _sanitize_filename(Path(info.filename).name)
+                if info.is_dir() or not name or name.startswith(("__MACOSX", "._")):
+                    continue
+                dest = path.parent / name
+                dest.write_bytes(zf.read(info))
+                out.append(dest)
+    except zipfile.BadZipFile:
+        logger.warning("Not a readable zip: %s", path.name)
+        return [path]
+    path.unlink(missing_ok=True)
+    return out
 
 
 def download_attachments(opp: dict[str, Any]) -> list[Path]:
@@ -176,6 +199,14 @@ def download_attachments(opp: dict[str, Any]) -> list[Path]:
         from oppos.sources.platforms.state_json import nc_attachments
         sid = str(opp.get("source_id") or "").replace("nc-evp-", "", 1)
         return download_named(opp, nc_attachments(sid))
+
+    if source == "indiana_idoa":
+        # One zip per bid, named by the event id; older rows lack resource_links, so build it from the number.
+        links = list(opp.get("resource_links") or [])
+        sol = str(opp.get("solicitation_number") or "").strip()
+        if not links and sol:
+            links = [f"https://www.in.gov/idoa/proc/solicitations/files/{sol}.zip"]
+        return download_named(opp, [(u.rsplit("/", 1)[-1], u) for u in links])
 
     if source in ("mississippi_magic", "louisiana_lapac"):
         links = list(opp.get("resource_links") or [])
