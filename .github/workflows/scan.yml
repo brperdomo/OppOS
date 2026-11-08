@@ -57,6 +57,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # The CGI Advantage portals (CO, KY, MI, ME, WV) and Alaska render their bid lists with JavaScript: without a
+      # headless browser they return nothing. (Not in requirements.txt: Streamlit Cloud has no browser.)
+      - name: Install a headless browser
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
       - name: Run scan
         run: |
           ARGS="--days ${{ github.event.inputs.days || '3' }}"

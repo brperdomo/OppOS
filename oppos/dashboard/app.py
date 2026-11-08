@@ -175,7 +175,8 @@ ul.plain li { margin-bottom: 4px; }
 .journey .step.done { color: var(--muted); }
 .journey .step.now { color: var(--text); font-weight: 600; }
 [class*="st-key-facts_"] { background: var(--surface); border-radius: 8px; padding: 14px 18px; margin: 10px 0 4px; gap: 6px !important; }
-.fact { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 14px; font-size: 14.5px; padding: 3px 0; }
+.fact { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 16px; font-size: 14.5px; padding: 5px 0; line-height: 1.5; }
+.fact > div { min-width: 0; overflow-wrap: anywhere; max-width: 78ch; }
 .fact > span, .fact-label { color: var(--muted); font-size: 14.5px; }
 .fact .help, .help { color: var(--faint); font-size: 13px; margin-top: 2px; line-height: 1.45; }
 .fact .unknown { color: var(--muted); }
@@ -183,10 +184,7 @@ ul.plain li { margin-bottom: 4px; }
 .collab { background: var(--surface); border-radius: 8px; padding: 12px 16px; margin: 8px 0; font-size: 14.5px; }
 .collab .help { margin-top: 4px; }
 [class*="st-key-facts_"] [data-testid="stElementContainer"] { margin: 0; }
-[class*="st-key-acct_"] { margin: 2px 0; }
-[class*="st-key-acct_"] [data-testid="stVerticalBlock"] { gap: 0 !important; }
-[class*="st-key-acct_"] [data-testid="stPopover"] { margin-left: 12px; }
-[class*="st-key-acct_"] .fact-label { padding-top: 6px; width: 110px; }
+[class*="st-key-factctl_"] { margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
 .doc-reading { color: var(--muted); font-size: 14px; padding: 4px 0 8px; }
 .doc { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; font-size: 14.5px; }
 .doc .ext { font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; text-align: center; padding: 1px 0; }
@@ -490,7 +488,8 @@ def _render_source_health(rows: list[dict]) -> str:
         elif stale:
             dot, note = "🟡", "No run in 3+ days"
         elif count == 0:
-            dot, note = "🟡", "Returned 0 listings"
+            from oppos.sources.registry import SOURCE_NOTES
+            dot, note = "🟡", _html.escape(SOURCE_NOTES.get(str(r.get("source") or ""), "Returned 0 listings and no error — worth a look."))
         else:
             dot, note = "🟢", ""
         name = _html.escape(str(r.get("display_name") or r.get("source") or ""))
@@ -1382,7 +1381,7 @@ def _render_facts(opp: dict, pursuit: dict, draft: dict | None, can_edit: bool, 
 
     if method == "portal":
         where = _esc(portal_name) or "The agency's portal"
-        if how and (pursuit.get("submission_method") or "unknown") == "unknown":  # not confirmed by a person yet
+        if how and (pursuit.get("submission_method") or "unknown") == "unknown" and not _same_fact("submission_method", how, portal_name or ""):
             where += f'<div class="help">The RFP says: {_esc(how[:200])}</div>'
         where += listing
     elif method == "email":
@@ -1406,21 +1405,42 @@ def _render_facts(opp: dict, pursuit: dict, draft: dict | None, can_edit: bool, 
     def rows_html(rows: list[tuple[str, str]]) -> str:
         return "".join(f'<div class="fact"><span>{l}</span><div>{v}</div></div>' for l, v in rows)
 
+    def clip(text: str, n: int = 600) -> str:
+        """Whole sentences up to about n characters, never cut mid-word."""
+        text = " ".join(text.split())
+        if len(text) <= n:
+            return text
+        cut = text[:n]
+        end = max(cut.rfind(". "), cut.rfind("; "))
+        return (cut[:end + 1] if end > n // 2 else cut.rsplit(" ", 1)[0]) + " …"
+
+    has_portal = method in ("portal", "unknown") and portal_key and portal_key != "manual"
+    acct = reg.get("status") or pursuit.get("registration_status") or "unknown"
+    rows = [("Due", due), ("Submit on" if method in ("portal", "unknown") else "Submit", where)]
+    if has_portal:
+        if acct == "not_required":
+            rows.append(("Our account", "Not needed on this portal"))
+        else:
+            label = {"unknown": "Not checked yet", "not_registered": "We don't have one", "in_progress": "Requested",
+                     "registered": "Registered"}.get(acct, acct)
+            rows.append(("Our account", f'<span class="{"unknown" if acct in ("unknown", "not_registered") else ""}">{_esc(label)}</span>'
+                                        f'<div class="help">{_esc(_REG_HELP.get(acct, ""))}</div>'))
+    if fmt or forms:
+        rows.append(("Format", "<br>".join(_esc(clip(f)) for f in fmt)
+                     + (("<div class=\"help\">" if fmt else "") + f"{len(forms)} required form{'s' if len(forms) != 1 else ''} — "
+                        "listed under RFP and documents" + ("</div>" if fmt else "") if forms else "")))
+    rows.append(("Contact", contact or '<span class="unknown">Not in the RFP yet</span>'))
+    if pursuit.get("next_action"):
+        rows.append(("Next step", _esc(pursuit["next_action"][:200])))
+
     with st.container(key=f"facts_{k}"):
-        st.markdown(rows_html([("Due", due), ("Submit on" if method in ("portal", "unknown") else "Submit", where)]), unsafe_allow_html=True)
-        if method in ("portal", "unknown") and portal_key and portal_key != "manual":
-            _account_row(portal_key, portal_name or "this portal", reg, pursuit, sid, k)
-        more = []
-        if fmt or forms:
-            more.append(("Format", _esc("; ".join(f[:300] for f in fmt)) + (("<br>" if fmt else "") + f"{len(forms)} required form{'s' if len(forms) != 1 else ''}"
-                                                                             " — listed under RFP and documents" if forms else "")))
-        more.append(("Contact", contact or ('<span class="unknown">Not in the RFP yet</span>'
-                                            + ('<div class="help">Add one with Edit details if you find it.</div>' if can_edit else ""))))
-        if pursuit.get("next_action"):
-            more.append(("Next step", _esc(pursuit["next_action"][:200])))
-        st.markdown(rows_html(more), unsafe_allow_html=True)
-        if can_edit:
-            _edit_details_popover(opp, pursuit, k)
+        st.markdown(rows_html(rows), unsafe_allow_html=True)
+        if can_edit or (has_portal and acct != "not_required" and CURRENT_USER.get("can_work")):
+            with st.container(horizontal=True, gap="medium", key=f"factctl_{k}"):
+                if can_edit:
+                    _edit_details_popover(opp, pursuit, k)
+                if has_portal and acct != "not_required" and CURRENT_USER.get("can_work"):
+                    _account_popover(portal_key, portal_name or "this portal", acct, sid, k)
 
 
 _REG_HELP = {"unknown": "Nobody has confirmed whether Nutrient can log in here.",
@@ -1429,44 +1449,25 @@ _REG_HELP = {"unknown": "Nobody has confirmed whether Nutrient can log in here."
              "registered": "We can log in and submit here."}
 
 
-def _account_row(portal_key: str, portal_name: str, reg: dict, pursuit: dict, sid: str, k: str) -> None:
-    """Our account on the portal: one status line and an Update menu that explains each choice."""
+def _account_popover(portal_key: str, portal_name: str, cur: str, sid: str, k: str) -> None:
+    """Update our account on the portal; each choice explained, plus the IT request form."""
     from oppos.pursuits import save_pursuit_fields
     from oppos.storage.db import upsert_portal_registration
-    cur = reg.get("status") or pursuit.get("registration_status") or "unknown"
-    if cur == "not_required":
-        st.markdown('<div class="fact"><span>Our account</span><div>Not needed on this portal</div></div>', unsafe_allow_html=True)
-        return
-    label = {"unknown": "Not checked yet", "not_registered": "We don't have one", "in_progress": "Requested", "registered": "Registered"}.get(cur, cur)
-    with st.container(key=f"acct_{k}"):
-        _account_controls(portal_key, portal_name, cur, label, pursuit, sid, k)
-
-
-def _account_controls(portal_key: str, portal_name: str, cur: str, label: str, pursuit: dict, sid: str, k: str) -> None:
-    from oppos.pursuits import save_pursuit_fields
-    from oppos.storage.db import upsert_portal_registration
-    a, b = st.columns([1, 5.6], vertical_alignment="top")
-    a.markdown('<div class="fact-label">Our account</div>', unsafe_allow_html=True)
-    with b:
-        with st.container(horizontal=True, vertical_alignment="center", gap="small"):
-            st.markdown(f'<span class="{"unknown" if cur in ("unknown", "not_registered") else ""}">{_esc(label)}</span>', unsafe_allow_html=True, width="content")
-            if CURRENT_USER.get("can_work"):
-                with st.popover("Update", type="tertiary"):
-                    st.markdown(f"**Does Nutrient have a login on {_esc(portal_name)}?** Your answer applies to every RFP from this portal.")
-                    opts = ["unknown", "not_registered", "in_progress", "registered"]
-                    names = {"unknown": "Not checked yet", "not_registered": "We don't have an account", "in_progress": "Account requested",
-                             "registered": "We're registered"}
-                    choice = st.radio("Our account", opts, index=opts.index(cur) if cur in opts else 0, key=f"{k}_reg",
-                                      format_func=names.get, captions=[_REG_HELP[o] for o in opts], label_visibility="collapsed")
-                    if PORTAL_ACCESS_REQUEST_URL:
-                        st.link_button("Request an account from IT", PORTAL_ACCESS_REQUEST_URL)
-                        st.caption("Opens the IT service desk form for procurement-portal access. Then choose Account requested above.")
-                    if choice != cur:
-                        upsert_portal_registration(portal_key, status=choice)
-                        save_pursuit_fields(sid, CURRENT_USER, registration_status=choice)
-                        _flash(f"{portal_name}: {names[choice].lower()} — saved for every RFP from it", icon="✅")
-                        st.rerun()
-        st.markdown(f'<div class="help">{_esc(_REG_HELP.get(cur, ""))}</div>', unsafe_allow_html=True)
+    with st.popover(f"Our account on {portal_name}", type="tertiary"):
+        st.markdown(f"**Does Nutrient have a login on {_esc(portal_name)}?** Your answer applies to every RFP from this portal.")
+        opts = ["unknown", "not_registered", "in_progress", "registered"]
+        names = {"unknown": "Not checked yet", "not_registered": "We don't have an account", "in_progress": "Account requested",
+                 "registered": "We're registered"}
+        choice = st.radio("Our account", opts, index=opts.index(cur) if cur in opts else 0, key=f"{k}_reg",
+                          format_func=names.get, captions=[_REG_HELP[o] for o in opts], label_visibility="collapsed")
+        if PORTAL_ACCESS_REQUEST_URL:
+            st.link_button("Request an account from IT", PORTAL_ACCESS_REQUEST_URL)
+            st.caption("Opens the IT service desk form for procurement-portal access. Then choose Account requested above.")
+        if choice != cur:
+            upsert_portal_registration(portal_key, status=choice)
+            save_pursuit_fields(sid, CURRENT_USER, registration_status=choice)
+            _flash(f"{portal_name}: {names[choice].lower()} — saved for every RFP from it", icon="✅")
+            st.rerun()
 
 
 def _edit_details_popover(opp: dict, pursuit: dict, k: str) -> None:
@@ -2226,6 +2227,9 @@ def _admin_sources(health: list[dict]) -> None:
         st.rerun()
     c3.link_button("Daily scan runs", "https://github.com/brperdomo/OppOS/actions/workflows/scan.yml", use_container_width=True)
     st.markdown('<div class="rs-head" style="margin-top:16px">How each source did</div>', unsafe_allow_html=True)
+    _ok = sum(1 for r in health if int(r.get("last_count") or 0) and not r.get("last_error"))
+    st.markdown(f'<p class="muted">{_ok} of {len(health)} sources returned listings on their last run. The rest say why in the '
+                'Note column — most are portals that need a login or a human check, which OppOS doesn\'t get around.</p>', unsafe_allow_html=True)
     st.markdown(_render_source_health(health), unsafe_allow_html=True)
 
     st.markdown('<div class="rs-head" style="margin-top:16px">Excluded sources</div>', unsafe_allow_html=True)
