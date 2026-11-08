@@ -296,6 +296,9 @@ def _repair_and_parse_json(text: str) -> dict:
     raise json.JSONDecodeError("Could not repair JSON", raw, 0)
 
 
+SCORING_TEXT_CHARS = 60_000  # documents text the scorer reads (rfp_documents.SCORING_BUDGET builds a digest this size)
+
+
 def _build_opportunity_text(opp: dict[str, Any], attachment_text: str = "") -> str:
     parts = [
         f"Title: {opp.get('title', 'N/A')}",
@@ -312,7 +315,7 @@ def _build_opportunity_text(opp: dict[str, Any], attachment_text: str = "") -> s
     if desc:
         parts.append(f"\nDescription:\n{desc[:8000]}")
     if attachment_text:
-        parts.append(f"\n--- RFP ATTACHMENT CONTENT (extracted via OCR) ---\n{attachment_text}")
+        parts.append(f"\n--- RFP DOCUMENTS (text read from the attachments) ---\n{attachment_text[:SCORING_TEXT_CHARS]}")
     return "\n".join(parts)
 
 

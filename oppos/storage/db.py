@@ -260,6 +260,21 @@ _CREATE_REMINDERS_SQL = """
     )
 """
 
+_CREATE_DOCUMENTS_SQL = """
+    CREATE TABLE IF NOT EXISTS rfp_documents (
+        source_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        size INTEGER,
+        pages INTEGER,
+        chars INTEGER,
+        status TEXT NOT NULL,
+        note TEXT,
+        text TEXT,
+        read_at TEXT,
+        PRIMARY KEY (source_id, name)
+    )
+"""
+
 _MIGRATIONS = [
     "ALTER TABLE opportunities ADD COLUMN attachment_text TEXT",
     "ALTER TABLE opportunities ADD COLUMN lob TEXT",
@@ -321,6 +336,7 @@ def init_db(force: bool = False) -> None:
     _execute(_CREATE_PURSUIT_EVENTS_SQL)
     _execute(_CREATE_REGISTRATIONS_SQL)
     _execute(_CREATE_REMINDERS_SQL)
+    _execute(_CREATE_DOCUMENTS_SQL)
     for migration in _MIGRATIONS:
         try:
             _execute(migration)
@@ -328,6 +344,23 @@ def init_db(force: bool = False) -> None:
             if "duplicate column" not in str(e).lower():
                 raise  # anything but "already applied" (a transient Turso error) must leave the schema un-initialised
     _DB_INITIALIZED = True  # only once every setup statement has gone through; a transient failure retries next call
+
+
+def save_document(source_id: str, name: str, size: int, pages: int | None, chars: int, status: str,
+                  note: str = "", text: str = "") -> None:
+    """One RFP document as OppOS read it (status: read / unreadable / failed). The full text is kept here, not on
+    the opportunity row, so list queries stay light and the text survives the app's disk being reset."""
+    _execute(
+        "INSERT INTO rfp_documents (source_id, name, size, pages, chars, status, note, text, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(source_id, name) DO UPDATE SET size = excluded.size, pages = excluded.pages, chars = excluded.chars, "
+        "status = excluded.status, note = excluded.note, text = excluded.text, read_at = excluded.read_at",
+        (source_id, name, size, pages, chars, status, note, text, datetime.utcnow().isoformat()),
+    )
+
+
+def get_documents(source_id: str, with_text: bool = False) -> list[dict[str, Any]]:
+    cols = "*" if with_text else "source_id, name, size, pages, chars, status, note, read_at"
+    return _query(f"SELECT {cols} FROM rfp_documents WHERE source_id = ? ORDER BY name", (source_id,))
 
 
 def set_meta(key: str, value: str) -> None:
