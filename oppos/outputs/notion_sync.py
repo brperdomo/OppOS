@@ -83,8 +83,8 @@ _SOURCE_DISPLAY: dict[str, str] = {
     "kansas_esupplier": "PeopleSoft — eSupplier",
     "minnesota_swift": "PeopleSoft — SWIFT",
     "oklahoma_omes": "PeopleSoft — OMES",
-    "wisconsin_esupplier": "PeopleSoft — eSupplier WI",
-    "new_york_sfs": "PeopleSoft — SFS",
+    "wisconsin_vendornet": "VendorNet — WI",
+    "new_york_nyscr": "NYS Contract Reporter",
     # Ivalua
     "maryland_emma": "Ivalua — eMMA",
     "virginia_eva": "Ivalua — eVA",

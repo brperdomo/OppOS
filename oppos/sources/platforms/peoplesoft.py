@@ -68,18 +68,6 @@ SITES: dict[str, PeopleSoftSite] = {
         bids_path="/omes/divisions/central-purchasing/solicitations/",
         place_default="Oklahoma",
     ),
-    "wisconsin_esupplier": PeopleSoftSite(
-        key="wisconsin_esupplier", state="WI", name="Wisconsin eSupplier",
-        base_url="https://esupplier.wi.gov",
-        bids_path="/psp/WISPRDSS/SUPPLIER/ERP/h/?tab=DEFAULT",
-        place_default="Wisconsin",
-    ),
-    "new_york_sfs": PeopleSoftSite(
-        key="new_york_sfs", state="NY", name="NY SFS Vendor Portal",
-        base_url="https://esupplier.sfs.ny.gov",
-        bids_path="/psp/fsprda/SUPPLIER/ERP/h/?tab=DEFAULT",
-        place_default="New York",
-    ),
 }
 
 
