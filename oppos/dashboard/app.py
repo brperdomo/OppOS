@@ -1018,7 +1018,7 @@ def _same_fact(field: str, a: str, b: str) -> bool:
     return bool(words(a) & words(b))
 
 
-def _render_brief(ext: dict) -> None:
+def _render_brief(ext: dict, opp: dict | None = None) -> None:
     """What the RFP asks, from Data Extraction over every document: the solicitation's facts, how it is scored,
     the forms, and every requirement with its file and page."""
     sol = ext.get("solicitation") or {}
@@ -1079,7 +1079,15 @@ def _render_brief(ext: dict) -> None:
                 unsafe_allow_html=True)
     skipped, errors = ext.get("skipped") or [], ext.get("errors") or []
     if skipped or errors:
-        st.caption("Not extracted: " + "; ".join(skipped + errors)[:400])
+        failed = sorted({e.split(":")[0] for e in errors})
+        st.markdown(f'<div class="help"><span class="alert">Not analysed: {_esc(", ".join(failed + [x.split(" (")[0] for x in skipped])[:300])}.</span> '
+                    'Their text still feeds the fit score and the draft, but their requirements aren\'t listed above.</div>', unsafe_allow_html=True)
+        if opp and errors and CURRENT_USER.get("can_work") and st.button("Pull out the requirements again", key=f"reextract_{opp.get('source_id')}", type="tertiary"):
+            from oppos.sources.rfp_documents import start_reading
+            set_meta(f"extraction:{opp.get('source_id')}", "")  # forget the partial result; the job runs Data Extraction again
+            start_reading(opp)
+            _flash("Running Data Extraction again on every document — a few minutes", icon="🧩")
+            st.rerun()
 
 
 def _docs_status(docs: list[dict], ext: dict | None, job: dict) -> None:
@@ -1716,7 +1724,7 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
             st.markdown(reasons, unsafe_allow_html=True)
         if ext:
             st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
-            _render_brief(ext)
+            _render_brief(ext, opp)
         st.markdown('<div class="rs-head" style="margin-top:16px">The files</div>', unsafe_allow_html=True)
         _render_documents(opp, k, auto=True, docs=docs)
         if can_edit:
