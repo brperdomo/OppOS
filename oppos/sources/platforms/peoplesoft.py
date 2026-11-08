@@ -139,6 +139,12 @@ class _BidListParser(HTMLParser):
                 self._cell_buf.append(text)
 
 
+# Links every row carries that are not the bid: registration / help pages (Indiana puts "Manage my bidder
+# profile" on each row). Following one lands on a troubleshooting page, so they never become the bid link.
+_GENERIC_LINK = re.compile(r"bidder-profile|supplier-resource-center|registration|/login|/help", re.I)
+_DOC_LINK = re.compile(r"\.(zip|pdf|docx?|xlsx?)(\?|$)", re.I)
+
+
 def _parse_date(date_str: str | None) -> str | None:
     if not date_str:
         return None
@@ -178,10 +184,12 @@ def fetch_opportunities(site: PeopleSoftSite, limit: int = 200) -> list[dict[str
                 continue
 
             detail_url = ""
-            real = [l for l in links if not l.startswith(("mailto:", "javascript", "#"))]
-            if real:
-                href = real[0]
-                detail_url = href if href.startswith("http") else f"{site.base_url}{href}"
+            real = [l if l.startswith("http") else f"{site.base_url}{l}" for l in links
+                    if not l.startswith(("mailto:", "javascript", "#")) and not _GENERIC_LINK.search(l)]
+            docs = [l for l in real if _DOC_LINK.search(l)]
+            pages = [l for l in real if l not in docs]
+            if pages:
+                detail_url = pages[0]
 
             if site.columns:
                 col = site.columns
@@ -216,9 +224,9 @@ def fetch_opportunities(site: PeopleSoftSite, limit: int = 200) -> list[dict[str
                 "naics_code": "",
                 "set_aside": "",
                 "classification_code": "",
-                "url": detail_url or list_url,
+                "url": detail_url or list_url,  # no bid page (Indiana): the listing page, where the bid and its files are
                 "description": description or title,
-                "resource_links": [],
+                "resource_links": docs,
                 "point_of_contact": {"name": re.sub(r"\s*-\s*\d+$", "", contact).strip(), "email": contact_email, "phone": ""},
                 "place_of_performance": site.place_default,
                 "raw": {"cells": cells, "links": links},
