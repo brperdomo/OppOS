@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -133,6 +134,9 @@ ul.plain li { margin-bottom: 4px; }
 [data-testid="stExpander"] summary { font-size: 14px; color: var(--muted); }
 [data-testid="stCaptionContainer"] { font-size: 13px; }
 [data-testid="stDownloadButton"] > button[kind="tertiary"], .stButton > button[kind="tertiary"] { color: var(--accent); }
+[data-testid="stDownloadButton"] > button[kind="tertiary"] { min-height: 0; padding: 0; }
+[class*="_docs_head"] { margin-bottom: 6px; }
+[class*="_docs_head"] [data-testid="stDownloadButton"] { margin-left: auto; }
 
 /* Find RFPs rows */
 [class*="st-key-row_"] { border-bottom: 1px solid var(--line); padding: 8px 0; }
@@ -930,11 +934,24 @@ def _render_documents(opp: dict, k: str, auto: bool, docs: list[dict] | None = N
         return
     n_read = sum(1 for d in docs if d["status"] == "read")
     head = f"{len(docs)} document{'s' if len(docs) != 1 else ''}" + (", all read by OppOS" if n_read == len(docs) else f", {n_read} read by OppOS")
-    st.markdown(f'<p class="muted">{head}</p>', unsafe_allow_html=True)
     files = {f.name: f for f in local_files(sid)}
+    with st.container(horizontal=True, vertical_alignment="center", key=f"{k}_docs_head"):
+        st.markdown(f'<p class="muted" style="margin:0">{head}</p>', unsafe_allow_html=True)
+        if len(files) > 1:
+            def _zip_all(paths=tuple(files.values())) -> bytes:
+                import io
+                import zipfile
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for p_ in paths:
+                        zf.write(p_, arcname=p_.name)
+                return buf.getvalue()
+            stem = re.sub(r"[^A-Za-z0-9]+", "-", (opp.get("solicitation_number") or opp.get("title") or sid))[:60].strip("-") or "rfp"
+            st.download_button(f"Download all {len(files)}", data=_zip_all, file_name=f"{stem}-documents.zip", mime="application/zip",
+                               key=f"{k}_dl_all", on_click="ignore")
     for d in docs:
         if d["status"] == "read":
-            meta = f'{d["pages"]} pages' if d.get("pages") else _size_txt(d.get("size"))
+            meta = (f'{d["pages"]} page' + ("s" if d["pages"] != 1 else "")) if d.get("pages") else _size_txt(d.get("size"))
         elif d["status"] == "unreadable":
             meta = '<span class="faint">not read</span>'
         else:
