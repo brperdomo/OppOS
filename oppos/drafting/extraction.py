@@ -23,7 +23,12 @@ EXTRACT_URL = "https://api.nutrient.io/extraction/extract"
 # "understand" = AI-augmented parsing (9 credits/page) + extract (6/page). "agentic" is 18 + 6.
 EXTRACTION_MODE = (os.environ.get("EXTRACTION_MODE") or "understand").strip()
 # Guard against burning credits on 400-page terms-and-conditions dumps.
-EXTRACTION_MAX_PAGES = int((os.environ.get("EXTRACTION_MAX_PAGES") or "80").strip() or 80)
+EXTRACTION_MAX_PAGES = int((os.environ.get("EXTRACTION_MAX_PAGES") or "400").strip() or 400)
+# Office files are converted by the API; their page count is estimated from the text OppOS already read.
+EXTRACTABLE = {".pdf", ".doc", ".docx", ".rtf", ".odt", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx"}
+CHARS_PER_PAGE_ESTIMATE = 2500
+EXTRACTION_WORKERS = 4
+_POLL_LIMIT_S = 40 * 60
 _CREDITS_PER_PAGE = {"text": 7, "structure": 7.5, "understand": 15, "agentic": 24}
 
 CATEGORIES = "functional | technical | security_compliance | commercial | company | implementation | other"
@@ -131,27 +136,45 @@ def _leaf(meta: Any) -> dict[str, Any]:
 
 
 def _extract_one(path: Path, mode: str) -> dict[str, Any]:
+    """One document through Data Extraction's async endpoint (no 5-minute limit): submit, poll the run, read its
+    result, then delete the stored run — runs are kept by the API until deleted, and RFP documents should not be."""
+    import mimetypes
+    import time
+    headers = {"Authorization": f"Bearer {api_key()}"}
     instructions = {"mode": mode, "schema": REQUIREMENTS_SCHEMA, "citationsEnabled": True}
-    with path.open("rb") as f:
-        resp = httpx.post(
-            EXTRACT_URL,
-            headers={"Authorization": f"Bearer {api_key()}"},
-            data={"instructions": json.dumps(instructions)},
-            files={"file": (path.name, f, "application/pdf")},
-            timeout=300.0,
-        )
+    ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    resp = httpx.post(EXTRACT_URL + "/async", headers=headers, data={"instructions": json.dumps(instructions)},
+                      files={"file": (path.name, path.read_bytes(), ctype)}, timeout=120.0)
     resp.raise_for_status()
-    body = resp.json()
+    run_id = resp.json().get("id")
+    base = EXTRACT_URL.rsplit("/", 1)[0] + f"/runs/{run_id}"
+    try:
+        started, wait, run = time.time(), 3.0, {}
+        while True:
+            time.sleep(wait)
+            run = httpx.get(base, headers=headers, timeout=30.0).json()
+            if run.get("status") in ("done", "error", "canceled"):
+                break
+            if time.time() - started > _POLL_LIMIT_S:
+                raise TimeoutError(f"extraction still running after {_POLL_LIMIT_S // 60} minutes")
+            wait = min(wait * 1.5, 15.0)
+        if run.get("status") != "done":
+            raise RuntimeError(f"extraction {run.get('status')}: {run.get('error')}")
+        body = httpx.get(base + "/assets/result", headers=headers, timeout=60.0, follow_redirects=True).json()
+    finally:
+        try:
+            httpx.delete(base, headers=headers, timeout=30.0)
+        except Exception:
+            logger.warning("Could not delete extraction run %s", run_id)
     out = body.get("output") or {}
-    usage = body.get("usage") or {}
-    credits = (usage.get("data_extraction_credits") or {})
+    credits = ((run.get("usage") or {}).get("data_extraction_credits") or {})
     return {
         "data": out.get("data") or {},
         "metadata": out.get("metadata") or {},
-        "pages": len(out.get("pages") or []),
+        "pages": len(out.get("pages") or []) or int((run.get("metrics") or {}).get("pagesProcessed") or 0),
         "credits_cost": credits.get("cost"),
-        "credits_remaining": credits.get("remainingCredits") or resp.headers.get("x-pspdfkit-remaining-credits"),
-        "request_id": body.get("requestId"),
+        "credits_remaining": credits.get("remainingCredits"),
+        "request_id": run_id,
     }
 
 
@@ -307,8 +330,10 @@ def extract_rfp_requirements(
     file_paths: list[Path],
     mode: str | None = None,
     on_progress: Callable[[str], None] | None = None,
+    page_hints: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Run Data Extraction over the RFP PDFs and merge into one page-cited requirement list.
+    """Run Data Extraction over the RFP documents (PDF and Office files, up to EXTRACTION_WORKERS at a time) and
+    merge into one page-cited requirement list. `page_hints`: estimated pages for non-PDF files, by file name.
 
     Returns {"requirements": [...], "solicitation": {...}, "evaluation_criteria": [...],
              "required_forms": [...], "files": [...], "pages": n, "credits_cost": n,
@@ -323,42 +348,48 @@ def extract_rfp_requirements(
         result["errors"].append("NUTRIENT_API_KEY not set")
         return result
 
-    pdfs = [p for p in file_paths if p.suffix.lower() == ".pdf" and p.is_file()]
+    from concurrent.futures import ThreadPoolExecutor
+    from oppos.sources.extract_text import _weight
+    page_hints = page_hints or {}
+    docs = [p for p in file_paths if p.suffix.lower() in EXTRACTABLE and p.is_file()]
+    docs.sort(key=lambda p: (-_weight(p.name), p.name))  # the page budget goes to the solicitation first
     budget = EXTRACTION_MAX_PAGES
     seq = 0
-    for path in pdfs:
-        if budget <= 0:
-            result["skipped"].append(f"{path.name} (page budget of {EXTRACTION_MAX_PAGES} exhausted)")
-            continue
-        n = page_count(path)
-        if n is not None and n > budget:
-            result["skipped"].append(f"{path.name} ({n} pages — over the remaining {budget}-page budget)")
-            continue
+    chosen: list[tuple[Path, int]] = []
+    for path in docs:
+        n = page_count(path) if path.suffix.lower() == ".pdf" else page_hints.get(path.name)
         if n is None:
             # The API charges per page and the charge cannot be undone — a file whose size we cannot bound
-            # locally is never uploaded, first in line or not.
-            result["skipped"].append(f"{path.name} (page count unknown — cannot bound credit spend; "
-                                     f"convert or unlock the PDF and retry)")
+            # locally is never uploaded.
+            result["skipped"].append(f"{path.name} (page count unknown — cannot bound credit spend)")
             continue
-        if on_progress:
-            on_progress(f"Extracting requirements from {path.name}" + (f" ({n} pages)" if n else ""))
+        if n > budget:
+            result["skipped"].append(f"{path.name} ({n} pages — over the remaining {budget}-page budget)")
+            continue
         budget -= n  # reserved before upload: a charged request whose response is lost must still count
+        chosen.append((path, n))
+
+    def _run(item: tuple[Path, int]) -> tuple[Path, int, dict[str, Any] | None, str]:
+        path, n = item
+        if on_progress:
+            on_progress(f"Pulling out the requirements: {path.name}" + (f" ({n} pages)" if n else ""))
         try:
-            one = _extract_one(path, mode)
+            return path, n, _extract_one(path, mode), ""
         except httpx.HTTPStatusError as e:
-            if 400 <= e.response.status_code < 500 and e.response.status_code != 408:
-                budget += n  # rejected client-side (bad request, auth, entitlement): nothing was processed or charged
-            result["errors"].append(f"{path.name}: HTTP {e.response.status_code} {e.response.text[:160]}")
-            continue
+            return path, n, None, f"HTTP {e.response.status_code} {e.response.text[:160]}"
         except Exception as e:  # timeout, disconnect, invalid JSON — the server may have processed and charged it
-            result["errors"].append(f"{path.name}: {e} (its {n} pages stay counted against the budget)")
+            return path, n, None, str(e)[:200]
+
+    with ThreadPoolExecutor(max_workers=EXTRACTION_WORKERS) as pool:
+        done = list(pool.map(_run, chosen))
+    for path, n, one, err in done:  # merge main documents first: the solicitation's own facts win over terms and forms
+        if one is None:
+            result["errors"].append(f"{path.name}: {err}")
             continue
 
         data, meta = one["data"], one["metadata"]
         result["files"].append({"file": path.name, "pages": one["pages"], "credits": one["credits_cost"], "request_id": one["request_id"]})
-        effective_pages = one["pages"] or n
-        result["pages"] += effective_pages
-        budget -= effective_pages - n  # settle the reservation against the API's own count
+        result["pages"] += one["pages"] or n
         if one["credits_cost"]:
             result["credits_cost"] += int(one["credits_cost"])
         if one["credits_remaining"] is not None:
@@ -445,6 +476,24 @@ def extract_rfp_requirements(
         "estimated_credits_per_page": _CREDITS_PER_PAGE.get(mode),
     }
     return result
+
+
+OBLIGATION_TYPES = ("terms_and_conditions", "form")  # contractual / paperwork: acknowledged, not answered one by one
+DRAFT_MAX_REQUIREMENTS = int((os.environ.get("DRAFT_MAX_REQUIREMENTS") or "150").strip() or 150)
+
+
+def drafting_subset(extracted: dict[str, Any], limit: int = DRAFT_MAX_REQUIREMENTS) -> tuple[dict[str, Any], int]:
+    """The requirements the drafter answers one by one: not superseded, not from terms or forms; the solicitation's
+    own items first, mandatory before optional, at most `limit`, kept in document order. Returns (extraction with that subset, how many were left out)."""
+    pool = [r for r in extracted.get("requirements") or []
+            if not r.get("superseded_by") and r.get("document_type") not in OBLIGATION_TYPES]
+    rank = {"solicitation": 0, "amendment": 0, "submission_instructions": 1}
+    keep = sorted(pool, key=lambda r: (rank.get(r.get("document_type"), 2), not r.get("mandatory"),
+                                       int(str(r.get("id", "E0"))[1:] or 0)))[:limit]
+    ids = {r["id"] for r in keep}
+    sub = dict(extracted)
+    sub["requirements"] = [r for r in pool if r["id"] in ids]
+    return sub, len(pool) - len(keep)
 
 
 def format_for_prompt(extracted: dict[str, Any]) -> str:

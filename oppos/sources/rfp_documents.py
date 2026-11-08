@@ -1,4 +1,5 @@
-"""An RFP's documents, read once and kept: download → read (Nutrient Processor API) → store → digest → re-score.
+"""An RFP's documents, read once and kept: download → read (Nutrient Processor API) → store → digest →
+requirements (Nutrient Data Extraction) → re-score.
 
 `read_rfp_documents` does the work; `start_reading` runs it in the background (used when someone grabs an RFP)
 and records progress in meta under `docs_job:<source_id>`, which the dashboard polls.
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 DRAFT_BUDGET = 150_000    # characters kept on the opportunity row (the drafter's budget)
 SCORING_BUDGET = 60_000   # characters the fit scorer reads
-_JOB_STALE = timedelta(minutes=20)
+_JOB_STALE = timedelta(minutes=50)  # reading plus requirements extraction of a large RFP
 _LOCK = threading.Lock()
 
 
@@ -77,6 +78,44 @@ def read_rfp_documents(opp: dict[str, Any], on_progress: Callable[[str, int, int
     }
 
 
+def _signature(source_id: str) -> str:
+    """Which documents (name and size) a stored extraction was made from: new or changed files make it stale."""
+    return "|".join(f"{d['name']}:{d.get('size')}" for d in get_documents(source_id) if d["status"] == "read")
+
+
+def stored_extraction(source_id: str) -> dict[str, Any] | None:
+    """The requirements extraction for these documents, or None when there is none or the documents changed."""
+    raw = get_meta(f"extraction:{source_id}")
+    try:
+        ext = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+    return ext if ext and ext.get("signature") == _signature(source_id) else None
+
+
+def extract_requirements(opp: dict[str, Any], on_progress: Callable[[str], None] | None = None) -> dict[str, Any] | None:
+    """Data Extraction over every document read: requirements, dates, how to submit, forms, evaluation criteria —
+    page-cited. Stored in meta (extraction:<id>) so the RFP tab, the facts and the drafter share one run."""
+    from oppos.drafting.extraction import CHARS_PER_PAGE_ESTIMATE, extract_rfp_requirements, extraction_available
+    sid = str(opp.get("source_id") or "")
+    if not extraction_available():
+        return None
+    have = stored_extraction(sid)
+    if have:
+        return have
+    docs = {d["name"]: d for d in get_documents(sid) if d["status"] == "read"}
+    files = [f for f in local_files(sid) if f.name in docs]
+    if not files:
+        return None
+    hints = {name: d.get("pages") or max(1, int(d.get("chars") or 0) // CHARS_PER_PAGE_ESTIMATE) for name, d in docs.items()}
+    ext = extract_rfp_requirements(files, on_progress=on_progress, page_hints=hints)
+    if ext.get("requirements") or ext.get("solicitation"):
+        ext["signature"] = _signature(sid)
+        ext["extracted_at"] = datetime.utcnow().isoformat()
+        set_meta(f"extraction:{sid}", json.dumps(ext))
+    return ext
+
+
 def rescore(opp: dict[str, Any]) -> dict[str, Any] | None:
     """Re-score the fit on the documents (the listing alone is often a title and a date)."""
     from oppos.scoring.qualifier import qualify
@@ -123,11 +162,21 @@ def start_reading(opp: dict[str, Any], rescore_after: bool = True) -> bool:
         job = job_status(sid)
         if job and job.get("state") == "reading":
             return False
-        _set_job(sid, state="reading", done=0, total=0, current="", error="", started=datetime.utcnow().isoformat())
+        _set_job(sid, state="reading", phase="reading", done=0, total=0, current="", error="", extracted=None,
+                 started=datetime.utcnow().isoformat())
 
     def run() -> None:
         try:
             res = read_rfp_documents(dict(opp), on_progress=lambda name, i, n: _set_job(sid, current=name, done=i, total=n))
+            if res["read"]:
+                _set_job(sid, phase="requirements", current="pulling out the requirements")
+                try:
+                    ext = extract_requirements(dict(opp), on_progress=lambda msg: _set_job(sid, current=msg))
+                    _set_job(sid, extracted=bool(ext and (ext.get("requirements") or ext.get("solicitation"))),
+                             extract_errors=(ext or {}).get("errors", [])[:5])
+                except Exception as e:  # the documents are read either way; the draft can extract again
+                    logger.warning("Requirements extraction for %s failed: %s", sid, e)
+                    _set_job(sid, extracted=False, extract_errors=[f"{type(e).__name__}: {e}"[:200]])
             if rescore_after and res["read"]:
                 _set_job(sid, current="re-scoring the fit on the documents")
                 try:
