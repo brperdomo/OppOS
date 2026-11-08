@@ -14,6 +14,7 @@ from html.parser import HTMLParser
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 import anthropic
@@ -770,7 +771,11 @@ def _primary_lob(opportunity: dict[str, Any], lob_key: str | None = None) -> str
     return DEFAULT_LOB
 
 
-def _attach_stage2(opportunity: dict[str, Any], s2: dict[str, Any]) -> None:
+def _attach_stage2(opportunity: dict[str, Any], s2: dict[str, Any], attachment_text: str = "") -> None:
+    # What this score was based on, so the dashboard can say "listing only (preliminary)" or "listing and N documents".
+    seen = (attachment_text or "")[:SCORING_TEXT_CHARS]
+    s2["basis"] = {"documents": len(re.findall(r"^--- (.+?) ---$", seen, re.M)) or (1 if seen.strip() else 0),
+                   "document_chars": len(seen), "scored_at": datetime.utcnow().isoformat(timespec="seconds")}
     s1 = opportunity.get("stage1") or {}
     if isinstance(s1, dict):
         secondary = [
@@ -806,7 +811,7 @@ def force_score(
         "lobs": [{"lob": lob, "confidence": 1.0, "reason": "forced"}],
         "component_only": False,
     }
-    _attach_stage2(opportunity, s2)
+    _attach_stage2(opportunity, s2, attachment_text)
     logger.info(
         "Force-scored [%s]: '%s' — %d/100 (%s)",
         lob, opportunity.get("title", "?"), opportunity["fit_score"], opportunity["recommended_action"],
@@ -829,7 +834,7 @@ def qualify(opportunity: dict[str, Any], attachment_text: str = "") -> dict[str,
 
     primary = s1["lobs"][0]["lob"] if s1["lobs"] else DEFAULT_LOB
     s2 = stage2_score(opportunity, attachment_text, lob_key=primary)
-    _attach_stage2(opportunity, s2)
+    _attach_stage2(opportunity, s2, attachment_text)
 
     logger.info(
         "Scored [%s]: '%s' — %d/100 (%s)",
