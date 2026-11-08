@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -190,6 +191,8 @@ ul.plain li { margin-bottom: 4px; }
 .ans-head { margin-top: 16px; font-weight: 600; font-size: 14px; }
 .ans-head span { margin-left: 10px; color: var(--faint); font-weight: 400; font-size: 13px; }
 .ans-req { color: var(--muted); font-size: 13.5px; margin: 2px 0 6px; }
+.req { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; max-width: 90ch; }
+.req > span { display: block; color: var(--faint); font-size: 12.5px; margin-top: 2px; }
 .event { font-size: 13.5px; color: var(--muted); padding: 3px 0; }
 .event span { color: var(--faint); margin-right: 10px; }
 
@@ -900,8 +903,91 @@ def _reading_progress(sid: str) -> None:
     if job.get("state") != "reading":
         st.rerun()
     done, total, cur = int(job.get("done") or 0), int(job.get("total") or 0), job.get("current") or ""
+    if job.get("phase") == "requirements":
+        st.markdown(f'<div class="doc-reading">{_esc(cur[:1].upper() + cur[1:]) if cur else "Pulling out the requirements"}… '
+                    'Nutrient Data Extraction takes a few minutes for a large RFP; you can leave this page.</div>', unsafe_allow_html=True)
+        return
     st.markdown(f'<div class="doc-reading">Reading the RFP\'s documents{f" ({min(done + 1, total)} of {total})" if total else ""}'
                 f'{": " + _esc(cur) if cur else ""}…</div>', unsafe_allow_html=True)
+
+
+_MONTHS = "jan feb mar apr may jun jul aug sep oct nov dec".split()
+
+
+def _same_fact(field: str, a: str, b: str) -> bool:
+    """Two documents stating one fact in different words: the same date (month, day, year) or the same portal."""
+    if field.endswith("deadline"):
+        def key(t: str) -> tuple:
+            t = t.lower()
+            month = next((i for i, m in enumerate(_MONTHS) if re.search(rf"\b{m}", t)), None)
+            nums = re.findall(r"\b\d{1,4}\b", t)
+            day = next((int(n) for n in nums if 1 <= int(n) <= 31 and len(n) <= 2 and not re.search(rf"\b{n}\s*(:|am|pm|a\.m|p\.m)", t)), None)
+            year = next((int(n) for n in nums if len(n) == 4), None)
+            return month, day, year
+        ka, kb = key(a), key(b)
+        return ka[:2] == kb[:2] and None not in ka[:2] and (ka[2] == kb[2] or None in (ka[2], kb[2]))
+    words = lambda t: {w for w in re.findall(r"[a-z0-9@.]{4,}", t.lower())} - {"portal", "system", "state", "only", "through", "submit", "electronic"}
+    return bool(words(a) & words(b))
+
+
+def _render_brief(ext: dict) -> None:
+    """What the RFP asks, from Data Extraction over every document: the solicitation's facts, how it is scored,
+    the forms, and every requirement with its file and page."""
+    sol = ext.get("solicitation") or {}
+    reqs = [r for r in (ext.get("requirements") or []) if not r.get("superseded_by")]
+    rows = [(l, sol.get(k)) for l, k in (("Type", "rfp_type"), ("Number", "solicitation_number"), ("Due", "submission_deadline"),
+                                          ("Questions due", "questions_deadline"), ("How to submit", "submission_method"),
+                                          ("Format", "format_requirements"), ("Contact", "contact_name"), ("Contact email", "contact_email"))
+            if sol.get(k) and str(sol.get(k)).strip().lower() != "other"]
+    st.markdown('<div class="rs-head">What the RFP asks</div>', unsafe_allow_html=True)
+    if rows:
+        st.markdown('<div class="kvs" style="margin-top:4px">' + "".join(f'<div class="kv"><span>{_esc(l)}</span><div>{_esc(str(v)[:400])}</div></div>'
+                                                                         for l, v in rows) + "</div>", unsafe_allow_html=True)
+    for c in [c for c in (ext.get("solicitation_conflicts") or [])
+              if c.get("field") in ("submission_deadline", "questions_deadline", "submission_method")
+              and not _same_fact(c["field"], str(c.get("kept", "")), str(c.get("other", "")))][:3]:
+        if "unknown" in str(c.get("reason", "")) or c.get("reason") == "first document kept":
+            st.markdown(f'<p class="muted"><span class="alert">Documents disagree on {_esc(str(c.get("field", "")).replace("_", " "))}:</span> '
+                        f'{_esc(str(c.get("kept", ""))[:80])} ({_esc(str(c.get("kept_file", "")))}) vs {_esc(str(c.get("other", ""))[:80])} '
+                        f'({_esc(str(c.get("other_file", "")))})</p>', unsafe_allow_html=True)
+    crit = ext.get("evaluation_criteria") or []
+    forms = ext.get("required_forms") or []
+    if crit or forms:
+        c1, c2 = st.columns(2)
+        if crit:
+            c1.markdown('<div class="rs-head">How it is scored</div><ul class="plain">' + "".join(
+                f'<li>{_esc(c["criterion"])}{" — " + _esc(c["weight"]) if c.get("weight") else ""}</li>' for c in crit[:12]) + "</ul>", unsafe_allow_html=True)
+        if forms:
+            c2.markdown('<div class="rs-head">Forms to include</div><ul class="plain">' + "".join(f"<li>{_esc(f)}</li>" for f in forms[:15]) + "</ul>",
+                        unsafe_allow_html=True)
+    from oppos.drafting.extraction import OBLIGATION_TYPES
+    obligations = [r for r in reqs if r.get("document_type") in OBLIGATION_TYPES]
+    reqs = [r for r in reqs if r.get("document_type") not in OBLIGATION_TYPES]
+    if reqs:
+        mand = sum(1 for r in reqs if r.get("mandatory"))
+        labels = {"functional": "Functional", "technical": "Technical", "security_compliance": "Security and compliance",
+                  "commercial": "Commercial", "company": "About the company", "implementation": "Implementation and support", "other": "Other"}
+        by: dict[str, list] = {}
+        rank = {"solicitation": 0, "amendment": 0, "submission_instructions": 1}
+        for r in sorted(reqs, key=lambda r: (rank.get(r.get("document_type"), 2), not r.get("mandatory"), int(str(r.get("id", "E0"))[1:] or 0))):
+            by.setdefault(r.get("category") or "other", []).append(r)
+        st.markdown(f'<div class="rs-head" style="margin-top:8px">{len(reqs)} requirements to answer, {mand} mandatory</div>', unsafe_allow_html=True)
+        for cat in sorted(by, key=lambda c: list(labels).index(c) if c in labels else 99):
+            items = by[cat]
+            with st.expander(f"{labels.get(cat, cat.title())} · {len(items)}"):
+                st.markdown("".join(
+                    f'<div class="req"><div>{_esc(r["text"][:600])}</div><span>{"must · " if r.get("mandatory") else ""}'
+                    f'{_esc(r.get("file", ""))}{(" p." + str(r["page"])) if r.get("page") else ""}'
+                    f'{" §" + _esc(r["section"]) if r.get("section") else ""}</span></div>' for r in items), unsafe_allow_html=True)
+    if obligations:
+        with st.expander(f"Obligations in the terms and forms · {len(obligations)}"):
+            st.markdown("".join(
+                f'<div class="req"><div>{_esc(r["text"][:400])}</div><span>{_esc(r.get("file", ""))}{(" p." + str(r["page"])) if r.get("page") else ""}</span></div>'
+                for r in obligations[:400]) + (f'<p class="muted">{len(obligations) - 400} more not shown.</p>' if len(obligations) > 400 else ""),
+                unsafe_allow_html=True)
+    skipped, errors = ext.get("skipped") or [], ext.get("errors") or []
+    if skipped or errors:
+        st.caption("Not extracted: " + "; ".join(skipped + errors)[:400])
 
 
 def _render_documents(opp: dict, k: str, auto: bool, docs: list[dict] | None = None) -> None:
@@ -911,9 +997,13 @@ def _render_documents(opp: dict, k: str, auto: bool, docs: list[dict] | None = N
     sid = opp.get("source_id", "")
     docs = get_documents(sid) if docs is None else docs
     job = job_status(sid)
-    if not docs and not job and auto and CURRENT_USER.get("can_work"):
-        start_reading(opp)
-        job = job_status(sid)
+    if auto and CURRENT_USER.get("can_work") and not (job and job.get("state") == "reading"):
+        from oppos.drafting.extraction import extraction_available
+        from oppos.sources.rfp_documents import stored_extraction
+        never_extracted = bool(docs) and (job or {}).get("extracted") is None and extraction_available() and not stored_extraction(sid)
+        if (not docs and not job) or never_extracted:
+            start_reading(opp)
+            job = job_status(sid)
     if job and job.get("state") == "reading":
         _reading_progress(sid)
         if not docs:
@@ -1063,12 +1153,26 @@ _REG_SHORT = {"unknown": "Not checked", "not_registered": "No account", "in_prog
 _MANUAL_CHECKLIST = ("questions", "salesforce", "security", "pricing", "legal", "final")  # the rest the app knows itself
 
 
-def _render_facts(opp: dict, pursuit: dict, draft: dict | None, can_edit: bool, k: str) -> None:
-    """How to submit — each fact once: due, where, our account on the portal, format, contact, next step."""
+def _render_facts(opp: dict, pursuit: dict, draft: dict | None, can_edit: bool, k: str, ext: dict | None = None) -> None:
+    """How to submit — each fact once: due, where, our account on the portal, format, contact, next step. What a
+    person saved wins; then the draft's reading of the RFP; then the requirements extraction; then the listing."""
     from oppos.pursuits import days_until, save_pursuit_fields
     from oppos.storage.db import upsert_portal_registration
     sid = opp.get("source_id", "")
-    sub = (draft or {}).get("submission") or {}
+    sub = dict((draft or {}).get("submission") or {})
+    esol = (ext or {}).get("solicitation") or {}
+    how = str(esol.get("submission_method") or "")
+    if how and not sub.get("method"):
+        mail_to = re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", how)
+        sub["method"] = "email" if mail_to else "mail" if re.search(r"\bmail|hand[- ]deliver|courier", how, re.I) else "portal"
+        if mail_to and not sub.get("email_to"):
+            sub["email_to"] = mail_to.group(0)
+    if not sub.get("questions_deadline") and esol.get("questions_deadline"):
+        sub["questions_deadline"] = esol["questions_deadline"]
+    if not sub.get("format_requirements") and esol.get("format_requirements"):
+        sub["format_requirements"] = [esol["format_requirements"]]
+    if draft is None and ext and ext.get("required_forms"):
+        draft = {"required_forms": ext["required_forms"]}
     method = (pursuit.get("submission_method") or "unknown").lower()
     if method == "unknown" and str(sub.get("method") or "").lower() in ("portal", "email", "mail", "in_person"):
         method = str(sub["method"]).lower()
@@ -1081,7 +1185,7 @@ def _render_facts(opp: dict, pursuit: dict, draft: dict | None, can_edit: bool, 
 
     due_raw = pursuit.get("submission_deadline") or opp.get("response_deadline")
     dleft = days_until(due_raw)
-    due = _esc(_due_phrase(due_raw))
+    due = _esc(_due_phrase(due_raw)) if due_raw or not esol.get("submission_deadline") else _esc(str(esol["submission_deadline"])[:80])
     if dleft is not None and dleft <= 7:
         due = f'<span class="alert">{due}</span>'
     qa = pursuit.get("qa_deadline") or sub.get("questions_deadline")
@@ -1090,6 +1194,8 @@ def _render_facts(opp: dict, pursuit: dict, draft: dict | None, can_edit: bool, 
 
     if method == "portal":
         where = f"{_esc(portal_name) or 'The portal'}{listing}"
+        if how and (pursuit.get("submission_method") or "unknown") == "unknown":  # not confirmed by a person yet
+            where += f'<div class="faint">The RFP says: {_esc(how[:200])}</div>'
     elif method == "email":
         to = str(sub.get("email_to") or opp.get("contact_email") or "")
         where = (f'Email to <a href="mailto:{_esc(to)}">{_esc(to)}</a>' if to else '<span class="alert">By email; the address isn\'t known yet</span>')
@@ -1103,8 +1209,9 @@ def _render_facts(opp: dict, pursuit: dict, draft: dict | None, can_edit: bool, 
         where = f'<span class="alert">Not known yet</span>{listing}'
 
     fmt = [str(x) for x in (sub.get("format_requirements") or []) if not str(x).lower().startswith("required form")][:3]
-    forms = [str(x) for x in ((draft or {}).get("required_forms") or [])][:4]
-    contact = " · ".join(_esc(str(c)) for c in (opp.get("contact_name"), opp.get("contact_email"), opp.get("contact_phone")) if c)
+    forms = [str(x) for x in ((draft or {}).get("required_forms") or [])]
+    contact = " · ".join(_esc(str(c)) for c in (opp.get("contact_name"), opp.get("contact_email"), opp.get("contact_phone")) if c) \
+        or " · ".join(_esc(str(c)) for c in (esol.get("contact_name"), esol.get("contact_email")) if c)
 
     def rows_html(rows: list[tuple[str, str]]) -> str:
         return "".join(f'<div class="fact"><span>{l}</span><div>{v}</div></div>' for l, v in rows)
@@ -1128,7 +1235,8 @@ def _render_facts(opp: dict, pursuit: dict, draft: dict | None, can_edit: bool, 
                 st.rerun()
         more = []
         if fmt or forms:
-            more.append(("Format", _esc("; ".join(fmt + (["Forms: " + ", ".join(forms)] if forms else [])))))
+            more.append(("Format", _esc("; ".join(f[:300] for f in fmt)) + (("<br>" if fmt else "") + f"{len(forms)} required form{'s' if len(forms) != 1 else ''}"
+                                                                             " (listed under RFP and documents)" if forms else "")))
         more.append(("Contact", contact or '<span class="alert">Not in the listing yet</span>'))
         if pursuit.get("next_action"):
             more.append(("Next step", _esc(pursuit["next_action"][:200])))
@@ -1273,14 +1381,19 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
         else:
             st.caption(f"{owner}'s pursuit")
 
-    _render_facts(opp, pursuit, draft, can_edit, k)
-
+    from oppos.sources.rfp_documents import stored_extraction
     docs = get_documents(sid)
+    ext = stored_extraction(sid) if docs else None
+    _render_facts(opp, pursuit, draft, can_edit, k, ext)
+
     # Fixed labels: a label that changes (a count) makes Streamlit treat it as a new tab and jump back to the first.
     t_resp, t_rfp, t_notes = st.tabs(["Response", "RFP and documents", "Notes and activity"])
     with t_resp:
         _render_response(opp, pursuit, draft, k)
     with t_rfp:
+        if ext:
+            _render_brief(ext)
+            st.markdown('<div class="rs-head" style="margin-top:14px">Documents</div>', unsafe_allow_html=True)
         _render_documents(opp, k, auto=True, docs=docs)
         if s2.get("summary"):
             st.markdown(f'<p class="summary">{_esc(s2["summary"])}</p>', unsafe_allow_html=True)
@@ -1393,31 +1506,34 @@ def _run_draft(opp: dict, pursuit: dict) -> None:
         st.write("🔒 Security items get the Trust Center standard answer (NDA access on request); explicit asks for a specific statement or artifact are "
                  + ("answered from the approved compliance file" if comp["approved"] else "marked [SECURITY TO CONFIRM]"))
 
-        # Dogfood: Nutrient Data Extraction API maps the RFP PDFs to a requirements schema with page citations.
-        extracted = None
-        pdfs = [f for f in local_files(sid) if f.suffix.lower() == ".pdf"]
-        if pdfs:
-            from oppos.drafting.extraction import extract_rfp_requirements, extraction_available
-            if extraction_available():
-                extracted = extract_rfp_requirements(pdfs, on_progress=lambda m: st.write(f"🧩 {m}"))
-                st_ = extracted.get("stats") or {}
-                if extracted["requirements"]:
-                    st.write(f"✓ Nutrient Data Extraction: {st_['requirements']} requirements ({st_['mandatory']} mandatory) from "
-                             f"{extracted['pages']} pages · {extracted['credits_cost']} credits"
-                             + (f" · {extracted['credits_remaining']} remaining" if extracted.get("credits_remaining") is not None else ""))
-                for sk in extracted.get("skipped", []):
-                    st.write(f"⚠️ Skipped {sk}")
-                for er in extracted.get("errors", []):
-                    st.write(f"⚠️ Extraction error — {er}")
-                if not extracted["requirements"]:
-                    # A forms-only or instructions-only package yields no requirement items but still carries the
-                    # authoritative deadline / method / forms / criteria — keep them; discard only an empty result.
-                    kept = any(extracted.get(k) for k in ("solicitation", "required_forms", "evaluation_criteria"))
-                    st.write("ℹ️ No requirement items extracted" + (" — keeping the extracted submission facts" if kept else ""))
-                    if not kept:
-                        extracted = None
-            else:
-                st.write("ℹ️ NUTRIENT_API_KEY not set — drafting from text only")
+        # Nutrient Data Extraction maps every document (PDF and Office) to a page-cited requirements schema. Grabbing
+        # the RFP already ran it in the background; it runs here only when the documents changed since or it never did.
+        from oppos.drafting.extraction import extraction_available
+        from oppos.sources.rfp_documents import extract_requirements, stored_extraction
+        extracted = stored_extraction(sid)
+        if extracted:
+            st.write(f"🧩 Using the requirements already pulled from the documents ({len(extracted.get('requirements') or [])})")
+        elif res["read"] and extraction_available():
+            extracted = extract_requirements(opp, on_progress=lambda m: st.write(f"🧩 {m}"))
+        if extracted:
+            from oppos.drafting.extraction import DRAFT_MAX_REQUIREMENTS, drafting_subset
+            st_ = extracted.get("stats") or {}
+            if extracted.get("requirements"):
+                st.write(f"✓ Nutrient Data Extraction: {st_.get('requirements', 0)} requirements ({st_.get('mandatory', 0)} mandatory) from "
+                         f"{extracted.get('pages', 0)} pages")
+            extracted, left_out = drafting_subset(extracted)
+            if left_out:
+                st.write(f"ℹ️ Answering {len(extracted['requirements'])} of them one by one (mandatory first, up to {DRAFT_MAX_REQUIREMENTS}); "
+                         f"{left_out} more are listed under RFP and documents. Terms and forms are acknowledged, not answered item by item.")
+            for sk in extracted.get("skipped", []):
+                st.write(f"⚠️ Skipped {sk}")
+            for er in extracted.get("errors", []):
+                st.write(f"⚠️ Extraction error — {er}")
+            if not extracted.get("requirements"):
+                # A forms-only or instructions-only package yields no requirement items but still carries the
+                # authoritative deadline / method / forms / criteria — keep them; discard only an empty result.
+                if not any(extracted.get(k) for k in ("solicitation", "required_forms", "evaluation_criteria")):
+                    extracted = None
         try:
             draft = draft_response(opp, attachment_text=att, extracted=extracted, on_progress=lambda m: st.write(f"✍️ {m}"))
         except Exception as e:
