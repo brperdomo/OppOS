@@ -331,6 +331,7 @@ def extract_rfp_requirements(
     mode: str | None = None,
     on_progress: Callable[[str], None] | None = None,
     page_hints: dict[str, int] | None = None,
+    on_file: Callable[[str, str, int], None] | None = None,
 ) -> dict[str, Any]:
     """Run Data Extraction over the RFP documents (PDF and Office files, up to EXTRACTION_WORKERS at a time) and
     merge into one page-cited requirement list. `page_hints`: estimated pages for non-PDF files, by file name.
@@ -365,6 +366,8 @@ def extract_rfp_requirements(
             continue
         if n > budget:
             result["skipped"].append(f"{path.name} ({n} pages — over the remaining {budget}-page budget)")
+            if on_file:
+                on_file(path.name, "skipped", 0)
             continue
         budget -= n  # reserved before upload: a charged request whose response is lost must still count
         chosen.append((path, n))
@@ -373,11 +376,20 @@ def extract_rfp_requirements(
         path, n = item
         if on_progress:
             on_progress(f"Pulling out the requirements: {path.name}" + (f" ({n} pages)" if n else ""))
+        if on_file:
+            on_file(path.name, "running", 0)
         try:
-            return path, n, _extract_one(path, mode), ""
+            one = _extract_one(path, mode)
+            if on_file:
+                on_file(path.name, "done", len((one.get("data") or {}).get("requirements") or []))
+            return path, n, one, ""
         except httpx.HTTPStatusError as e:
+            if on_file:
+                on_file(path.name, "failed", 0)
             return path, n, None, f"HTTP {e.response.status_code} {e.response.text[:160]}"
         except Exception as e:  # timeout, disconnect, invalid JSON — the server may have processed and charged it
+            if on_file:
+                on_file(path.name, "failed", 0)
             return path, n, None, str(e)[:200]
 
     with ThreadPoolExecutor(max_workers=EXTRACTION_WORKERS) as pool:
