@@ -24,6 +24,8 @@ DRAFT_BUDGET = 150_000    # characters kept on the opportunity row (the drafter'
 SCORING_BUDGET = 60_000   # characters the fit scorer reads
 _JOB_STALE = timedelta(minutes=50)  # reading plus requirements extraction of a large RFP
 _LOCK = threading.Lock()
+_JOB_LOCK = threading.Lock()  # job updates come from several threads (extraction runs four documents at a time)
+STEPS = ("fetch", "read", "summaries", "requirements", "rescore")
 ACTOR = "OppOS"  # activity entries for what the app does by itself
 
 
@@ -42,11 +44,13 @@ def digest_for(source_id: str, budget: int) -> str:
 
 
 def read_rfp_documents(opp: dict[str, Any], on_progress: Callable[[str, int, int], None] | None = None,
-                       force: bool = False) -> dict[str, Any]:
+                       force: bool = False, track: Callable[..., None] | None = None) -> dict[str, Any]:
     """Fetch the RFP's documents if none are on disk, read every one not read before, store the texts and the
     digest. Returns {files, read, unreadable, failed: [(name, note)], new}."""
     sid = str(opp.get("source_id") or "")
+    track = track or (lambda *a, **k: None)
     files = local_files(sid)
+    track("fetch", "running")
     if not files:
         try:
             files = download_attachments(opp)
@@ -57,23 +61,31 @@ def read_rfp_documents(opp: dict[str, Any], on_progress: Callable[[str, int, int
         if files:
             add_pursuit_event(sid, ACTOR, "docs_fetched", f"Got {len(files)} file{'s' if len(files) != 1 else ''} from the listing: "
                               + ", ".join(f.name for f in files[:8]) + (" …" if len(files) > 8 else ""))
+    track("fetch", "done", detail=f"{len(files)} file{'s' if len(files) != 1 else ''}", files=[f.name for f in files])
     known = {d["name"]: d for d in get_documents(sid)}
     new = 0
+    track("read", "running")
     for i, f in enumerate(files):
         prev = known.get(f.name)
         size = f.stat().st_size
         if prev and not force and prev["status"] in ("read", "unreadable") and int(prev.get("size") or 0) == size:
+            track("doc", f.name, read="done")
             continue  # already read this exact file
         if on_progress:
             on_progress(f.name, i, len(files))
+        track("doc", f.name, read="running")
         r = read_file(f)
         save_document(sid, f.name, size, r["pages"], r["chars"], r["status"], r["note"], r["text"])
-        if r["status"] == "read" and r["text"].strip():
-            set_document_info(sid, f.name, summary=summarize(f.name, r["text"]))
+        track("doc", f.name, read={"read": "done", "unreadable": "skipped"}.get(r["status"], "failed"))
         new += 1
-    for d in get_documents(sid, with_text=True):  # documents read before summaries existed
+    track("read", "done", detail=f"{new} new" if new else "already read")
+    track("summaries", "running")
+    for d in get_documents(sid, with_text=True):  # new documents, and ones read before summaries existed
         if d["status"] == "read" and not d.get("summary") and (d.get("text") or "").strip():
+            track("doc", d["name"], summary="running")
             set_document_info(sid, d["name"], summary=summarize(d["name"], d["text"]))
+            track("doc", d["name"], summary="done")
+    track("summaries", "done")
     docs = get_documents(sid)
     if new:
         failed = [d["name"] for d in docs if d["status"] == "failed"]
@@ -139,7 +151,8 @@ def _add_matrices(sid: str, ext: dict[str, Any], save: bool = True) -> int:
     return added
 
 
-def extract_requirements(opp: dict[str, Any], on_progress: Callable[[str], None] | None = None) -> dict[str, Any] | None:
+def extract_requirements(opp: dict[str, Any], on_progress: Callable[[str], None] | None = None,
+                         on_file: Callable[[str, str, int], None] | None = None) -> dict[str, Any] | None:
     """Data Extraction over every document read: requirements, dates, how to submit, forms, evaluation criteria —
     page-cited. Stored in meta (extraction:<id>) so the RFP tab, the facts and the drafter share one run."""
     from oppos.drafting.extraction import CHARS_PER_PAGE_ESTIMATE, extract_rfp_requirements, extraction_available
@@ -160,7 +173,7 @@ def extract_requirements(opp: dict[str, Any], on_progress: Callable[[str], None]
     if not files:
         return None
     hints = {name: d.get("pages") or max(1, int(d.get("chars") or 0) // CHARS_PER_PAGE_ESTIMATE) for name, d in docs.items()}
-    ext = extract_rfp_requirements(files, on_progress=on_progress, page_hints=hints)
+    ext = extract_rfp_requirements(files, on_progress=on_progress, page_hints=hints, on_file=on_file)
     _add_matrices(sid, ext, save=False)  # before the check: a package can be all matrix and no prose
     if ext.get("requirements") or ext.get("solicitation"):
         ext["signature"] = _signature(sid)
@@ -220,9 +233,38 @@ def job_status(source_id: str) -> dict[str, Any] | None:
 
 
 def _set_job(source_id: str, **fields: Any) -> None:
-    job = job_status(source_id) or {}
-    job.update(fields, updated=datetime.utcnow().isoformat())
-    set_meta(f"docs_job:{source_id}", json.dumps(job))
+    with _JOB_LOCK:
+        job = job_status(source_id) or {}
+        job.update(fields, updated=datetime.utcnow().isoformat())
+        set_meta(f"docs_job:{source_id}", json.dumps(job))
+
+
+def _tracker(source_id: str) -> Callable[..., None]:
+    """Records each step's state and times, and each document's read / summary / extraction state, in the job."""
+    def track(kind: str, state_or_name: str, detail: str = "", files: list[str] | None = None, **doc: Any) -> None:
+        with _JOB_LOCK:
+            job = job_status(source_id) or {}
+            now = datetime.utcnow().isoformat()
+            if kind == "doc":
+                d = job.setdefault("docs", {}).setdefault(state_or_name, {})
+                for k, v in doc.items():
+                    d[k] = v
+                    if v == "running":
+                        d[f"{k}_started"] = now
+                    elif v in ("done", "failed", "skipped"):
+                        d[f"{k}_finished"] = now
+            else:
+                st = job.setdefault("steps", {}).setdefault(kind, {})
+                st["state"] = state_or_name
+                st["started" if state_or_name == "running" else "finished"] = now
+                if detail:
+                    st["detail"] = detail
+                if files:
+                    for name in files:
+                        job.setdefault("docs", {}).setdefault(name, {})
+            job["updated"] = now
+            set_meta(f"docs_job:{source_id}", json.dumps(job))
+    return track
 
 
 def start_reading(opp: dict[str, Any], rescore_after: bool = True) -> bool:
@@ -233,29 +275,46 @@ def start_reading(opp: dict[str, Any], rescore_after: bool = True) -> bool:
         if job and job.get("state") == "reading":
             return False
         _set_job(sid, state="reading", phase="reading", done=0, total=0, current="", error="", extracted=None,
-                 started=datetime.utcnow().isoformat())
+                 started=datetime.utcnow().isoformat(), finished=None, steps={}, docs={})
 
     def run() -> None:
+        track = _tracker(sid)
         try:
-            res = read_rfp_documents(dict(opp), on_progress=lambda name, i, n: _set_job(sid, current=name, done=i, total=n))
+            res = read_rfp_documents(dict(opp), on_progress=lambda name, i, n: _set_job(sid, current=name, done=i, total=n),
+                                     track=track)
             changed = bool(res["new"])
             _set_job(sid, summarized=True, matrices=True)
             if res["read"]:
                 _set_job(sid, phase="requirements", current="pulling out the requirements")
+                track("requirements", "running")
                 try:
-                    changed = changed or stored_extraction(sid) is None
-                    ext = extract_requirements(dict(opp), on_progress=lambda msg: _set_job(sid, current=msg))
+                    had = stored_extraction(sid)
+                    changed = changed or had is None
+                    ext = extract_requirements(dict(opp), on_progress=lambda msg: _set_job(sid, current=msg),
+                                               on_file=lambda name, state, n: track("doc", name, extract=state, requirements=n))
                     _set_job(sid, extracted=bool(ext and (ext.get("requirements") or ext.get("solicitation"))),
                              extract_errors=(ext or {}).get("errors", [])[:5])
+                    n_req = len((ext or {}).get("requirements") or [])
+                    track("requirements", "done" if ext else "skipped",
+                          detail=("already done" if had else f"{n_req:,} requirements") if ext else "Data Extraction not configured")
                 except Exception as e:  # the documents are read either way; the draft can extract again
                     logger.warning("Requirements extraction for %s failed: %s", sid, e)
                     _set_job(sid, extracted=False, extract_errors=[f"{type(e).__name__}: {e}"[:200]])
+                    track("requirements", "failed", detail=f"{type(e).__name__}: {e}"[:160])
+            if not res["read"]:
+                track("requirements", "skipped", detail="no documents to analyse")
             if rescore_after and res["read"] and changed:  # nothing new read or extracted: the score stands
                 _set_job(sid, current="re-scoring the fit on the documents")
+                track("rescore", "running")
                 try:
-                    rescore(dict(opp))
+                    before = int(float(opp.get("fit_score") or 0))
+                    scored = rescore(dict(opp)) or {}
+                    track("rescore", "done", detail=f"fit {before} → {int(scored.get('fit_score') or 0)}")
                 except Exception as e:  # the documents are read either way; a failed re-score keeps the old score
                     logger.warning("Re-score after reading %s failed: %s", sid, e)
+                    track("rescore", "failed", detail=f"{type(e).__name__}"[:80])
+            else:
+                track("rescore", "skipped", detail="nothing new to score")
             _set_job(sid, state="done", current="", done=res["files"], total=res["files"],
                      finished=datetime.utcnow().isoformat())
         except Exception as e:

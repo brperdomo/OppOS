@@ -234,6 +234,20 @@ ul.plain li { margin-bottom: 4px; }
 .ans-req { color: var(--muted); font-size: 13.5px; margin: 2px 0 6px; }
 .req { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; max-width: 90ch; }
 .req > span { display: block; color: var(--faint); font-size: 12.5px; margin-top: 2px; }
+.tracker { background: var(--surface); border-radius: 8px; padding: 14px 18px; margin: 4px 0 14px; font-size: 14px; }
+.trk-head { font-weight: 600; margin-bottom: 8px; }
+.trk-step { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 8px; padding: 3px 0; color: var(--faint); }
+.trk-step.done, .trk-step.running { color: var(--text); }
+.trk-step.running .ico { color: var(--accent); animation: trkpulse 1.4s ease-in-out infinite; }
+.trk-step.done .ico { color: var(--muted); }
+.trk-step.failed { color: var(--alert); }
+.trk-step .det { color: var(--muted); font-size: 13px; text-align: right; }
+.trk-docs { margin: 10px 0 6px 30px; border-top: 1px solid var(--line); padding-top: 6px; }
+.trk-doc { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; font-size: 13px; color: var(--muted); padding: 2px 0; }
+.trk-doc.running { color: var(--text); }
+.trk-doc.failed span:last-child { color: var(--alert); }
+@keyframes trkpulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .trk-step.running .ico { animation: none; } }
 .event { font-size: 13.5px; color: var(--muted); padding: 3px 0; }
 .event span { color: var(--faint); margin-right: 10px; }
 
@@ -1129,9 +1143,94 @@ def _render_brief(ext: dict, opp: dict | None = None) -> None:
             st.rerun()
 
 
-def _docs_status(docs: list[dict], ext: dict | None, job: dict) -> None:
-    """One line at the top of the RFP tab: what OppOS has done with the RFP's documents, and what uses it."""
+_STEP_LABELS = {"fetch": "Get the RFP's files", "read": "Read each document (Nutrient Processor API)",
+                "summaries": "Summarise each document", "requirements": "Pull out the requirements (Nutrient Data Extraction)",
+                "rescore": "Re-score the fit on the documents"}
+
+
+def _elapsed(start: str | None, end: str | None = None) -> str:
+    try:
+        a = datetime.fromisoformat(str(start))
+        b = datetime.fromisoformat(str(end)) if end else datetime.utcnow()
+        secs = max(0, int((b - a).total_seconds()))
+    except (TypeError, ValueError):
+        return ""
+    return f"{secs // 60}m {secs % 60:02d}s" if secs >= 60 else f"{secs}s"
+
+
+def _tracker_html(job: dict) -> str:
+    steps = job.get("steps") or {}
+    docs = job.get("docs") or {}
+    running = job.get("state") == "reading"
+    head = ("Working on this RFP's documents" if running else "Done" if job.get("state") == "done" else "Stopped") \
+        + f" · {_elapsed(job.get('started'), None if running else job.get('finished') or job.get('updated'))}"
+    rows = []
+    for key, label in _STEP_LABELS.items():
+        stp = steps.get(key) or {}
+        state = stp.get("state") or ("pending" if running else "skipped")
+        icon = {"done": "✓", "running": "●", "failed": "!", "skipped": "–"}.get(state, "○")
+        took = _elapsed(stp.get("started"), stp.get("finished") if state != "running" else None) if stp.get("started") else ""
+        extra = stp.get("detail") or ""
+        if key == "read" and state == "running":
+            n_done = sum(1 for d in docs.values() if d.get("read") in ("done", "skipped", "failed"))
+            now_doc = next((n for n, d in docs.items() if d.get("read") == "running"), "")
+            extra = f"{n_done} of {len(docs)}" + (f" · now: {now_doc}" if now_doc else "")
+        if key == "requirements" and state == "running":
+            ex = [d for d in docs.values() if d.get("extract")]
+            n_done = sum(1 for d in ex if d.get("extract") in ("done", "failed", "skipped"))
+            extra = f"{n_done} of {len(ex) or '…'} documents"
+        rows.append(f'<div class="trk-step {state}"><span class="ico">{icon}</span><span class="lbl">{_esc(label)}</span>'
+                    f'<span class="det">{_esc(" · ".join(x for x in (extra, took) if x))}</span></div>')
+    doc_rows = []
+    for name, d in docs.items():
+        if not d:
+            continue
+        ex = d.get("extract")
+        if ex == "running":
+            what = f"Data Extraction running · {_elapsed(d.get('extract_started'))}"
+        elif ex == "done":
+            what = f"{d.get('requirements', 0)} requirements · took {_elapsed(d.get('extract_started'), d.get('extract_finished'))}"
+        elif ex == "failed":
+            what = "Data Extraction failed"
+        elif ex == "skipped":
+            what = "too long for the page budget"
+        elif d.get("read") == "running":
+            what = "reading…"
+        elif d.get("summary") == "running":
+            what = "summarising…"
+        elif d.get("read") == "failed":
+            what = "couldn't read"
+        else:
+            what = "read" if d.get("read") in ("done",) else "waiting"
+        cls = "running" if (ex == "running" or d.get("read") == "running" or d.get("summary") == "running") else ("failed" if "fail" in what or "couldn't" in what else "")
+        doc_rows.append(f'<div class="trk-doc {cls}"><span>{_esc(name)}</span><span>{_esc(what)}</span></div>')
+    return (f'<div class="tracker"><div class="trk-head">{_esc(head)}</div>{"".join(rows)}'
+            + (f'<div class="trk-docs">{"".join(doc_rows)}</div>' if doc_rows else "")
+            + ('<div class="help">' + ("Data Extraction runs up to 4 documents at a time; a long document can take 10+ minutes. "
+                                         if (steps.get("requirements") or {}).get("state") == "running" else "")
+               + 'You can leave this page; the work carries on and the analysis appears here when it\'s done.</div>' if running else "")
+            + "</div>")
+
+
+@st.fragment(run_every=3)
+def _docs_tracker_live(sid: str) -> None:
+    """Live while OppOS works on the documents: every step and every document, refreshed every few seconds."""
+    from oppos.sources.rfp_documents import job_status
+    job = job_status(sid) or {}
+    if job.get("state") != "reading":
+        st.rerun()  # finished: redraw the page with the analysis
+    st.markdown(_tracker_html(job), unsafe_allow_html=True)
+
+
+def _docs_status(docs: list[dict], ext: dict | None, job: dict, sid: str = "") -> None:
+    """Top of the RFP tab: a live tracker while OppOS works on the documents; afterwards, one line on what it did."""
     n_read = sum(1 for d in docs if d["status"] == "read")
+    if job.get("state") == "reading" and sid:
+        _docs_tracker_live(sid)
+        return
+    if job.get("steps") and job.get("finished", "") and job.get("finished", "") >= (datetime.utcnow() - timedelta(minutes=30)).isoformat():
+        with st.expander(f"How OppOS worked on these documents · finished {_ago(job['finished'])}"):
+            st.markdown(_tracker_html(job), unsafe_allow_html=True)
     if job.get("state") == "reading":
         msg = "OppOS is reading this RFP's documents and pulling out the requirements. The analysis appears here when it's done; you can leave the page."
     elif not docs:
@@ -1180,6 +1279,24 @@ def _add_documents(opp: dict, k: str, job: dict) -> None:
             st.caption("Wait for the current read to finish, then add more.")
 
 
+def _autostart_documents(opp: dict, docs: list[dict], job: dict | None) -> dict | None:
+    """Start the background work when a pursuit's documents haven't been read, extracted, summarised or matrix-read.
+    Runs before anything on the pursuit is drawn, so the tracker shows from the first load. Returns the job."""
+    from oppos.drafting.extraction import extraction_available
+    from oppos.sources.rfp_documents import job_status, start_reading, stored_extraction
+    if not CURRENT_USER.get("can_work") or (job and job.get("state") == "reading"):
+        return job
+    sid = opp.get("source_id", "")
+    stored = stored_extraction(sid) if docs else None
+    never_extracted = bool(docs) and (job or {}).get("extracted") is None and extraction_available() and not stored
+    no_summaries = any(d["status"] == "read" and not d.get("summary") for d in docs) and not (job or {}).get("summarized")
+    no_matrices = bool(stored) and not stored.get("matrices_checked") and not (job or {}).get("matrices")
+    if (not docs and not job) or never_extracted or no_summaries or no_matrices:
+        start_reading(opp)
+        return job_status(sid)
+    return job
+
+
 def _render_documents(opp: dict, k: str, auto: bool, docs: list[dict] | None = None) -> None:
     """One list of the RFP's documents, as OppOS read them. `auto`: start reading without asking (a pursuit)."""
     from oppos.sources.rfp_documents import job_status, local_files, start_reading
@@ -1187,20 +1304,12 @@ def _render_documents(opp: dict, k: str, auto: bool, docs: list[dict] | None = N
     sid = opp.get("source_id", "")
     docs = get_documents(sid) if docs is None else docs
     job = job_status(sid)
-    if auto and CURRENT_USER.get("can_work") and not (job and job.get("state") == "reading"):
-        from oppos.drafting.extraction import extraction_available
-        from oppos.sources.rfp_documents import stored_extraction
-        never_extracted = bool(docs) and (job or {}).get("extracted") is None and extraction_available() and not stored_extraction(sid)
-        no_summaries = any(d["status"] == "read" and not d.get("summary") for d in docs) and not (job or {}).get("summarized")
-        _stored = stored_extraction(sid) if docs else None
-        no_matrices = bool(_stored) and not _stored.get("matrices_checked") and not (job or {}).get("matrices")
-        if (not docs and not job) or never_extracted or no_summaries or no_matrices:
-            start_reading(opp)
-            job = job_status(sid)
-    if job and job.get("state") == "reading":
-        _reading_progress(sid)
+    if job and job.get("state") == "reading" and not auto:
+        _reading_progress(sid)  # the Find RFPs panel has no tracker on top
         if not docs:
             return
+    elif job and job.get("state") == "reading" and not docs:
+        return
     if not docs:
         if job and job.get("state") == "failed":
             st.markdown(f'<p class="muted">Couldn\'t read the documents: {_esc(job.get("error") or "unknown error")}.</p>', unsafe_allow_html=True)
@@ -1723,7 +1832,8 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
     from oppos.sources.rfp_documents import job_status, stored_extraction
     docs = get_documents(sid)
     ext = stored_extraction(sid) if docs else None
-    job = job_status(sid) or {}
+    job = (_autostart_documents(opp, docs, job_status(sid)) if (pursuit.get("status") or "") in ("evaluating", "active", "submitted")
+           else job_status(sid)) or {}
     n_read = sum(1 for d in docs if d["status"] == "read")
     docs_state = "reading" if job.get("state") == "reading" else ("read" if n_read else "none")
     j1, j2 = st.columns([3, 2.2], vertical_alignment="center")
@@ -1746,7 +1856,7 @@ def _render_pursuit_panel(opp: dict, pursuit: dict, events: list[dict]) -> None:
     with t_resp:
         _render_response(opp, pursuit, draft, k)
     with t_rfp:
-        _docs_status(docs, ext, job)
+        _docs_status(docs, ext, job, sid)
         if s2.get("summary"):
             st.markdown(f'<div class="rs-head">Is it worth pursuing? Fit {int(_score_of(opp)) or "–"}</div>'
                         f'<div class="help">{_esc(_score_basis(opp, s2))}</div>', unsafe_allow_html=True)
